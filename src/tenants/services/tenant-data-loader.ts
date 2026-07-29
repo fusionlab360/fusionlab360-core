@@ -4,6 +4,8 @@ import { CredentialRepository } from "../../persistence/repositories/credential-
 import { ConfigurationRepository } from "../../persistence/repositories/configuration-repository";
 import { mapTenant } from "./tenant-mapper";
 import type { Tenant } from "../types";
+import type { IntegrationAggregate } from "../models/integration-aggregate";
+
 
 export class TenantDataLoader {
   constructor(
@@ -32,6 +34,20 @@ export class TenantDataLoader {
         this.configurationRepository.getByIntegrationId(integration.id),
       ),
     );
+
+    const integrationAggregates: IntegrationAggregate[] =
+  integrations.map((integration, index) => ({
+    integration,
+
+    credentials:
+      credentials.find(
+        (credential) =>
+          credential.provider === integration.provider,
+      ) ?? null,
+
+    configuration:
+      configurations[index] ?? null,
+  }));
 
     return mapTenant(
       tenant,
