@@ -49,11 +49,9 @@ export class TenantDataLoader {
       configurations[index] ?? null,
   }));
 
-    return mapTenant(
-      tenant,
-      integrations,
-      credentials,
-      configurations,
-    );
+   return mapTenant(
+  tenant,
+  integrationAggregates,
+);
   }
 }

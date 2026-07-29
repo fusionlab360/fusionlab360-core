@@ -1,24 +1,16 @@
-import type { IntegrationCredential } from "../../persistence/models/integration-credential";
-import type { IntegrationRecord } from "../../persistence/models/integration";
 import type { TenantRecord } from "../../persistence/models/tenant";
 import type { CRMProvider, PMSProvider, Tenant } from "../types";
-import type { IntegrationConfiguration } from "../../persistence/models/integration-configuration";
-
+import type { IntegrationAggregate } from "../models/integration-aggregate";
 
 export function mapTenant(
   tenant: TenantRecord,
-  integrations: IntegrationRecord[],
-  credentials: IntegrationCredential[],
-  configurations: Array<IntegrationConfiguration | null>,
+  integrations: IntegrationAggregate[],
 ): Tenant {
-  
-  const crm = integrations.find(
-    (i) => i.provider === "gohighlevel",
-  );
 
-  const crmCredential = credentials.find(
-    (c) => c.provider === crm?.provider,
-  );
+const crm = integrations.find(
+  (aggregate) =>
+    aggregate.integration.provider === "gohighlevel",
+);
 
   return {
     id: tenant.id,
@@ -26,24 +18,29 @@ export function mapTenant(
     status: tenant.status,
 
     integrations: {
-      crm: {
-        provider: (crm?.provider ?? "gohighlevel") as CRMProvider,
+    crm: {
+  provider:
+    (crm?.integration.provider ?? "gohighlevel") as CRMProvider,
 
-        credentials: {
-          apiKey: crmCredential?.apiKey ?? "",
-          locationId: crmCredential?.locationId ?? "",
-        },
+  credentials: {
+    apiKey:
+      crm?.credentials?.apiKey ?? "",
 
-        configuration: {
-          workflow: {
-            key: "reservation",
-            providerWorkflowId: "",
-            states: [],
-          },
+    locationId:
+      crm?.credentials?.locationId ?? "",
+  },
 
-          attributeMappings: [],
-        },
+  configuration:
+    crm?.configuration ?? {
+      workflow: {
+        key: "reservation",
+        providerWorkflowId: "",
+        states: [],
       },
+
+      attributeMappings: [],
+    },
+},
 
       pms: {
         provider: "browser" as PMSProvider,
