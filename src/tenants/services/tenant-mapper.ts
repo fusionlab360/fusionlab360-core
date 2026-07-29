@@ -12,6 +12,14 @@ const crm = integrations.find(
     aggregate.integration.provider === "gohighlevel",
 );
 
+if (!crm) {
+  throw new Error("CRM integration not found.");
+}
+
+if (!crm.configuration) {
+  throw new Error("CRM integration configuration is missing.");
+}
+
   return {
     id: tenant.id,
     name: tenant.name,
@@ -30,16 +38,7 @@ const crm = integrations.find(
       crm?.credentials?.locationId ?? "",
   },
 
-  configuration:
-    crm?.configuration ?? {
-      workflow: {
-        key: "reservation",
-        providerWorkflowId: "",
-        states: [],
-      },
-
-      attributeMappings: [],
-    },
+configuration: crm.configuration,
 },
 
       pms: {
