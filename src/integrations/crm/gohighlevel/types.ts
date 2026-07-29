@@ -29,9 +29,16 @@ export interface GHLContact {
   phone?: string;
 
   /**
-   * Passport/IC Number
-   */
-  passportNoIC?: string;
+   * Identity Number
+   * (Mapped from the canonical reservation/contact model)
+ */
+  identityNumber?: string;
+
+/**
+   * Identity Type
+   * Example: Passport, National ID, NRIC
+ */
+identityType?: string;
 
   /**
    * Nationality

@@ -17,7 +17,8 @@ export async function createContactController(
     Bindings: AppBindings;
     Variables: AppVariables;
   }>
-) {
+) 
+{
   console.log("===== CREATE CONTACT CONTROLLER =====");
 
   const body = await c.req.json();

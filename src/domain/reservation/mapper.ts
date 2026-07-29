@@ -6,7 +6,13 @@ export function mapReservationToContact(
   return {
     firstName: reservation.firstName,
     lastName: reservation.lastName,
+
     email: reservation.email,
     phone: reservation.phone,
+
+    nationality: reservation.nationality,
+
+    identityNumber: reservation.identityNumber,
+    identityType: reservation.identityType,
   };
 }

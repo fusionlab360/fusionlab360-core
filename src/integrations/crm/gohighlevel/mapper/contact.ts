@@ -12,7 +12,8 @@ export function toGHLContact(
     email: contact.email,
     phone: contact.phone,
 
-    passportNoIC: contact.passportNoIC,
+    identityNumber: contact.identityNumber,
+    identityType: contact.identityType,
     nationality: contact.nationality,
     dob: contact.dob,
   };
@@ -28,7 +29,8 @@ export function toGHLPartialContact(
     email: contact.email,
     phone: contact.phone,
 
-    passportNoIC: contact.passportNoIC,
+    identityNumber: contact.identityNumber,
+    identityType: contact.identityType,
     nationality: contact.nationality,
     dob: contact.dob,
   };
@@ -45,7 +47,8 @@ export function fromGHLContact(
     email: contact.email,
     phone: contact.phone,
 
-    passportNoIC: contact.passportNoIC,
+    identityNumber: contact.identityNumber,
+    identityType: contact.identityType,
     nationality: contact.nationality,
     dob: contact.dob,
   };

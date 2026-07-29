@@ -79,20 +79,37 @@ export const goHighLevelAdapter: CRMAdapter = {
     return fromGHLContact(response.contact);
   },
 
+
   async upsertContact(
-    context: RequestContext,
-    payload: Contact,
-  ) {
-    const credentials = getGHLCredentials(context);
+  context: RequestContext,
+  payload: Contact,
+) {
+  const credentials = getGHLCredentials(context);
+
+  const ghlPayload = toGHLContact(payload);
+
+  console.log("===== GHL UPSERT CONTACT =====");
+  console.log(JSON.stringify(ghlPayload, null, 2));
+
+  try {
 
     const response = await upsertContact(
       credentials.apiKey,
       credentials.locationId,
-      toGHLContact(payload),
+      ghlPayload,
     );
 
     return fromGHLContact(response.contact);
-  },
+
+  } catch (error) {
+
+    console.error("===== GHL ERROR =====");
+    console.error(error);
+
+    throw error;
+
+  }
+},
 
   async deleteContact(
     context: RequestContext,

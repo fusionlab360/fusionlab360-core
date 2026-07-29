@@ -6,11 +6,8 @@ import { validateReservation } from "./validator";
 import { mapReservationToContact } from "./mapper";
 import { mapReservationToOpportunity } from "./opportunity";
 
-
 import type { ReservationPayload } from "./types";
 import type { ReservationResult } from "./result";
-
-
 
 import {
   ContactSyncFailedError,
@@ -37,34 +34,27 @@ export async function processReservation(
     throw new ContactSyncFailedError();
   }
 
-  // 4. Read CRM configuration
-  const crm = context.tenant.integrations.crm;
-
-  const pipeline = crm.configuration.pipelines.primary;
-
-  // 5. Reservation -> Opportunity
+  // 4. Reservation -> Opportunity (Canonical)
   const opportunity = mapReservationToOpportunity(
     reservation,
-    contact.id,
-    pipeline.id,
-    pipeline.stageId
+    contact.id
   );
 
-const opportunityResult =
-  await crmAdapter.upsertOpportunity(
+  // 5. CRM Adapter handles pipeline/stage mapping internally
+  const opportunityResult = await crmAdapter.upsertOpportunity(
     context,
     opportunity
   );
 
-if (!opportunityResult.id) {
-  throw new OpportunitySyncFailedError();
-}
+  if (!opportunityResult.id) {
+    throw new OpportunitySyncFailedError();
+  }
 
-  // 8. Return Result
+  // 6. Return Result
   return {
-  success: true,
-  message: "Reservation synced successfully.",
-  contactId: contact.id,
-  opportunityId: opportunityResult.id,
-};
+    success: true,
+    message: "Reservation synced successfully.",
+    contactId: contact.id,
+    opportunityId: opportunityResult.id,
+  };
 }

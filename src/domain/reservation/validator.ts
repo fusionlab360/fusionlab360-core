@@ -4,12 +4,12 @@ export function validateReservation(
   payload: ReservationPayload
 ): ReservationPayload {
 
-  if (!payload.firstName?.trim()) {
-    throw new Error("First Name is required.");
+  if (!payload.reservationId?.trim()) {
+    throw new Error("Reservation ID is required.");
   }
 
-  if (!payload.email && !payload.phone) {
-    throw new Error("Email or Phone is required.");
+  if (!payload.firstName?.trim()) {
+    throw new Error("First Name is required.");
   }
 
   return payload;

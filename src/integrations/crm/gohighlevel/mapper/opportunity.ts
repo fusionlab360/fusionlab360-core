@@ -5,10 +5,14 @@ import type { GHLOpportunity } from "../types";
 
 import { resolveFieldMapping } from "../../../../core/crm/field-mapping";
 import { ReservationFields } from "../../../../canonical/reservation";
+
 export function mapReservationOpportunityToGHL(
   context: RequestContext,
   opportunity: ReservationOpportunity
 ): GHLOpportunity {
+
+  const pipeline =
+    context.tenant.integrations.crm.configuration.pipelines.primary;
 
   const reservationId = resolveFieldMapping(
     context,
@@ -25,6 +29,11 @@ export function mapReservationOpportunityToGHL(
     ReservationFields.RoomType
   );
 
+  const roomNumber = resolveFieldMapping(
+    context,
+    ReservationFields.RoomNumber
+  );
+
   const checkIn = resolveFieldMapping(
     context,
     ReservationFields.CheckIn
@@ -35,16 +44,40 @@ export function mapReservationOpportunityToGHL(
     ReservationFields.CheckOut
   );
 
+  const adults = resolveFieldMapping(
+    context,
+    ReservationFields.Adults
+  );
 
+  const children = resolveFieldMapping(
+    context,
+    ReservationFields.Children
+  );
+
+  const channelSource = resolveFieldMapping(
+    context,
+    ReservationFields.ChannelSource
+  );
+
+  const paymentStatus = resolveFieldMapping(
+    context,
+    ReservationFields.PaymentStatus
+  );
+
+  const bookingDate = resolveFieldMapping(
+    context,
+    ReservationFields.BookingDate
+  );
 
   return {
     name: opportunity.guestName,
 
     contactId: opportunity.contactId,
 
-    pipelineId: opportunity.pipelineId,
+    pipelineId: pipeline.id,
 
-    pipelineStageId: opportunity.pipelineStageId,
+    // Temporary until Stage Resolver is implemented
+    pipelineStageId: pipeline.stageId,
 
     status: opportunity.status,
 
@@ -62,6 +95,10 @@ export function mapReservationOpportunityToGHL(
         field_value: opportunity.roomType ?? "",
       },
       {
+        id: roomNumber.providerFieldId,
+        field_value: opportunity.roomNumber ?? "",
+      },
+      {
         id: checkIn.providerFieldId,
         field_value: opportunity.checkIn ?? "",
       },
@@ -69,7 +106,26 @@ export function mapReservationOpportunityToGHL(
         id: checkOut.providerFieldId,
         field_value: opportunity.checkOut ?? "",
       },
-  
+      {
+        id: adults.providerFieldId,
+        field_value: opportunity.adults?.toString() ?? "",
+      },
+      {
+        id: children.providerFieldId,
+        field_value: opportunity.children?.toString() ?? "",
+      },
+      {
+        id: channelSource.providerFieldId,
+        field_value: opportunity.channelSource ?? "",
+      },
+      {
+        id: paymentStatus.providerFieldId,
+        field_value: opportunity.paymentStatus ?? "",
+      },
+      {
+        id: bookingDate.providerFieldId,
+        field_value: opportunity.bookingDate ?? "",
+      },
     ],
   };
 }

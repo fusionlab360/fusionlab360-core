@@ -31,22 +31,27 @@ export interface Contact {
    */
   tags?: string[];
 
-  
   /**
-   * Passport/IC Number
+   * Identity Number
+   * (Passport, NRIC, National ID, etc.)
    */
-    passportNoIC?: string;
+  identityNumber?: string;
 
-    
+  /**
+   * Identity Type
+   * Example: Passport, NRIC, National ID
+   */
+  identityType?: string;
+
   /**
    * Nationality
    */
-    nationality?: string;
-    
+  nationality?: string;
+
   /**
    * Date of Birth
    */
-    dob?: string;
+  dob?: string;
 
   /**
    * Platform Attributes
