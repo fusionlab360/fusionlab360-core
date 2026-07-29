@@ -1,4 +1,4 @@
-import type { FieldMappingCollection } from "../canonical/types";
+import type { IntegrationConfiguration } from "../persistence/models/integration-configuration";
 
 export type CRMProvider =
   | "gohighlevel"
@@ -29,16 +29,7 @@ export interface Tenant {
         locationId: string;
       };
 
-      configuration: {
-        pipelines: {
-          primary: {
-            id: string;
-            stageId: string;
-          };
-        };
-
-        fieldMappings: FieldMappingCollection;
-      };
+      configuration: IntegrationConfiguration;
     };
 
     pms: {

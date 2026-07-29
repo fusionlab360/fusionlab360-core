@@ -1,9 +1,7 @@
-import type { FieldMappingCollection } from "../../canonical/types";
 import type { IntegrationCredential } from "../../persistence/models/integration-credential";
 import type { IntegrationRecord } from "../../persistence/models/integration";
 import type { TenantRecord } from "../../persistence/models/tenant";
 import type { CRMProvider, PMSProvider, Tenant } from "../types";
-
 
 export function mapTenant(
   tenant: TenantRecord,
@@ -11,8 +9,8 @@ export function mapTenant(
   credentials: IntegrationCredential[],
 ): Tenant {
   const crm = integrations.find(
-  (i) => i.provider === "gohighlevel",
-);
+    (i) => i.provider === "gohighlevel",
+  );
 
   const crmCredential = credentials.find(
     (c) => c.provider === crm?.provider,
@@ -25,7 +23,7 @@ export function mapTenant(
 
     integrations: {
       crm: {
-       provider: (crm?.provider ?? "gohighlevel") as CRMProvider,
+        provider: (crm?.provider ?? "gohighlevel") as CRMProvider,
 
         credentials: {
           apiKey: crmCredential?.apiKey ?? "",
@@ -33,14 +31,13 @@ export function mapTenant(
         },
 
         configuration: {
-          pipelines: {
-            primary: {
-              id: "",
-              stageId: "",
-            },
+          workflow: {
+            key: "reservation",
+            providerWorkflowId: "",
+            states: [],
           },
 
-          fieldMappings: {} as FieldMappingCollection,
+          attributeMappings: [],
         },
       },
 

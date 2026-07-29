@@ -11,8 +11,11 @@ export function mapReservationOpportunityToGHL(
   opportunity: ReservationOpportunity
 ): GHLOpportunity {
 
-  const pipeline =
-    context.tenant.integrations.crm.configuration.pipelines.primary;
+  const workflow =
+    context.tenant.integrations.crm.configuration.workflow;
+
+  // Temporary until State Resolver is implemented
+  const defaultState = workflow.states[0];
 
   const reservationId = resolveFieldMapping(
     context,
@@ -74,10 +77,11 @@ export function mapReservationOpportunityToGHL(
 
     contactId: opportunity.contactId,
 
-    pipelineId: pipeline.id,
+    // Generic workflow translated to GHL pipeline
+    pipelineId: workflow.providerWorkflowId,
 
-    // Temporary until Stage Resolver is implemented
-    pipelineStageId: pipeline.stageId,
+    // Temporary until Workflow State Resolver is implemented
+    pipelineStageId: defaultState?.providerStateId ?? "",
 
     status: opportunity.status,
 

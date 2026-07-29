@@ -79,37 +79,65 @@ export const goHighLevelAdapter: CRMAdapter = {
     return fromGHLContact(response.contact);
   },
 
-
   async upsertContact(
-  context: RequestContext,
-  payload: Contact,
-) {
-  const credentials = getGHLCredentials(context);
+    context: RequestContext,
+    payload: Contact,
+  ) {
+    const credentials = getGHLCredentials(context);
 
-  const ghlPayload = toGHLContact(payload);
+    const ghlPayload = toGHLContact(payload);
 
-  console.log("===== GHL UPSERT CONTACT =====");
-  console.log(JSON.stringify(ghlPayload, null, 2));
+    // Provider-specific validation
+    if (!ghlPayload.email && !ghlPayload.phone) {
+      throw new Error(
+        "GoHighLevel requires either email or phone to create or update a contact."
+      );
+    }
 
-  try {
-
-    const response = await upsertContact(
-      credentials.apiKey,
-      credentials.locationId,
-      ghlPayload,
+    console.log("===== GHL UPSERT CONTACT =====");
+    console.log(
+      JSON.stringify(
+        {
+          tenantId: context.tenant.id,
+          locationId: credentials.locationId,
+          email: ghlPayload.email,
+          phone: ghlPayload.phone,
+          payload: ghlPayload,
+        },
+        null,
+        2,
+      ),
     );
 
-    return fromGHLContact(response.contact);
+    try {
+      const response = await upsertContact(
+        credentials.apiKey,
+        credentials.locationId,
+        ghlPayload,
+      );
 
-  } catch (error) {
+      return fromGHLContact(response.contact);
 
-    console.error("===== GHL ERROR =====");
-    console.error(error);
+    } catch (error: any) {
 
-    throw error;
+      console.error("===== GHL ERROR =====");
+      console.error(error);
 
-  }
-},
+      // Handle only the known GHL validation error
+      if (
+        error?.message?.includes(
+          "Pass at least one of number, email"
+        )
+      ) {
+        throw new Error(
+          "GoHighLevel requires either email or phone to create or update a contact."
+        );
+      }
+
+      // Preserve every other error
+      throw error;
+    }
+  },
 
   async deleteContact(
     context: RequestContext,
@@ -127,26 +155,24 @@ export const goHighLevelAdapter: CRMAdapter = {
     }
   },
 
-  
-async searchContact(
-  context: RequestContext,
-  email: string,
-) {
-  const credentials = getGHLCredentials(context);
+  async searchContact(
+    context: RequestContext,
+    email: string,
+  ) {
+    const credentials = getGHLCredentials(context);
 
-  const response = await searchContact(
-  credentials.apiKey,
-  credentials.locationId,
-  email,
-);
+    const response = await searchContact(
+      credentials.apiKey,
+      credentials.locationId,
+      email,
+    );
 
-  if (!response.contact) {
-    return undefined;
-  }
+    if (!response.contact) {
+      return undefined;
+    }
 
-  return fromGHLContact(response.contact);
-},
-
+    return fromGHLContact(response.contact);
+  },
 
   // ----------------------------
   // OPPORTUNITIES

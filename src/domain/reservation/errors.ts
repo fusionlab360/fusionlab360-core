@@ -6,15 +6,19 @@ export class ReservationError extends Error {
 }
 
 export class ContactSyncFailedError extends ReservationError {
-  constructor() {
-    super("Failed to obtain GoHighLevel Contact ID.");
+  constructor(
+    message = "Failed to obtain GoHighLevel Contact ID."
+  ) {
+    super(message);
     this.name = "ContactSyncFailedError";
   }
 }
 
 export class OpportunitySyncFailedError extends ReservationError {
-  constructor() {
-    super("Failed to synchronize GoHighLevel Opportunity.");
+  constructor(
+    message = "Failed to synchronize GoHighLevel Opportunity."
+  ) {
+    super(message);
     this.name = "OpportunitySyncFailedError";
   }
 }

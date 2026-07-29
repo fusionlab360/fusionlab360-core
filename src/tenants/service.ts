@@ -1,6 +1,7 @@
 import { TenantRepository } from "../persistence/repositories/tenant-repository";
 import { IntegrationRepository } from "../persistence/repositories/integration-repository";
 import { CredentialRepository } from "../persistence/repositories/credential-repository";
+import { ConfigurationRepository } from "../persistence/repositories/configuration-repository";
 import { TenantDataLoader } from "./services/tenant-data-loader";
 import type { Tenant } from "./types";
 
@@ -12,6 +13,7 @@ export async function resolveTenant(
     new TenantRepository(db),
     new IntegrationRepository(db),
     new CredentialRepository(db),
+    new ConfigurationRepository(db),
   );
 
   const tenant = await loader.load(tenantId);

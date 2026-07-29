@@ -1,18 +1,22 @@
 import type { RequestContext } from "../../context";
-import type { ProviderFieldMapping } from "../../canonical/types";
+import type { AttributeMapping } from "../../persistence/models/integration-configuration";
 
 export function resolveFieldMapping(
   context: RequestContext,
   canonicalField: string
-): ProviderFieldMapping {
+): AttributeMapping {
 
   const mappings =
-    context.tenant.integrations.crm.configuration.fieldMappings;
+    context.tenant.integrations.crm.configuration.attributeMappings;
 
-  const mapping = mappings[canonicalField];
+  const mapping = mappings.find(
+    (mapping) => mapping.canonicalKey === canonicalField
+  );
 
   if (!mapping) {
-    throw new Error(`Missing field mapping: ${canonicalField}`);
+    throw new Error(
+      `Missing field mapping for canonical field '${canonicalField}'.`
+    );
   }
 
   return mapping;

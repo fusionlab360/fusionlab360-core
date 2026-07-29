@@ -3,13 +3,15 @@ import { IntegrationRepository } from "../../persistence/repositories/integratio
 import { CredentialRepository } from "../../persistence/repositories/credential-repository";
 import { mapTenant } from "./tenant-mapper";
 import type { Tenant } from "../types";
+import { ConfigurationRepository } from "../../persistence/repositories/configuration-repository";
 
 export class TenantDataLoader {
   constructor(
-    private readonly tenantRepository: TenantRepository,
-    private readonly integrationRepository: IntegrationRepository,
-    private readonly credentialRepository: CredentialRepository,
-  ) {}
+  private readonly tenantRepository: TenantRepository,
+  private readonly integrationRepository: IntegrationRepository,
+  private readonly credentialRepository: CredentialRepository,
+  private readonly configurationRepository: ConfigurationRepository,
+) {}
 
   async load(tenantId: string): Promise<Tenant> {
     const tenant = await this.tenantRepository.findById(tenantId);

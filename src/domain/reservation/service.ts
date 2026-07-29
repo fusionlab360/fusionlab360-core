@@ -25,10 +25,23 @@ export async function processReservation(
   const crmAdapter = resolveCRMAdapter(context.tenant);
 
   // 3. Reservation -> Contact
-  const contact = await crmAdapter.upsertContact(
-    context,
-    mapReservationToContact(reservation)
-  );
+  let contact;
+
+  try {
+    contact = await crmAdapter.upsertContact(
+      context,
+      mapReservationToContact(reservation)
+    );
+  } catch (error) {
+    console.error("===== CONTACT SYNC FAILED =====");
+    console.error(error);
+
+    throw new ContactSyncFailedError(
+      error instanceof Error
+        ? error.message
+        : "Failed to synchronize contact."
+    );
+  }
 
   if (!contact.id) {
     throw new ContactSyncFailedError();
@@ -41,10 +54,23 @@ export async function processReservation(
   );
 
   // 5. CRM Adapter handles pipeline/stage mapping internally
-  const opportunityResult = await crmAdapter.upsertOpportunity(
-    context,
-    opportunity
-  );
+  let opportunityResult;
+
+  try {
+    opportunityResult = await crmAdapter.upsertOpportunity(
+      context,
+      opportunity
+    );
+  } catch (error) {
+    console.error("===== OPPORTUNITY SYNC FAILED =====");
+    console.error(error);
+
+    throw new OpportunitySyncFailedError(
+      error instanceof Error
+        ? error.message
+        : "Failed to synchronize opportunity."
+    );
+  }
 
   if (!opportunityResult.id) {
     throw new OpportunitySyncFailedError();
