@@ -2,12 +2,16 @@ import type { IntegrationCredential } from "../../persistence/models/integration
 import type { IntegrationRecord } from "../../persistence/models/integration";
 import type { TenantRecord } from "../../persistence/models/tenant";
 import type { CRMProvider, PMSProvider, Tenant } from "../types";
+import type { IntegrationConfiguration } from "../../persistence/models/integration-configuration";
+
 
 export function mapTenant(
   tenant: TenantRecord,
   integrations: IntegrationRecord[],
   credentials: IntegrationCredential[],
+  configurations: Array<IntegrationConfiguration | null>,
 ): Tenant {
+  
   const crm = integrations.find(
     (i) => i.provider === "gohighlevel",
   );
