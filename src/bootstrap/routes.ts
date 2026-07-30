@@ -5,6 +5,7 @@ import { authMiddleware } from "../middleware/auth";
 import { authRoutes } from "../domain/auth/routes";
 import contactRoutes from "../domain/contact/routes";
 import reservationRoutes from "../domain/reservation/routes";
+import integrationRoutes from "../domain/integration/routes";
 
 app.get("/", (c) => {
   return c.json({
@@ -27,9 +28,13 @@ app.route("/auth", authRoutes);
 // Protected Routes
 app.use("/contacts/*", authMiddleware);
 app.use("/reservations/*", authMiddleware);
+app.use("/integrations/*", authMiddleware);
 
 // Contact CRUD
 app.route("/contacts", contactRoutes);
 
 // Reservation Business Process
 app.route("/reservations", reservationRoutes);
+
+// Integration Discovery
+app.route("/integrations", integrationRoutes);

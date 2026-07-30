@@ -27,9 +27,10 @@ if (!crm.configuration) {
 
     integrations: {
     crm: {
-  provider:
-    (crm?.integration.provider ?? "gohighlevel") as CRMProvider,
+  id: crm.integration.id,
 
+  provider:
+    (crm.integration.provider ?? "gohighlevel") as CRMProvider,
   credentials: {
     apiKey:
       crm?.credentials?.apiKey ?? "",

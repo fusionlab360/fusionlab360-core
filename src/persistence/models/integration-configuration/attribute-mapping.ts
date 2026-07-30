@@ -3,5 +3,5 @@ export interface AttributeMapping {
 
   providerFieldId: string;
 
-  providerFieldName?: string;
+  providerFieldKey?: string;
 }

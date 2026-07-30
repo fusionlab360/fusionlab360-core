@@ -56,6 +56,6 @@ export function mapReservationToOpportunity(
 
     paymentStatus: reservation.paymentStatus,
 
-    status: ReservationStatus.OPEN,
+    status: reservation.status ?? ReservationStatus.OPEN,
   };
 }

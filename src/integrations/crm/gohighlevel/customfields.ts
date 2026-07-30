@@ -6,10 +6,15 @@ export function getCustomFields(
   apiKey: string,
   locationId: string
 ) {
+  const endpoint =
+    `${GHL.ENDPOINTS.CUSTOM_FIELDS}?locationId=${encodeURIComponent(locationId)}`;
+
+  console.log("CUSTOM FIELDS ENDPOINT:", endpoint);
+
   return ghlFetch<{
     customFields: GHLCustomField[];
   }>(
     apiKey,
-    `${GHL.ENDPOINTS.CUSTOM_FIELDS}?locationId=${encodeURIComponent(locationId)}`
+    endpoint
   );
 }

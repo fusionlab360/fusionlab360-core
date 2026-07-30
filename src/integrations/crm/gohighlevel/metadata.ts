@@ -1,63 +1,148 @@
 import { getPipelines } from "./opportunities/pipelines";
-import { getPipelineStages } from "./opportunities/stages";
 import { getCustomFields } from "./customfields";
 
-export interface GHLMetadata {
+export interface GHLPipelineMetadata {
+  id: string;
+  name: string;
+}
+
+export interface GHLStageMetadata {
+  id: string;
+  name: string;
   pipelineId: string;
-  pipelineStageId: string;
-  customFields: Record<string, string>;
+}
+
+export interface GHLFieldMetadata {
+  id: string;
+  key?: string;
+  name: string;
+}
+
+export interface GHLMetadata {
+  pipelines: GHLPipelineMetadata[];
+  stages: GHLStageMetadata[];
+  customFields: GHLFieldMetadata[];
 }
 
 export async function resolveMetadata(
   apiKey: string,
   locationId: string,
-  pipelineName: string,
-  stageName: string
 ): Promise<GHLMetadata> {
-  // Resolve Pipeline
-  const { pipelines } = await getPipelines(apiKey, locationId);
 
-  const pipeline = pipelines.find(
-    (item) => item.name === pipelineName
+  console.log("========== GHL METADATA ==========");
+  console.log("Location:", locationId);
+
+  // ----------------------------------
+  // PIPELINES
+  // ----------------------------------
+
+  const pipelineResponse = await getPipelines(
+    apiKey,
+    locationId,
   );
 
-  if (!pipeline) {
+  console.log(
+    "Pipeline Response:",
+    JSON.stringify(pipelineResponse, null, 2),
+  );
+
+  if (
+    !pipelineResponse ||
+    !Array.isArray((pipelineResponse as any).pipelines)
+  ) {
     throw new Error(
-      `Pipeline '${pipelineName}' not found.`
+      `Invalid pipeline response:\n${JSON.stringify(
+        pipelineResponse,
+        null,
+        2,
+      )}`,
     );
   }
 
-  // Resolve Stage
-  const { stages } = await getPipelineStages(
-    apiKey,
-    pipeline.id
+  const pipelines = (pipelineResponse as any).pipelines;
+
+  const pipelineMetadata: GHLPipelineMetadata[] = pipelines.map(
+    (pipeline: any) => ({
+      id: pipeline.id,
+      name: pipeline.name,
+    }),
   );
 
-  const stage = stages.find(
-    (item) => item.name === stageName
-  );
+  // ----------------------------------
+  // STAGES
+  // ----------------------------------
 
-  if (!stage) {
-    throw new Error(
-      `Stage '${stageName}' not found.`
+  const stageMetadata: GHLStageMetadata[] = [];
+
+  for (const pipeline of pipelines) {
+    const stages = pipeline.stages ?? [];
+
+    stageMetadata.push(
+      ...stages.map((stage: any) => ({
+        id: stage.id,
+        name: stage.name,
+        pipelineId: pipeline.id,
+      })),
     );
   }
 
-  // Resolve Custom Fields
-  const { customFields } = await getCustomFields(
-    apiKey,
-    locationId
+  // ----------------------------------
+  // CUSTOM FIELDS
+  // ----------------------------------
+
+  let fieldMetadata: GHLFieldMetadata[] = [];
+
+  try {
+    const fieldResponse = await getCustomFields(
+      apiKey,
+      locationId,
+    );
+
+    console.log(
+      "Custom Field Response:",
+      JSON.stringify(fieldResponse, null, 2),
+    );
+
+    if (Array.isArray((fieldResponse as any).customFields)) {
+      fieldMetadata = (fieldResponse as any).customFields.map(
+        (field: any) => ({
+          id: field.id,
+          key: field.key,
+          name: field.name,
+        }),
+      );
+    } else {
+      console.warn(
+        "Custom fields endpoint returned an unexpected response. Continuing without custom fields.",
+      );
+    }
+  } catch (error) {
+  console.error("============== CUSTOM FIELDS FAILED ==============");
+  console.error(error);
+
+  fieldMetadata = [];
+
+  console.warn("Continuing discovery without custom fields.");
+}
+console.log("Reached end of resolveMetadata()");
+
+  console.log("========== RESOLVED METADATA ==========");
+
+  console.log(
+    JSON.stringify(
+      {
+        pipelines: pipelineMetadata,
+        stages: stageMetadata,
+        customFields: fieldMetadata,
+      },
+      null,
+      2,
+    ),
   );
-
-  const fieldMap: Record<string, string> = {};
-
-  for (const field of customFields) {
-    fieldMap[field.name] = field.id;
-  }
 
   return {
-    pipelineId: pipeline.id,
-    pipelineStageId: stage.id,
-    customFields: fieldMap,
+    pipelines: pipelineMetadata,
+    stages: stageMetadata,
+    customFields: fieldMetadata,
   };
 }

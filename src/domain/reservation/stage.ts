@@ -5,24 +5,24 @@ export function resolveReservationStage(
 ): string {
   switch (opportunity.status) {
     case "CANCELLED":
-      return "Cancelled";
+      return "cancelled";
 
     case "NO_SHOW":
-      return "No Show";
+      return "no_show";
 
     case "CHECKED_OUT":
-      return "Checked Out";
+      return "checked_out";
 
     case "CHECKED_IN":
-      return "Checked In";
+      return "checked_in";
 
     case "ARRIVING":
-      return "Arriving Today";
+      return "arriving_today";
 
     case "CONFIRMED":
-      return "Confirmed";
+      return "confirmed";
 
     default:
-      return "New Reservation";
+      return "new_reservation";
   }
 }

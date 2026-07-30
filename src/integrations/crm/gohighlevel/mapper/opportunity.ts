@@ -5,17 +5,26 @@ import type { GHLOpportunity } from "../types";
 
 import { resolveFieldMapping } from "../../../../core/crm/field-mapping";
 import { ReservationFields } from "../../../../canonical/reservation";
+import { resolveReservationStage } from "../../../../domain/reservation/stage";
 
 export function mapReservationOpportunityToGHL(
   context: RequestContext,
   opportunity: ReservationOpportunity
 ): GHLOpportunity {
-
   const workflow =
     context.tenant.integrations.crm.configuration.workflow;
 
-  // Temporary until State Resolver is implemented
-  const defaultState = workflow.states[0];
+  const stageKey = resolveReservationStage(opportunity);
+
+  const workflowState = workflow.states.find(
+    (state) => state.key === stageKey,
+  );
+
+  if (!workflowState) {
+    throw new Error(
+      `Workflow state '${stageKey}' is not configured.`,
+    );
+  }
 
   const reservationId = resolveFieldMapping(
     context,
@@ -80,8 +89,8 @@ export function mapReservationOpportunityToGHL(
     // Generic workflow translated to GHL pipeline
     pipelineId: workflow.providerWorkflowId,
 
-    // Temporary until Workflow State Resolver is implemented
-    pipelineStageId: defaultState?.providerStateId ?? "",
+    // Workflow stage resolved from reservation status
+    pipelineStageId: workflowState.providerStateId,
 
     status: opportunity.status,
 

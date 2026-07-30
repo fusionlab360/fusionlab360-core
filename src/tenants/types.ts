@@ -22,15 +22,17 @@ export interface Tenant {
 
   integrations: {
     crm: {
-      provider: CRMProvider;
+  id: string;
 
-      credentials: {
-        apiKey: string;
-        locationId: string;
-      };
+  provider: CRMProvider;
 
-      configuration: IntegrationConfiguration;
-    };
+  credentials: {
+    apiKey: string;
+    locationId: string;
+  };
+
+  configuration: IntegrationConfiguration;
+};
 
     pms: {
       provider: PMSProvider;

@@ -4,4 +4,6 @@ export * from "./types";
 export * from "./customfields";
 export * from "./metadata";
 export * from "./cache";
-export * from "./adapter"; 
+export * from "./adapter";
+export * from "./discovery";
+export * from "./service";
