@@ -1,3 +1,5 @@
+import { logger } from "../../../core/logger";
+
 import { getPipelines } from "./opportunities/pipelines";
 import { getCustomFields } from "./customfields";
 
@@ -29,21 +31,15 @@ export async function resolveMetadata(
   locationId: string,
 ): Promise<GHLMetadata> {
 
-  console.log("========== GHL METADATA ==========");
-  console.log("Location:", locationId);
+  logger.info("Resolving GoHighLevel metadata", {
+    locationId,
+  });
 
-  // ----------------------------------
-  // PIPELINES
-  // ----------------------------------
+  logger.debug("Loading pipelines");
 
   const pipelineResponse = await getPipelines(
     apiKey,
     locationId,
-  );
-
-  console.log(
-    "Pipeline Response:",
-    JSON.stringify(pipelineResponse, null, 2),
   );
 
   if (
@@ -61,16 +57,15 @@ export async function resolveMetadata(
 
   const pipelines = (pipelineResponse as any).pipelines;
 
-  const pipelineMetadata: GHLPipelineMetadata[] = pipelines.map(
-    (pipeline: any) => ({
+  const pipelineMetadata: GHLPipelineMetadata[] =
+    pipelines.map((pipeline: any) => ({
       id: pipeline.id,
       name: pipeline.name,
-    }),
-  );
+    }));
 
-  // ----------------------------------
-  // STAGES
-  // ----------------------------------
+  logger.debug("Pipelines loaded", {
+    count: pipelineMetadata.length,
+  });
 
   const stageMetadata: GHLStageMetadata[] = [];
 
@@ -86,59 +81,52 @@ export async function resolveMetadata(
     );
   }
 
-  // ----------------------------------
-  // CUSTOM FIELDS
-  // ----------------------------------
+  logger.debug("Stages loaded", {
+    count: stageMetadata.length,
+  });
 
   let fieldMetadata: GHLFieldMetadata[] = [];
 
   try {
+    logger.debug("Loading custom fields");
+
     const fieldResponse = await getCustomFields(
       apiKey,
       locationId,
-    );
-
-    console.log(
-      "Custom Field Response:",
-      JSON.stringify(fieldResponse, null, 2),
     );
 
     if (Array.isArray((fieldResponse as any).customFields)) {
       fieldMetadata = (fieldResponse as any).customFields.map(
         (field: any) => ({
           id: field.id,
-          key: field.key,
+          key: field.fieldKey,
           name: field.name,
         }),
       );
+
+      logger.debug("Custom fields loaded", {
+        count: fieldMetadata.length,
+      });
     } else {
-      console.warn(
-        "Custom fields endpoint returned an unexpected response. Continuing without custom fields.",
+      logger.warn(
+        "Custom fields endpoint returned an unexpected response",
       );
     }
   } catch (error) {
-  console.error("============== CUSTOM FIELDS FAILED ==============");
-  console.error(error);
+    logger.error("Failed to load custom fields", {
+      error,
+    });
 
-  fieldMetadata = [];
+    fieldMetadata = [];
 
-  console.warn("Continuing discovery without custom fields.");
-}
-console.log("Reached end of resolveMetadata()");
+    logger.warn("Continuing discovery without custom fields");
+  }
 
-  console.log("========== RESOLVED METADATA ==========");
-
-  console.log(
-    JSON.stringify(
-      {
-        pipelines: pipelineMetadata,
-        stages: stageMetadata,
-        customFields: fieldMetadata,
-      },
-      null,
-      2,
-    ),
-  );
+  logger.info("GoHighLevel metadata resolved", {
+    pipelines: pipelineMetadata.length,
+    stages: stageMetadata.length,
+    customFields: fieldMetadata.length,
+  });
 
   return {
     pipelines: pipelineMetadata,

@@ -1,5 +1,7 @@
 import { HTTPException } from "hono/http-exception";
+
 import { ApiError } from "../core/errors/ApiError";
+import { logger } from "../core/logger";
 
 export function handleError(error: unknown): Response {
   if (error instanceof HTTPException) {
@@ -7,6 +9,12 @@ export function handleError(error: unknown): Response {
   }
 
   if (error instanceof ApiError) {
+    logger.error("API error", {
+      status: error.status,
+      message: error.message,
+      details: error.details,
+    });
+
     return Response.json(
       {
         success: false,
@@ -20,7 +28,10 @@ export function handleError(error: unknown): Response {
   }
 
   if (error instanceof Error) {
-    console.error(error);
+    logger.error("Unhandled application error", {
+      message: error.message,
+      stack: error.stack,
+    });
 
     return Response.json(
       {
@@ -33,7 +44,9 @@ export function handleError(error: unknown): Response {
     );
   }
 
-  console.error(error);
+  logger.error("Unknown application error", {
+    error,
+  });
 
   return Response.json(
     {

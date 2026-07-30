@@ -1,6 +1,7 @@
 import type { RequestContext } from "../../context";
 
 import { resolveCRMAdapter } from "../../core/crm";
+import { logger } from "../../core/logger";
 
 import { validateReservation } from "./validator";
 import { mapReservationToContact } from "./mapper";
@@ -18,23 +19,38 @@ export async function processReservation(
   context: RequestContext,
   payload: ReservationPayload
 ): Promise<ReservationResult> {
-  // 1. Validate Reservation
+  // Validate reservation
   const reservation = validateReservation(payload);
 
-  // 2. Resolve CRM Adapter
+  logger.info("Reservation sync started", {
+    tenantId: context.tenant.id,
+    reservationId: reservation.reservationId,
+    provider: reservation.provider,
+  });
+
+  // Resolve CRM adapter
   const crmAdapter = resolveCRMAdapter(context.tenant);
 
-  // 3. Reservation -> Contact
+  // Contact Sync
   let contact;
 
   try {
+    logger.debug("Upserting contact");
+
     contact = await crmAdapter.upsertContact(
       context,
       mapReservationToContact(reservation)
     );
+
+    logger.info("Contact upsert completed", {
+      contactId: contact.id,
+    });
   } catch (error) {
-    console.error("===== CONTACT SYNC FAILED =====");
-    console.error(error);
+    logger.error("Contact sync failed", {
+      tenantId: context.tenant.id,
+      reservationId: reservation.reservationId,
+      error,
+    });
 
     throw new ContactSyncFailedError(
       error instanceof Error
@@ -44,26 +60,42 @@ export async function processReservation(
   }
 
   if (!contact.id) {
+    logger.error("Contact sync returned empty contact ID", {
+      tenantId: context.tenant.id,
+      reservationId: reservation.reservationId,
+    });
+
     throw new ContactSyncFailedError();
   }
 
-  // 4. Reservation -> Opportunity (Canonical)
+  // Opportunity Mapping
+  logger.debug("Building opportunity");
+
   const opportunity = mapReservationToOpportunity(
     reservation,
     contact.id
   );
 
-  // 5. CRM Adapter handles pipeline/stage mapping internally
+  // Opportunity Sync
   let opportunityResult;
 
   try {
+    logger.debug("Upserting opportunity");
+
     opportunityResult = await crmAdapter.upsertOpportunity(
       context,
       opportunity
     );
+
+    logger.info("Opportunity upsert completed", {
+      opportunityId: opportunityResult.id,
+    });
   } catch (error) {
-    console.error("===== OPPORTUNITY SYNC FAILED =====");
-    console.error(error);
+    logger.error("Opportunity sync failed", {
+      tenantId: context.tenant.id,
+      reservationId: reservation.reservationId,
+      error,
+    });
 
     throw new OpportunitySyncFailedError(
       error instanceof Error
@@ -73,10 +105,21 @@ export async function processReservation(
   }
 
   if (!opportunityResult.id) {
+    logger.error("Opportunity sync returned empty opportunity ID", {
+      tenantId: context.tenant.id,
+      reservationId: reservation.reservationId,
+    });
+
     throw new OpportunitySyncFailedError();
   }
 
-  // 6. Return Result
+  logger.info("Reservation sync completed", {
+    tenantId: context.tenant.id,
+    reservationId: reservation.reservationId,
+    contactId: contact.id,
+    opportunityId: opportunityResult.id,
+  });
+
   return {
     success: true,
     message: "Reservation synced successfully.",

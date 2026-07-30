@@ -5,7 +5,8 @@ import type {
   AppVariables,
 } from "../../config/app";
 
-import { discoverIntegrationConfiguration } from "./discovery";
+import { logger } from "../../core/logger";
+import { discoverAndSaveConfiguration } from "./service";
 
 export async function discoverIntegrationController(
   c: Context<{
@@ -14,14 +15,35 @@ export async function discoverIntegrationController(
   }>
 ) {
   try {
+
+    logger.info("Integration discovery started");
+
     const context = c.get("context");
 
+    logger.debug("Integration context loaded", {
+      tenantId: context.tenant.id,
+      integrationId: context.tenant.integrations.crm.id,
+    });
+
     const configuration =
-      await discoverIntegrationConfiguration(context);
+      await discoverAndSaveConfiguration(
+        c.env.DB,
+        context,
+      );
+
+    logger.info("Integration discovery completed", {
+      workflow: configuration.workflow.key,
+      attributeMappings:
+        configuration.attributeMappings.length,
+    });
 
     return c.json(configuration);
+
   } catch (error) {
-    console.error(error);
+
+    logger.error("Integration discovery failed", {
+      error,
+    });
 
     return c.json(
       {
@@ -35,7 +57,7 @@ export async function discoverIntegrationController(
             ? error.stack
             : undefined,
       },
-      500
+      500,
     );
   }
 }

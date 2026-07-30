@@ -4,6 +4,7 @@ import type {
   AppVariables,
 } from "../../config/app";
 
+import { logger } from "../../core/logger";
 import { processReservation } from "./service";
 
 export async function processReservationController(
@@ -12,14 +13,35 @@ export async function processReservationController(
     Variables: AppVariables;
   }>
 ) {
-  const body = await c.req.json();
+  try {
+    logger.info("Reservation request received");
 
-  const context = c.get("context");
+    const body = await c.req.json();
 
-  const result = await processReservation(
-    context,
-    body
-  );
+    logger.debug("Reservation payload received", body);
 
-  return c.json(result);
+    const context = c.get("context");
+
+    logger.debug("Reservation context loaded", {
+      tenantId: context.tenant.id,
+      crmProvider: context.tenant.integrations.crm.provider,
+    });
+
+    const result = await processReservation(
+      context,
+      body
+    );
+
+    logger.info("Reservation processed successfully", result);
+
+    return c.json(result);
+
+  } catch (error) {
+
+    logger.error("Reservation controller failed", {
+      error,
+    });
+
+    throw error;
+  }
 }

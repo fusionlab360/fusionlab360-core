@@ -7,6 +7,6 @@ export const GHL = {
     OPPORTUNITIES: "/opportunities",
     OPPORTUNITIES_UPSERT: "/opportunities/upsert",
     PIPELINES: "/opportunities/pipelines",
-    CUSTOM_FIELDS: "/custom-fields",
+    CUSTOM_FIELDS: "/locations",
   },
 } as const;

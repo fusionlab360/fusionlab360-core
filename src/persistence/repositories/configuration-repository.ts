@@ -1,3 +1,5 @@
+import { logger } from "../../core/logger";
+
 import { BaseRepository } from "./base-repository";
 import type { IntegrationConfiguration } from "../models/integration-configuration";
 
@@ -19,17 +21,37 @@ export class ConfigurationRepository extends BaseRepository {
       .bind(integrationId)
       .first<{ settings: string | null }>();
 
+    logger.debug("Loading integration configuration", {
+      integrationId,
+      hasConfiguration: !!result?.settings,
+    });
+
     if (!result?.settings) {
       return null;
     }
 
-    return JSON.parse(result.settings) as IntegrationConfiguration;
+    const configuration = JSON.parse(
+      result.settings,
+    ) as IntegrationConfiguration;
+
+    logger.debug("Integration configuration loaded", {
+      integrationId,
+      workflow: configuration.workflow.key,
+      attributeMappings:
+        configuration.attributeMappings.length,
+    });
+
+    return configuration;
   }
 
   async save(
     integrationId: string,
     configuration: IntegrationConfiguration,
   ): Promise<void> {
+
+    logger.info("Persisting integration configuration", {
+      integrationId,
+    });
 
     await this.db
       .prepare(
@@ -44,5 +66,9 @@ export class ConfigurationRepository extends BaseRepository {
         integrationId,
       )
       .run();
+
+    logger.info("Integration configuration persisted", {
+      integrationId,
+    });
   }
 }

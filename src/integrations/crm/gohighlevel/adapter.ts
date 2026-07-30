@@ -2,6 +2,9 @@ import type { CRMAdapter } from "../../../core/crm";
 import type { Contact } from "../../../core/crm/models/contact";
 import type { RequestContext } from "../../../context";
 import type { ReservationOpportunity } from "../../../domain/reservation/opportunity";
+
+import { logger } from "../../../core/logger";
+
 import { getGHLCredentials } from "./credentials";
 
 import {
@@ -40,11 +43,17 @@ export const goHighLevelAdapter: CRMAdapter = {
   ) {
     const credentials = getGHLCredentials(context);
 
+    logger.debug("Creating GHL contact");
+
     const response = await createContact(
       credentials.apiKey,
       credentials.locationId,
       toGHLContact(payload),
     );
+
+    logger.info("GHL contact created", {
+      contactId: response.contact.id,
+    });
 
     return fromGHLContact(response.contact);
   },
@@ -54,6 +63,8 @@ export const goHighLevelAdapter: CRMAdapter = {
     id: string,
   ) {
     const credentials = getGHLCredentials(context);
+
+    logger.debug("Fetching GHL contact", { id });
 
     const response = await getContact(
       credentials.apiKey,
@@ -70,11 +81,15 @@ export const goHighLevelAdapter: CRMAdapter = {
   ) {
     const credentials = getGHLCredentials(context);
 
+    logger.debug("Updating GHL contact", { id });
+
     const response = await updateContact(
       credentials.apiKey,
       id,
       toGHLPartialContact(payload),
     );
+
+    logger.info("GHL contact updated", { id });
 
     return fromGHLContact(response.contact);
   },
@@ -87,27 +102,18 @@ export const goHighLevelAdapter: CRMAdapter = {
 
     const ghlPayload = toGHLContact(payload);
 
-    // Provider-specific validation
     if (!ghlPayload.email && !ghlPayload.phone) {
       throw new Error(
         "GoHighLevel requires either email or phone to create or update a contact."
       );
     }
 
-    console.log("===== GHL UPSERT CONTACT =====");
-    console.log(
-      JSON.stringify(
-        {
-          tenantId: context.tenant.id,
-          locationId: credentials.locationId,
-          email: ghlPayload.email,
-          phone: ghlPayload.phone,
-          payload: ghlPayload,
-        },
-        null,
-        2,
-      ),
-    );
+    logger.info("Upserting GHL contact", {
+      tenantId: context.tenant.id,
+      locationId: credentials.locationId,
+      email: ghlPayload.email,
+      phone: ghlPayload.phone,
+    });
 
     try {
       const response = await upsertContact(
@@ -116,14 +122,18 @@ export const goHighLevelAdapter: CRMAdapter = {
         ghlPayload,
       );
 
+      logger.info("GHL contact upsert completed", {
+        contactId: response.contact.id,
+      });
+
       return fromGHLContact(response.contact);
 
     } catch (error: any) {
 
-      console.error("===== GHL ERROR =====");
-      console.error(error);
+      logger.error("GHL contact upsert failed", {
+        error,
+      });
 
-      // Handle only the known GHL validation error
       if (
         error?.message?.includes(
           "Pass at least one of number, email"
@@ -134,7 +144,6 @@ export const goHighLevelAdapter: CRMAdapter = {
         );
       }
 
-      // Preserve every other error
       throw error;
     }
   },
@@ -145,6 +154,8 @@ export const goHighLevelAdapter: CRMAdapter = {
   ) {
     const credentials = getGHLCredentials(context);
 
+    logger.debug("Deleting GHL contact", { id });
+
     const response = await deleteContact(
       credentials.apiKey,
       id,
@@ -153,6 +164,8 @@ export const goHighLevelAdapter: CRMAdapter = {
     if (!response.succeeded) {
       throw new Error("Failed to delete contact.");
     }
+
+    logger.info("GHL contact deleted", { id });
   },
 
   async searchContact(
@@ -161,6 +174,10 @@ export const goHighLevelAdapter: CRMAdapter = {
   ) {
     const credentials = getGHLCredentials(context);
 
+    logger.debug("Searching GHL contact", {
+      email,
+    });
+
     const response = await searchContact(
       credentials.apiKey,
       credentials.locationId,
@@ -168,8 +185,16 @@ export const goHighLevelAdapter: CRMAdapter = {
     );
 
     if (!response.contact) {
+      logger.debug("GHL contact not found", {
+        email,
+      });
+
       return undefined;
     }
+
+    logger.info("GHL contact found", {
+      contactId: response.contact.id,
+    });
 
     return fromGHLContact(response.contact);
   },
@@ -182,13 +207,24 @@ export const goHighLevelAdapter: CRMAdapter = {
     context: RequestContext,
     payload: ReservationOpportunity,
   ) {
+    logger.info("Creating GHL opportunity");
+
     const credentials = getGHLCredentials(context);
+
+    const ghlPayload = mapReservationOpportunityToGHL(
+      context,
+      payload,
+    );
 
     const response = await createOpportunity(
       credentials.apiKey,
       credentials.locationId,
-      mapReservationOpportunityToGHL(context, payload),
+      ghlPayload,
     );
+
+    logger.info("GHL opportunity created", {
+      opportunityId: response.id,
+    });
 
     return {
       id: response.id ?? "",
@@ -207,13 +243,24 @@ export const goHighLevelAdapter: CRMAdapter = {
     context: RequestContext,
     payload: ReservationOpportunity,
   ) {
+    logger.info("Upserting GHL opportunity");
+
     const credentials = getGHLCredentials(context);
+
+    const ghlPayload = mapReservationOpportunityToGHL(
+      context,
+      payload,
+    );
 
     const response = await upsertOpportunity(
       credentials.apiKey,
       credentials.locationId,
-      mapReservationOpportunityToGHL(context, payload),
+      ghlPayload,
     );
+
+    logger.info("GHL opportunity upsert completed", {
+      opportunityId: response.opportunity.id,
+    });
 
     return {
       id: response.opportunity.id ?? "",

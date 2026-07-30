@@ -5,6 +5,8 @@ import type {
   AppVariables,
 } from "../../config/app";
 
+import { logger } from "../../core/logger";
+
 import {
   createContactService,
   getContactService,
@@ -17,16 +19,12 @@ export async function createContactController(
     Bindings: AppBindings;
     Variables: AppVariables;
   }>
-) 
-{
-  console.log("===== CREATE CONTACT CONTROLLER =====");
+) {
+  logger.info("Create contact request received");
 
   const body = await c.req.json();
 
-  console.log(
-    "Incoming Body:",
-    JSON.stringify(body, null, 2)
-  );
+  logger.debug("Create contact payload", body);
 
   const context = c.get("context");
 
@@ -34,6 +32,8 @@ export async function createContactController(
     context,
     body
   );
+
+  logger.info("Contact created successfully");
 
   return c.json(result);
 }
@@ -52,6 +52,10 @@ export async function getContactController(
       400
     );
   }
+
+  logger.debug("Get contact request", {
+    email,
+  });
 
   const context = c.get("context");
 
@@ -78,12 +82,20 @@ export async function updateContactController(
     );
   }
 
+  logger.debug("Update contact request", {
+    contactId: body.id,
+  });
+
   const context = c.get("context");
 
   const result = await updateContactService(
     context,
     body
   );
+
+  logger.info("Contact updated successfully", {
+    contactId: body.id,
+  });
 
   return c.json(result);
 }
@@ -106,6 +118,11 @@ export async function deleteContactController(
     );
   }
 
+  logger.debug("Delete contact request", {
+    contactId: body.id,
+    email: body.email,
+  });
+
   const context = c.get("context");
 
   const result = await deleteContactService(
@@ -115,6 +132,8 @@ export async function deleteContactController(
       email: body.email,
     }
   );
+
+  logger.info("Contact deleted successfully");
 
   return c.json(result);
 }

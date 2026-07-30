@@ -1,20 +1,27 @@
+import { logger } from "../../../core/logger";
+
 import { ghlFetch } from "./client";
 import { GHL } from "./config";
 import type { GHLCustomField } from "./types";
 
 export function getCustomFields(
   apiKey: string,
-  locationId: string
+  locationId: string,
 ) {
   const endpoint =
-    `${GHL.ENDPOINTS.CUSTOM_FIELDS}?locationId=${encodeURIComponent(locationId)}`;
+    `${GHL.ENDPOINTS.CUSTOM_FIELDS}/${encodeURIComponent(
+      locationId,
+    )}/customFields?model=opportunity`;
 
-  console.log("CUSTOM FIELDS ENDPOINT:", endpoint);
+  logger.debug("Fetching GoHighLevel custom fields", {
+    endpoint,
+    locationId,
+  });
 
   return ghlFetch<{
     customFields: GHLCustomField[];
   }>(
     apiKey,
-    endpoint
+    endpoint,
   );
 }
