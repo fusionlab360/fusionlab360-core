@@ -19,8 +19,26 @@ export async function processReservation(
   context: RequestContext,
   payload: ReservationPayload
 ): Promise<ReservationResult> {
-  // Validate reservation
-  const reservation = validateReservation(payload);
+
+  // ===========================================
+// DEBUG - Incoming Payload
+// ===========================================
+
+logger.info("========== INCOMING REQUEST ==========");
+
+logger.info("Payload Keys", {
+  keys: Object.keys(payload ?? {}),
+});
+
+logger.info("Payload JSON", {
+  json: JSON.stringify(payload, null, 2),
+});
+
+// ===========================================
+// Validate reservation
+// ===========================================
+
+const reservation = validateReservation(payload);
 
   logger.info("Reservation sync started", {
     tenantId: context.tenant.id,

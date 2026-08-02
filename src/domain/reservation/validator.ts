@@ -1,7 +1,7 @@
 import type { ReservationPayload } from "./types";
 
 export function validateReservation(
-  payload: ReservationPayload
+  payload: ReservationPayload,
 ): ReservationPayload {
 
   if (!payload.reservationId?.trim()) {
@@ -13,4 +13,5 @@ export function validateReservation(
   }
 
   return payload;
+
 }

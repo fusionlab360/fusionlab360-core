@@ -18,6 +18,11 @@ export async function processReservationController(
 
     const body = await c.req.json();
 
+console.log("================================");
+console.log("CONTROLLER RECEIVED BODY");
+console.log(JSON.stringify(body, null, 2));
+console.log("================================");
+
     logger.debug("Reservation payload received", body);
 
     const context = c.get("context");

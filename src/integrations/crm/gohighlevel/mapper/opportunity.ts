@@ -13,183 +13,262 @@ import {
 import { ReservationFields } from "../../../../canonical/reservation";
 import { resolveReservationStage } from "../../../../domain/reservation/stage";
 
+interface CustomFieldValue {
+  id: string;
+  field_value: string;
+}
+
+function addField(
+  fields: CustomFieldValue[],
+  mapping: ReturnType<typeof tryResolveFieldMapping>,
+  value: unknown,
+) {
+  if (!mapping) {
+    return;
+  }
+
+  fields.push({
+    id: mapping.providerFieldId,
+    field_value: value == null ? "" : String(value),
+  });
+}
+
 export function mapReservationOpportunityToGHL(
   context: RequestContext,
-  opportunity: ReservationOpportunity
+  opportunity: ReservationOpportunity,
 ): GHLOpportunity {
+
   logger.debug("Building GHL opportunity payload", {
     reservationId: opportunity.reservationId,
     contactId: opportunity.contactId,
     status: opportunity.status,
   });
 
-  const workflow = context.tenant.integrations.crm.configuration.workflow;
+  const workflow =
+    context.tenant.integrations.crm.configuration.workflow;
 
-  const stageKey = resolveReservationStage(opportunity);
+  const stageKey =
+    resolveReservationStage(opportunity);
 
-  const workflowState = workflow.states.find(
-    (state) => state.key === stageKey
-  );
+  const workflowState =
+    workflow.states.find(
+      (state) => state.key === stageKey,
+    );
 
   if (!workflowState) {
     throw new Error(
-      `Workflow state '${stageKey}' is not configured.`
+      `Workflow state '${stageKey}' is not configured.`,
     );
   }
 
-  //
-  // REQUIRED
-  //
+  const reservationId =
+    resolveFieldMapping(
+      context,
+      ReservationFields.ReservationId,
+    );
 
-  const reservationId = resolveFieldMapping(
-    context,
-    ReservationFields.ReservationId
+  const customFields: CustomFieldValue[] = [];
+
+  // ----------------------------------------
+  // Required
+  // ----------------------------------------
+
+  customFields.push({
+    id: reservationId.providerFieldId,
+    field_value: opportunity.reservationId ?? "",
+  });
+
+  // ----------------------------------------
+  // Reservation
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.OTAReferenceNumber,
+    ),
+    opportunity.otaReferenceNumber,
   );
 
-  //
-  // OPTIONAL
-  //
-
-  const provider = tryResolveFieldMapping(
-    context,
-    ReservationFields.Provider
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Provider,
+    ),
+    opportunity.provider,
   );
 
-  const roomType = tryResolveFieldMapping(
-    context,
-    ReservationFields.RoomType
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.BookingDate,
+    ),
+    opportunity.bookingDate,
   );
 
-  const roomNumber = tryResolveFieldMapping(
-    context,
-    ReservationFields.RoomNumber
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.CheckIn,
+    ),
+    opportunity.checkIn,
   );
 
-  const checkIn = tryResolveFieldMapping(
-    context,
-    ReservationFields.CheckIn
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.CheckOut,
+    ),
+    opportunity.checkOut,
   );
 
-  const checkOut = tryResolveFieldMapping(
-    context,
-    ReservationFields.CheckOut
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Nights,
+    ),
+    opportunity.nights,
   );
 
-  const adults = tryResolveFieldMapping(
-    context,
-    ReservationFields.Adults
+  // ----------------------------------------
+  // Occupancy
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Adults,
+    ),
+    opportunity.adults,
   );
 
-  const children = tryResolveFieldMapping(
-    context,
-    ReservationFields.Children
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Children,
+    ),
+    opportunity.children,
   );
 
-  const channelSource = tryResolveFieldMapping(
-    context,
-    ReservationFields.ChannelSource
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Infants,
+    ),
+    opportunity.infants,
   );
 
-  const paymentStatus = tryResolveFieldMapping(
-    context,
-    ReservationFields.PaymentStatus
+  // ----------------------------------------
+  // Room
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.RoomType,
+    ),
+    opportunity.roomType,
   );
 
-  const bookingDate = tryResolveFieldMapping(
-    context,
-    ReservationFields.BookingDate
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.RoomNumber,
+    ),
+    opportunity.roomNumber,
   );
 
-  const payload: GHLOpportunity = {
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.RatePlan,
+    ),
+    opportunity.ratePlan,
+  );
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.Package,
+    ),
+    opportunity.package,
+  );
+
+  // ----------------------------------------
+  // Channel
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.ChannelSource,
+    ),
+    opportunity.channelSource,
+  );
+
+  // ----------------------------------------
+  // Hotel
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.HotelId,
+    ),
+    opportunity.hotelId,
+  );
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.HotelName,
+    ),
+    opportunity.hotelName,
+  );
+
+  // ----------------------------------------
+  // Metadata
+  // ----------------------------------------
+
+  addField(
+    customFields,
+    tryResolveFieldMapping(
+      context,
+      ReservationFields.ExtractedAt,
+    ),
+    opportunity.extractedAt,
+  );
+
+  console.log("===== GHL OPPORTUNITY PAYLOAD =====");
+  console.log(
+    JSON.stringify(customFields, null, 2),
+  );
+
+  return {
     name: opportunity.guestName,
-
     contactId: opportunity.contactId,
-
     pipelineId: workflow.providerWorkflowId,
-
     pipelineStageId: workflowState.providerStateId,
-
-    status: mapOpportunityStatus(opportunity.status),
-
-    customFields: [
-      {
-        id: reservationId.providerFieldId,
-        field_value: opportunity.reservationId ?? "",
-      },
-
-      ...(provider
-        ? [{
-            id: provider.providerFieldId,
-            field_value: opportunity.provider ?? "",
-          }]
-        : []),
-
-      ...(roomType
-        ? [{
-            id: roomType.providerFieldId,
-            field_value: opportunity.roomType ?? "",
-          }]
-        : []),
-
-      ...(roomNumber
-        ? [{
-            id: roomNumber.providerFieldId,
-            field_value: opportunity.roomNumber ?? "",
-          }]
-        : []),
-
-      ...(checkIn
-        ? [{
-            id: checkIn.providerFieldId,
-            field_value: opportunity.checkIn ?? "",
-          }]
-        : []),
-
-      ...(checkOut
-        ? [{
-            id: checkOut.providerFieldId,
-            field_value: opportunity.checkOut ?? "",
-          }]
-        : []),
-
-      ...(adults
-        ? [{
-            id: adults.providerFieldId,
-            field_value: opportunity.adults?.toString() ?? "",
-          }]
-        : []),
-
-      ...(children
-        ? [{
-            id: children.providerFieldId,
-            field_value: opportunity.children?.toString() ?? "",
-          }]
-        : []),
-
-      ...(channelSource
-        ? [{
-            id: channelSource.providerFieldId,
-            field_value: opportunity.channelSource ?? "",
-          }]
-        : []),
-
-      ...(paymentStatus
-        ? [{
-            id: paymentStatus.providerFieldId,
-            field_value: opportunity.paymentStatus ?? "",
-          }]
-        : []),
-
-      ...(bookingDate
-        ? [{
-            id: bookingDate.providerFieldId,
-            field_value: opportunity.bookingDate ?? "",
-          }]
-        : []),
-    ],
+    status: mapOpportunityStatus(
+      opportunity.status,
+    ),
+    customFields,
   };
 
-  logger.debug("GHL opportunity payload created", payload);
-
-  return payload;
 }

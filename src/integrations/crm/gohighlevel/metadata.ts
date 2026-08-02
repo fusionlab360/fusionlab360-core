@@ -18,6 +18,7 @@ export interface GHLFieldMetadata {
   id: string;
   key?: string;
   name: string;
+  model: "contact" | "opportunity";
 }
 
 export interface GHLMetadata {
@@ -30,7 +31,6 @@ export async function resolveMetadata(
   apiKey: string,
   locationId: string,
 ): Promise<GHLMetadata> {
-
   logger.info("Resolving GoHighLevel metadata", {
     locationId,
   });
@@ -85,41 +85,76 @@ export async function resolveMetadata(
     count: stageMetadata.length,
   });
 
-  let fieldMetadata: GHLFieldMetadata[] = [];
+  const fieldMetadata: GHLFieldMetadata[] = [];
 
   try {
-    logger.debug("Loading custom fields");
+    logger.debug("Loading contact custom fields");
 
-    const fieldResponse = await getCustomFields(
-      apiKey,
-      locationId,
-    );
+    const contactFields = await getCustomFields(
+  apiKey,
+  locationId,
+  "contact",
+);
 
-    if (Array.isArray((fieldResponse as any).customFields)) {
-      fieldMetadata = (fieldResponse as any).customFields.map(
-        (field: any) => ({
+logger.info("Contact custom fields fetched", {
+  count: contactFields.customFields.length,
+});
+
+    if (Array.isArray(contactFields.customFields)) {
+      fieldMetadata.push(
+        ...contactFields.customFields.map((field: any) => ({
           id: field.id,
           key: field.fieldKey,
           name: field.name,
-        }),
-      );
-
-      logger.debug("Custom fields loaded", {
-        count: fieldMetadata.length,
-      });
-    } else {
-      logger.warn(
-        "Custom fields endpoint returned an unexpected response",
+          model: "contact" as const,
+        })),
       );
     }
+
+    logger.debug("Loading opportunity custom fields");
+
+    const opportunityFields = await getCustomFields(
+  apiKey,
+  locationId,
+  "opportunity",
+);
+
+logger.info("Opportunity custom fields fetched", {
+  count: opportunityFields.customFields.length,
+});
+
+    if (Array.isArray(opportunityFields.customFields)) {
+      fieldMetadata.push(
+        ...opportunityFields.customFields.map((field: any) => ({
+          id: field.id,
+          key: field.fieldKey,
+          name: field.name,
+          model: "opportunity" as const,
+        })),
+      );
+    }
+
+    logger.info("Custom fields loaded", {
+  count: fieldMetadata.length,
+});
+
+for (const field of fieldMetadata) {
+  logger.info("Discovered custom field", {
+    model: field.model,
+    name: field.name,
+    key: field.key,
+    id: field.id,
+  });
+}
+
   } catch (error) {
     logger.error("Failed to load custom fields", {
       error,
     });
 
-    fieldMetadata = [];
-
-    logger.warn("Continuing discovery without custom fields");
+    logger.warn(
+      "Continuing discovery without custom fields",
+    );
   }
 
   logger.info("GoHighLevel metadata resolved", {

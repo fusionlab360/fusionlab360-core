@@ -1,3 +1,21 @@
+
+/**
+ * GoHighLevel Contact Custom Field
+ */
+export interface GHLContactCustomField {
+
+  /**
+   * GHL Custom Field ID
+   */
+  id: string;
+
+  /**
+   * Value stored in the custom field
+   */
+  field_value: string;
+
+}
+
 /**
  * GoHighLevel Contact
  */
@@ -40,15 +58,56 @@ export interface GHLContact {
  */
 identityType?: string;
 
-  /**
+    /**
    * Nationality
    */
   nationality?: string;
 
   /**
+   * Street Address
+   */
+  address1?: string;
+
+  /**
+   * City
+   */
+  city?: string;
+
+  /**
+   * State
+   */
+  state?: string;
+
+  /**
+   * Country
+   */
+  country?: string;
+
+  /**
+   * Postal Code
+   */
+  postalCode?: string;
+
+  /**
    * Date of Birth
    */
-  dob?: string;
+  dateOfBirth?: string;
+
+  /**
+   * GoHighLevel Contact Custom Fields
+   */
+  customFields?: {
+    /**
+     * GHL Custom Field ID
+     */
+    id: string;
+
+    /**
+     * Value stored in the custom field
+     */
+    field_value: string;
+  }[];
+  
 }
 
 /**

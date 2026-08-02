@@ -1,11 +1,42 @@
 export const ContactFields = {
+
+  // ----------------------------------------
+  // Basic
+  // ----------------------------------------
+
   FirstName: "contact.firstName",
   LastName: "contact.lastName",
+
   Email: "contact.email",
   Phone: "contact.phone",
-  PassportNoIC: "contact.passportNoIC",
+
+  // ----------------------------------------
+  // Identity
+  // ----------------------------------------
+
+  Passport: "contact.passport",
+
+  IdentityNumber: "contact.identityNumber",
+  IdentityType: "contact.identityType",
+
   Nationality: "contact.nationality",
+
   DOB: "contact.dob",
+
+  // ----------------------------------------
+  // Address
+  // ----------------------------------------
+
+  Address: "contact.address",
+
+  City: "contact.city",
+
+  State: "contact.state",
+
+  Country: "contact.country",
+
+  PostalCode: "contact.postalCode",
+
 } as const;
 
 export type ContactField =

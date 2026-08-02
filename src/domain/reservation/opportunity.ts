@@ -7,55 +7,132 @@ export interface ReservationOpportunity {
   guestName: string;
 
   reservationId?: string;
+  otaReferenceNumber?: string;
 
   provider?: string;
 
   roomType?: string;
   roomNumber?: string;
+  ratePlan?: string;
+  package?: string;
 
   checkIn?: string;
   checkOut?: string;
 
   adults?: number;
   children?: number;
+  nights?: number;
+  infants?: number;
 
   channelSource?: string;
+  hotelId?: string;
+  hotelName?: string;
+
+  extractedAt?: string;
 
   bookingDate?: string;
 
-  paymentStatus?: string;
-
   status: string;
+
+  
 }
 
 export function mapReservationToOpportunity(
   reservation: ReservationPayload,
-  contactId: string
+  contactId: string,
 ): ReservationOpportunity {
+
   return {
     contactId,
 
-    guestName: `${reservation.firstName} ${reservation.lastName ?? ""}`.trim(),
+    // ----------------------------------
+    // Opportunity
+    // ----------------------------------
 
-    reservationId: reservation.reservationId,
+    guestName:
+      `${reservation.firstName} ${reservation.lastName ?? ""}`.trim(),
 
-    provider: reservation.provider,
+    status:
+      reservation.status ??
+      ReservationStatus.OPEN,
 
-    roomType: reservation.roomType,
-    roomNumber: reservation.roomNumber,
+    // ----------------------------------
+    // Reservation
+    // ----------------------------------
 
-    checkIn: reservation.checkIn,
-    checkOut: reservation.checkOut,
+    reservationId:
+      reservation.reservationId,
 
-    adults: reservation.adults,
-    children: reservation.children,
+    otaReferenceNumber:
+      reservation.otaReferenceNumber,
 
-    channelSource: reservation.channelSource,
+    provider:
+      reservation.provider,
 
-    bookingDate: reservation.bookingDate,
+    bookingDate:
+      reservation.bookingDate,
 
-    paymentStatus: reservation.paymentStatus,
+    extractedAt:
+      reservation.extractedAt,
 
-    status: reservation.status ?? ReservationStatus.OPEN,
+    // ----------------------------------
+    // Stay
+    // ----------------------------------
+
+    checkIn:
+      reservation.checkIn,
+
+    checkOut:
+      reservation.checkOut,
+
+    nights:
+      reservation.nights,
+
+    // ----------------------------------
+    // Occupancy
+    // ----------------------------------
+
+    adults:
+      reservation.adults,
+
+    children:
+      reservation.children,
+
+    infants:
+      reservation.infants,
+
+    // ----------------------------------
+    // Room
+    // ----------------------------------
+
+    roomType:
+      reservation.roomType,
+
+    roomNumber:
+      reservation.roomNumber,
+
+    ratePlan:
+      reservation.ratePlan,
+
+    package:
+      reservation.package,
+
+    // ----------------------------------
+    // Channel
+    // ----------------------------------
+
+    channelSource:
+      reservation.channelSource,
+
+    // ----------------------------------
+    // Hotel
+    // ----------------------------------
+
+    hotelId:
+      reservation.hotelId,
+
+    hotelName:
+      reservation.hotelName,
   };
+
 }

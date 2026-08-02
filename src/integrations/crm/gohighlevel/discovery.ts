@@ -56,16 +56,27 @@ export function discoverConfiguration(
   const attributeMappings = metadata.customFields.flatMap(
     (field): AttributeMapping[] => {
 
+      logger.info("DISCOVERED CUSTOM FIELD", {
+      model: field.model,
+      name: field.name,
+      key: field.key,
+});
+
       const canonicalKey =
         GHL_CANONICAL_FIELD_MAP[field.name] ??
         GHL_CANONICAL_FIELD_MAP[field.key ?? ""];
 
+        logger.info("FIELD MAPPING RESULT", {
+  model: field.model,
+  name: field.name,
+  canonicalKey,
+});
+
       if (!canonicalKey) {
-        logger.debug("Skipping unmapped custom field", {
-          id: field.id,
-          name: field.name,
-          key: field.key,
-        });
+        logger.info("CUSTOM FIELD DISCOVERED", {
+  name: field.name,
+  key: field.key,
+});
 
         return [];
       }
