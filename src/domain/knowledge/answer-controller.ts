@@ -113,7 +113,7 @@ export async function answerKnowledgeController(
 
       c.env.AI,
 
-      c.env.VECTORIZE,
+      c.env.VECTORIZE_V2,
 
       context.tenant.id,
 

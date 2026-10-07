@@ -1,0 +1,98 @@
+[1mdiff --git a/src/persistence/models/integration-credential.ts b/src/persistence/models/integration-credential.ts[m
+[1mindex f5d73aa..5939bce 100644[m
+[1m--- a/src/persistence/models/integration-credential.ts[m
+[1m+++ b/src/persistence/models/integration-credential.ts[m
+[36m@@ -1,13 +1,17 @@[m
+ export interface IntegrationCredential {[m
+   tenantId: string;[m
+[32m+[m
+   provider: string;[m
+ [m
+   apiKey: string;[m
+[32m+[m
+   locationId: string;[m
+ [m
+   refreshToken?: string | null;[m
+[32m+[m
+   metadata?: string | null;[m
+ [m
+   createdAt: string;[m
+[32m+[m
+   updatedAt: string;[m
+ }[m
+\ No newline at end of file[m
+[1mdiff --git a/src/tenants/services/tenant-mapper.ts b/src/tenants/services/tenant-mapper.ts[m
+[1mindex 194d6c5..f799930 100644[m
+[1m--- a/src/tenants/services/tenant-mapper.ts[m
+[1m+++ b/src/tenants/services/tenant-mapper.ts[m
+[36m@@ -16,9 +16,7 @@[m [mif (!crm) {[m
+   throw new Error("CRM integration not found.");[m
+ }[m
+ [m
+[31m-if (!crm.configuration) {[m
+[31m-  throw new Error("CRM integration configuration is missing.");[m
+[31m-}[m
+[32m+[m
+ [m
+   return {[m
+     id: tenant.id,[m
+[1mdiff --git a/src/tenants/types.ts b/src/tenants/types.ts[m
+[1mindex 44ea5e6..0cdbbec 100644[m
+[1m--- a/src/tenants/types.ts[m
+[1m+++ b/src/tenants/types.ts[m
+[36m@@ -13,6 +13,9 @@[m [mexport type PMSProvider =[m
+   | "rategain"[m
+   | "littlehotelier";[m
+ [m
+[32m+[m[32mexport type MessagingProvider =[m
+[32m+[m[32m  | "gohighlevel";[m
+[32m+[m
+ export interface Tenant {[m
+   id: string;[m
+ [m
+[36m@@ -31,11 +34,43 @@[m [mexport interface Tenant {[m
+     locationId: string;[m
+   };[m
+ [m
+[31m-  configuration: IntegrationConfiguration;[m
+[32m+[m[32m  configuration: IntegrationConfiguration | null;[m
+ };[m
+ [m
+     pms: {[m
+       provider: PMSProvider;[m
+     };[m
+   };[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport interface ResolveTenantOptions {[m
+[32m+[m[32m  requireConfiguration?: boolean;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport interface TenantIntegrationRuntime {[m
+[32m+[m[32m  id: string;[m
+[32m+[m
+[32m+[m[32m  provider: string;[m
+[32m+[m
+[32m+[m[32m  credentials: {[m
+[32m+[m[32m    apiKey: string;[m
+[32m+[m[32m    locationId: string;[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  configuration:[m
+[32m+[m[32m    IntegrationConfiguration | null;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport interface TenantIntegrationRuntime {[m
+[32m+[m[32m  id: string;[m
+[32m+[m
+[32m+[m[32m  provider: string;[m
+[32m+[m
+[32m+[m[32m  credentials: {[m
+[32m+[m[32m    apiKey: string;[m
+[32m+[m[32m    locationId: string;[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  configuration:[m
+[32m+[m[32m    IntegrationConfiguration | null;[m
+ }[m
+\ No newline at end of file[m

@@ -1,4 +1,4 @@
-import type {
+import type { 
   Context,
 } from "hono";
 
@@ -30,15 +30,15 @@ export async function indexKnowledgeController(
 
 
   const result =
-    await indexKnowledgeForTenant(
-      c.env.DB,
+  await indexKnowledgeForTenant(
+    c.env.DB,
 
-      c.env.AI,
+    c.env.AI,
 
-      c.env.VECTORIZE,
+    c.env.VECTORIZE_V2,
 
-      context.tenant.id,
-    );
+    context.tenant.id,
+  );
 
 
   return c.json({

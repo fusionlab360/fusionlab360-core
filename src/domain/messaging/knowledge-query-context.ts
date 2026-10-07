@@ -322,12 +322,7 @@ function isFollowUpPattern(
     /\bhow\s+about\s+this\b/i,
 
     /\bthe\s+same\b/i,
-
-    /\bthat\b/i,
-
-    /\bthis\b/i,
-
-    /\bit\b/i,
+    
   ].some(
     (
       pattern,

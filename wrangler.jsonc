@@ -36,10 +36,15 @@
 		}
 	},
 	"vectorize": [
-		{
-			"binding": "VECTORIZE",
-			"index_name": "fusionlab360-knowledge",
-			"remote": true
-		}
-	]
+  {
+    "binding": "VECTORIZE",
+    "index_name": "fusionlab360-knowledge",
+    "remote": true
+  },
+  {
+    "binding": "VECTORIZE_V2",
+    "index_name": "fusionlab360-knowledge-v2",
+    "remote": true
+  }
+]
 }

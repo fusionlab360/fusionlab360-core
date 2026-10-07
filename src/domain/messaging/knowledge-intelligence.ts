@@ -120,46 +120,50 @@ export type KnowledgeIntent =
 
 export interface KnowledgeQueryAnalysis {
 
+  /*
+   * Primary intent retained for backward compatibility.
+   */
   intent:
-
     KnowledgeIntent;
 
 
+  /*
+   * All detected intents for compound questions.
+   *
+   * Example:
+   *
+   * "What is the check-out time and is there any charge?"
+   *
+   * [
+   *   "hours",
+   *   "price"
+   * ]
+   */
+  intents:
+    KnowledgeIntent[];
+
 
   language:
-
     | "en"
-
     | "ms"
-
     | "zh"
-
     | "other";
 
 
-
   terms:
-
     string[];
-
 
 
   focusPhrases:
-
     string[];
 
 
-
   highRisk:
-
     boolean;
-
 
 
   requiresBusinessEvidence:
-
     boolean;
-
 }
 
 
@@ -709,68 +713,47 @@ const ATTRIBUTE_TERMS_BY_INTENT:
 
 
   services:
-
-    new Set<string>([
-
-      "service",
-
-      "services",
-
-      "servis",
-
-      "treatment",
-
-      "treatments",
-
-      "rawatan",
-
-      "offering",
-
-      "offerings",
-
-      "provide",
-
-      "provides",
-
-    ]),
+  new Set<string>([
+    "service",
+    "services",
+    "servis",
+    "treatment",
+    "treatments",
+    "rawatan",
+    "offering",
+    "offerings",
+    "offer",
+    "offers",
+    "provide",
+    "provides",
+    "provided",
+  ]),
 
 
 
   price:
 
     new Set<string>([
-
       "price",
-
       "prices",
-
       "cost",
-
       "costs",
-
       "fee",
-
       "fees",
-
       "rate",
-
       "rates",
-
       "pricing",
-
       "harga",
-
       "kos",
-
       "yuran",
-
       "bayaran",
-
       "rm",
-
       "myr",
-
+      "inr",
+      "rs",
       "ringgit",
+      "charge",
+      "charges",
 
     ]),
 
@@ -1331,57 +1314,49 @@ function extractTerms(
 
 
 function extractEntityTerms(
-
   value:
-
     string,
 
   intent:
-
-    KnowledgeIntent,
-
+    KnowledgeIntent |
+    KnowledgeIntent[],
 ):
-
   string[] {
 
-
-
   const terms =
-
     extractTerms(
-
       value,
-
     );
 
 
-
-  const attributes =
-
-    ATTRIBUTE_TERMS_BY_INTENT[
-
-      intent
-
-    ] ?? new Set<string>();
-
+  const intents =
+    Array.isArray(
+      intent,
+    )
+      ? intent
+      : [
+          intent,
+        ];
 
 
   return terms.filter(
-
     (
-
       term,
-
     ) =>
-
-      !attributes.has(
-
-        term,
-
+      !intents.some(
+        (
+          currentIntent,
+        ) =>
+          (
+            ATTRIBUTE_TERMS_BY_INTENT[
+              currentIntent
+            ] ??
+            new Set<string>()
+          ).has(
+            term,
+          ),
       ),
-
   );
-
 }
 
 
@@ -1922,25 +1897,15 @@ function detectIntent(
 
   if (
 
-    /\b(price|prices|cost|costs|fee|fees|rate|rates|pricing|harga|kos|yuran|bayaran)\b/i.test(
-
-      normalized,
-
-    ) ||
-
+    /\b(price|prices|cost|costs|fee|fees|rate|rates|pricing|harga|kos|yuran|bayaran|charge|charges)\b/i.test(
+  normalized,
+) ||
     /\bhow\s+much\b/i.test(
-
       normalized,
-
     )
-
   ) {
-
     return "price";
-
   }
-
-
 
   /*
    * Facilities / amenities
@@ -1960,7 +1925,6 @@ function detectIntent(
     return "facilities";
   }
 
-
   /*
    * Availability
    */
@@ -1968,45 +1932,26 @@ function detectIntent(
   if (
 
     /\b(available|availability|slot|slots|vacancy|ketersediaan|kosong)\b/i.test(
-
       normalized,
-
     )
-
   ) {
-
     return "availability";
-
   }
 
-
-
   /*
-
    * Booking
-
    */
 
   if (
-
     /\b(book|booking|bookings|reserve|reservation|reservations|appointment|appointments|tempah|tempahan|temujanji)\b/i.test(
-
       normalized,
-
     )
-
   ) {
-
     return "booking";
-
   }
 
-
-
   /*
-
    * Contact
-
    */
 
   if (
@@ -2059,7 +2004,14 @@ function detectIntent(
 
       normalized,
 
-    ) ||
+    )
+    ||
+
+    /\b(check[\s-]?out|check[\s-]?in)\s+time\b/i.test(
+      normalized,
+    )
+
+    ||
 
     /\bwhat\s+time\b/i.test(
 
@@ -2112,17 +2064,11 @@ function detectIntent(
    */
 
   if (
-
     /\b(service|services|servis|treatment|treatments|rawatan|what\s+do\s+you\s+offer|what\s+services)\b/i.test(
-
       normalized,
-
     )
-
   ) {
-
     return "services";
-
   }
 
 
@@ -2204,6 +2150,177 @@ function detectIntent(
 }
 
 
+/*
+ * --------------------------------------------------
+ * Multi-intent detection
+ * --------------------------------------------------
+ *
+ * Detect multiple business intents without introducing
+ * industry-specific rules.
+ *
+ * Examples:
+ *
+ * Hotel:
+ * "What is the check-out time and is there any charge?"
+ *
+ * -> hours
+ * -> price
+ *
+ * Clinic:
+ * "Do you provide physiotherapy and wound care?"
+ *
+ * -> services
+ *
+ * Hotel:
+ * "Do you have parking and airport transfer?"
+ *
+ * -> facilities
+ * -> services
+ *
+ * The existing detectIntent() remains responsible for
+ * primary single-intent classification.
+ * --------------------------------------------------
+ */
+
+function splitIntentClauses(
+  text:
+    string,
+):
+  string[] {
+
+  const normalized =
+    normalize(
+      text,
+    );
+
+
+  if (
+    !normalized
+  ) {
+
+    return [];
+  }
+
+
+  return normalized
+    .split(
+      /\s+(?:and|also|plus|as\s+well\s+as|&)\s+/i,
+    )
+    .map(
+      (
+        part,
+      ) =>
+        part.trim(),
+    )
+    .filter(
+      (
+        part,
+      ) =>
+        part.length >= 3,
+    );
+}
+
+
+function detectIntents(
+  text:
+    string,
+):
+  KnowledgeIntent[] {
+
+  const clauses =
+    splitIntentClauses(
+      text,
+    );
+
+
+  const detected: KnowledgeIntent[] = [];
+
+
+  /*
+   * Always preserve the original question as the first
+   * classification. This prevents a split clause from
+   * accidentally replacing the primary intent.
+   */
+
+  const primaryIntent =
+    detectIntent(
+      text,
+    );
+
+
+  if (
+    primaryIntent !==
+    "general"
+  ) {
+
+    detected.push(
+      primaryIntent,
+    );
+  }
+
+
+  /*
+   * Analyze individual clauses when the question appears
+   * to contain more than one topic.
+   */
+
+  if (
+    clauses.length >
+    1
+  ) {
+
+    for (
+      const clause of
+        clauses
+    ) {
+
+      const intent =
+        detectIntent(
+          clause,
+        );
+
+
+      if (
+        intent ===
+        "general"
+      ) {
+
+        continue;
+      }
+
+
+      if (
+        !detected.includes(
+          intent,
+        )
+      ) {
+
+        detected.push(
+          intent,
+        );
+      }
+    }
+  }
+
+
+  /*
+   * If nothing specific was detected, retain general.
+   */
+
+  if (
+    detected.length ===
+    0
+  ) {
+
+    return [
+      "general",
+    ];
+  }
+
+
+  return detected;
+}
+
 
 /*
 
@@ -2267,6 +2384,131 @@ function requiresBusinessEvidence(
 
 }
 
+/*
+ * --------------------------------------------------
+ * Business-fact question detection
+ * --------------------------------------------------
+ *
+ * Intent classification is deliberately conservative.
+ *
+ * A customer can still ask a business-specific question
+ * without using one of our explicit intent keywords.
+ *
+ * Examples:
+ *
+ * - "Do you provide wound dressing?"
+ * - "Do you offer physiotherapy?"
+ * - "Can you provide this service?"
+ * - "Is this available?"
+ * - "What is your WhatsApp number?"
+ * - "Can I get this at your clinic?"
+ *
+ * These questions must still require approved business
+ * knowledge even when detectIntent() returns "general".
+ * --------------------------------------------------
+ */
+
+function looksLikeBusinessFactQuestion(
+  question:
+    string,
+): boolean {
+
+  const normalized =
+    normalize(
+      question,
+    );
+
+
+  if (
+    !normalized
+  ) {
+
+    return false;
+  }
+
+
+  /*
+   * Explicit business-service / capability questions.
+   */
+
+  if (
+    /\bdo\s+you\s+(provide|offer|have|perform|carry)\b/i.test(
+      normalized,
+    )
+  ) {
+
+    return true;
+  }
+
+
+  if (
+    /\bcan\s+you\s+(provide|offer|perform|do)\b/i.test(
+      normalized,
+    )
+  ) {
+
+    return true;
+  }
+
+
+  if (
+    /\bis\s+.+\b(available|offered|provided)\b/i.test(
+      normalized,
+    )
+  ) {
+
+    return true;
+  }
+
+
+  /*
+   * Customer requests for business information.
+   *
+   * These are intentionally broad enough to capture
+   * natural wording without hardcoding individual
+   * services or branch names.
+   */
+
+  const businessFactPatterns = [
+
+    /\b(address|location|branch|branches)\b/i,
+
+    /\b(phone|mobile|telephone|whatsapp|email|contact)\b/i,
+
+    /\b(service|services|treatment|treatments|facility|facilities)\b/i,
+
+    /\b(doctor|doctors|staff|specialist|specialists)\b/i,
+
+    /\b(appointment|appointments|booking|bookings)\b/i,
+
+    /\b(price|prices|cost|costs|fee|fees|charge|charges|pricing)\b/i,
+
+    /\b(hours|opening|closing|operating)\b/i,
+
+    /\b(policy|policies|promotion|promotions|discount|discounts)\b/i,
+
+    /\b(available|availability)\b/i,
+
+  ];
+
+
+  if (
+    businessFactPatterns.some(
+      (
+        pattern,
+      ) =>
+        pattern.test(
+          normalized,
+        ),
+    )
+  ) {
+
+    return true;
+  }
+
+
+  return false;
+}
 
 
 /*
@@ -2351,57 +2593,50 @@ function getIntentTerms(
 
 
 
-    case "services":
+  case "services":
 
-      return [
-
-        "service",
-
-        "services",
-
-        "servis",
-
-        "treatment",
-
-        "treatments",
-
-        "rawatan",
-
-        "offering",
-
-        "offerings",
-
-      ];
+  return [
+    "service",
+    "services",
+    "servis",
+    "treatment",
+    "treatments",
+    "rawatan",
+    "offering",
+    "offerings",
+    "offer",
+    "offers",
+    "provide",
+    "provides",
+    "provided",
+  ];
 
 
 
-    case "price":
+ case "price":
 
-      return [
-
-        "price",
-
-        "prices",
-
-        "cost",
-
-        "fee",
-
-        "fees",
-
-        "rate",
-
-        "pricing",
-
-        "harga",
-
-        "rm",
-
-        "myr",
-
-        "ringgit",
-
-      ];
+  return [
+    "price",
+    "prices",
+    "cost",
+    "costs",
+    "fee",
+    "fees",
+    "rate",
+    "rates",
+    "pricing",
+    "harga",
+    "kos",
+    "yuran",
+    "bayaran",
+    "charge",
+    "charges",
+    "rm",
+    "myr",
+    "inr",
+    "rs",
+    "ringgit",
+  ];
 
 
 
@@ -3418,29 +3653,16 @@ function hasEntityPhraseMatch(
 function hasIntentEvidence(
 
   intent:
-
     KnowledgeIntent,
-
-
-
   content:
-
     string,
-
 ):
-
   boolean {
 
-
-
   const normalizedContent =
-
     normalize(
-
       content,
-
     );
-
 
 
   return getIntentTerms(
@@ -3469,7 +3691,25 @@ function hasIntentEvidence(
 
 }
 
+function hasAnyIntentEvidence(
+  intents:
+    KnowledgeIntent[],
 
+  content:
+    string,
+):
+  boolean {
+
+  return intents.some(
+    (
+      intent,
+    ) =>
+      hasIntentEvidence(
+        intent,
+        content,
+      ),
+  );
+}
 
 /*
 
@@ -3593,89 +3833,70 @@ function isGenericFallbackKnowledge(
 
  */
 
-
-
 export function analyzeKnowledgeQuery(
-
   question:
-
     string,
-
 ):
-
   KnowledgeQueryAnalysis {
 
+  const intents =
+    detectIntents(
+      question,
+    );
 
 
   const intent =
-
-    detectIntent(
-
-      question,
-
-    );
-
+    intents[0] ??
+    "general";
 
 
   return {
 
     intent,
 
-
+    intents,
 
     language:
-
       detectLanguage(
-
         question,
-
       ),
-
-
 
     terms:
-
       extractTerms(
-
         question,
-
       ),
-
-
 
     focusPhrases:
-
       extractFocusPhrases(
-
         question,
-
       ),
-
-
 
     highRisk:
-
-      isHighRiskIntent(
-
-        intent,
-
+      intents.some(
+        (
+          currentIntent,
+        ) =>
+          isHighRiskIntent(
+            currentIntent,
+          ),
       ),
 
-
-
     requiresBusinessEvidence:
+      intents.some(
+        (
+          currentIntent,
+        ) =>
+          requiresBusinessEvidence(
+            currentIntent,
+          ),
+      ) ||
 
-      requiresBusinessEvidence(
-
-        intent,
-
+      looksLikeBusinessFactQuestion(
+        question,
       ),
 
   };
-
 }
-
-
 
 /*
 
@@ -3790,13 +4011,14 @@ export function rerankKnowledge(
     const retrievalEntityTerms =
       extractEntityTerms(
         question,
-        retrievalAnalysis.intent,
+        retrievalAnalysis.intents,
       );
+
 
     const currentEntityTerms =
       extractEntityTerms(
         analysisQuestion,
-        analysis.intent,
+        analysis.intents,
       );
 
     const entityTerms =
@@ -3883,150 +4105,77 @@ export function rerankKnowledge(
 
           );
 
-
-
         const entityTitleOverlap =
-
           calculateEntityOverlap(
-
             entityTerms,
-
             titleTerms,
-
           );
-
-
 
         const entityContentOverlap =
-
           calculateEntityOverlap(
-
             entityTerms,
-
             contentTerms,
-
           );
-
-
 
         const exactPhraseMatch =
-
           hasExactPhrase(
-
             question,
-
             item.content,
-
           );
-
-
 
         const intentMatch =
-
-          hasIntentEvidence(
-
-            analysis.intent,
-
+          hasAnyIntentEvidence(
+            analysis.intents,
             item.content,
-
           );
-
-
 
         const matchedFocusPhrases =
-
           analysis.focusPhrases.filter(
-
             (
-
               phrase,
-
             ) => {
 
-
-
-              const normalizedPhrase =
-
+        const normalizedPhrase =
                 normalize(
-
                   phrase,
-
                 );
 
-
-
-              const normalizedTitle =
-
+        const normalizedTitle =
                 normalize(
-
                   item.title,
-
                 );
 
-
-
-              const normalizedContent =
-
+        const normalizedContent =
                 normalize(
-
                   item.content,
-
                 );
-
-
 
               return (
-
                 normalizedTitle.includes(
-
                   normalizedPhrase,
-
                 ) ||
-
                 normalizedContent.includes(
-
                   normalizedPhrase,
-
                 )
-
               );
-
             },
-
           );
-
-
 
         const focusPhraseMatch =
-
           matchedFocusPhrases.length >
-
           0;
 
-
-
         const entityPhraseMatch =
-
           hasEntityPhraseMatch(
-
             entityTerms,
-
             item.title,
-
             item.content,
-
           );
 
-
-
         const entityTermMatches = [
-
           ...new Set([
-
             ...entityTitleOverlap.matched,
-
             ...entityContentOverlap.matched,
-
           ]),
 
         ];
@@ -4102,28 +4251,6 @@ export function rerankKnowledge(
           titleOverlap.ratio *
 
           0.10;
-
-
-
-        /*
-
-         * Entity title match.
-
-         *
-
-         * Stronger than ordinary title matching.
-
-         */
-
-        if (
-            entityContentOverlap.ratio > 0
-          ) {
-            rerankScore +=
-              entityContentOverlap.ratio *
-              ENTITY_CONTENT_BOOST;
-          }
-
-
 
         /*
 
@@ -4581,7 +4708,129 @@ function hasStrongEntityCandidate(
 
 }
 
+/*
+ * --------------------------------------------------
+ * Requested intent coverage
+ * --------------------------------------------------
+ *
+ * Determine whether a knowledge item provides evidence
+ * for a specific requested intent.
+ *
+ * This is intentionally provider-neutral and
+ * industry-neutral.
+ * --------------------------------------------------
+ */
 
+function supportsRequestedIntent(
+  item:
+    RankedKnowledgeItem,
+
+  intent:
+    KnowledgeIntent,
+):
+  boolean {
+
+  if (
+    intent ===
+    "general"
+  ) {
+
+    return false;
+  }
+
+  return (
+  hasIntentEvidence(
+    intent,
+    item.content,
+  ) ||
+
+  hasIntentEvidence(
+    intent,
+    item.title,
+  )
+);
+}
+
+/*
+ * --------------------------------------------------
+ * Selected knowledge intent coverage
+ * --------------------------------------------------
+ *
+ * Determines which requested business intents are
+ * supported by the currently selected knowledge.
+ *
+ * This remains generic across:
+ *
+ * - clinic
+ * - hotel
+ * - future industries
+ *
+ * No business-specific terminology is used here.
+ * --------------------------------------------------
+ */
+
+function getKnowledgeIntentCoverage(
+  intents:
+    KnowledgeIntent[],
+
+  selected:
+    RankedKnowledgeItem[],
+):
+  {
+    covered:
+      KnowledgeIntent[];
+
+    missing:
+      KnowledgeIntent[];
+  } {
+
+  const requestedIntents =
+    [
+      ...new Set(
+        intents.filter(
+          (
+            intent,
+          ) =>
+            intent !==
+            "general",
+        ),
+      ),
+    ];
+
+
+  const covered =
+    requestedIntents.filter(
+      (
+        intent,
+      ) =>
+        selected.some(
+          (
+            item,
+          ) =>
+            supportsRequestedIntent(
+              item,
+              intent,
+            ),
+        ),
+    );
+
+
+  const missing =
+    requestedIntents.filter(
+      (
+        intent,
+      ) =>
+        !covered.includes(
+          intent,
+        ),
+    );
+
+
+  return {
+    covered,
+    missing,
+  };
+}
 
 /*
 
@@ -4669,7 +4918,16 @@ export function selectKnowledgeForAnswer(
 
       boolean;
 
-  } {
+    intentCoverage: {
+      covered:
+        KnowledgeIntent[];
+
+      missing:
+        KnowledgeIntent[];
+    };
+
+  } 
+  {
 
 
 
@@ -5059,7 +5317,7 @@ export function selectKnowledgeForAnswer(
 
           item.score >=
 
-            0.58 &&
+            0.55 &&
 
 
 
@@ -5106,38 +5364,22 @@ export function selectKnowledgeForAnswer(
 
 
         if (
+            analysis.intents.includes(
+              "facilities",
+            ) &&
 
-          analysis.intent ===
+            item.score >=
+              0.55 &&
 
-            "facilities" &&
+            item.rerankScore >=
+              0.68 &&
 
-
-
-          item.score >=
-
-            0.55 &&
-
-
-
-          item.rerankScore >=
-
-            0.68 &&
-
-
-
-          hasSupportingEvidence(
-
-            item,
-
-          )
-
-        ) {
-
-
-
-          return true;
-
-        }
+            hasSupportingEvidence(
+              item,
+            )
+          ) {
+            return true;
+          }
 
 
 
@@ -5299,44 +5541,142 @@ export function selectKnowledgeForAnswer(
 
    */
 
-
-
   const sourceCounts =
-
     new Map<
-
       string,
-
       number
-
     >();
 
-
-
   const selected:
-
     RankedKnowledgeItem[] =
-
     [];
 
+/*
+ * --------------------------------------------------
+ * Intent coverage pass
+ * --------------------------------------------------
+ *
+ * For a compound question, make sure we attempt to
+ * include at least one approved knowledge item for
+ * every detected business intent before filling the
+ * remaining context slots.
+ *
+ * Example:
+ *
+ * "What is the check-out time and is there any charge?"
+ *
+ * intents:
+ *   hours
+ *   price
+ *
+ * The selection pass should attempt to include:
+ *
+ *   one hours source
+ *   one price source
+ *
+ * before adding additional context.
+ * --------------------------------------------------
+ */
 
+for (
+  const requestedIntent of
+    analysis.intents
+) {
 
-  for (
-
-    const item of
-
-      eligible
-
+  if (
+    requestedIntent ===
+    "general"
   ) {
+
+    continue;
+  }
+
+  if (
+    selected.length >=
+    MAX_SELECTED_RESULTS
+  ) {
+
+    break;
+  }
+
+
+  const candidate =
+    eligible.find(
+      (
+        item,
+      ) =>
+        !selected.includes(
+          item,
+        ) &&
+
+        supportsRequestedIntent(
+          item,
+          requestedIntent,
+        ),
+    );
+
+
+  if (
+    !candidate
+  ) {
+    continue;
+  }
+
+
+  const sourceKey =
+    [
+      candidate.sourceType
+        ?.trim()
+        .toLowerCase() ??
+        "",
+
+      candidate.title
+        ?.trim()
+        .toLowerCase() ??
+        "",
+    ].join(
+      "|",
+    );
+
+
+  const currentCount =
+    sourceCounts.get(
+      sourceKey,
+    ) ??
+    0;
+
+
+  if (
+    currentCount >=
+    MAX_RESULTS_PER_SOURCE
+  ) {
+
+    continue;
+  }
+
+
+  selected.push(
+    candidate,
+  );
+
+
+  sourceCounts.set(
+    sourceKey,
+    currentCount + 1,
+  );
+}
+
+
+for (
+  const item of
+    eligible
+) {
 
 
 
     if (
-
       selected.length >=
-
       MAX_SELECTED_RESULTS
-
     ) {
 
 
@@ -5348,31 +5688,19 @@ export function selectKnowledgeForAnswer(
 
 
     const sourceKey =
-
       [
-
         item.sourceType
-
           ?.trim()
-
           .toLowerCase() ??
-
           "",
 
-
-
         item.title
-
           ?.trim()
-
           .toLowerCase() ??
-
           "",
 
       ].join(
-
         "|",
-
       );
 
 
@@ -5516,12 +5844,36 @@ export function selectKnowledgeForAnswer(
     }
   }
 
-  return {
-    analysis,
-    ranked,
+  const intentCoverage =
+  getKnowledgeIntentCoverage(
+    analysis.intents,
     selected,
-    answerable:
-      selected.length >
-      0,
-  };
+      );
+
+  console.log(
+  "AI KNOWLEDGE INTENT COVERAGE",
+  {
+    intents:
+      analysis.intents,
+
+    covered:
+      intentCoverage.covered,
+
+    missing:
+      intentCoverage.missing,
+
+    selectedCount:
+      selected.length,
+  },
+);
+
+      return {
+        analysis,
+        ranked,
+        selected,
+        answerable:
+          selected.length >
+          0,
+        intentCoverage,
+      };
 }

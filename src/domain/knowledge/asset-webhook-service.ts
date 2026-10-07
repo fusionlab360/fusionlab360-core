@@ -228,6 +228,12 @@ export async function processGHLKnowledgeAssetWebhook(
   db:
     D1Database,
 
+  ai:
+    Ai,
+
+  vectorize:
+    Vectorize,
+
   payload:
     GHLKnowledgeAssetWebhookPayload,
 
@@ -498,9 +504,26 @@ export async function processGHLKnowledgeAssetWebhook(
     const isDeleted =
       payload.deleted ===
         true ||
-
-      action ===
+        action ===
         "deleted";
+
+    const documentRepository =
+  new KnowledgeDocumentRepository(
+    db,
+  );
+
+
+    const previousDocument =
+      await documentRepository
+        .findByTenantProviderDocument(
+          tenant.id,
+
+          "gohighlevel",
+
+          "rich_text",
+
+          documentId,
+        );
 
 
     if (
@@ -554,6 +577,59 @@ export async function processGHLKnowledgeAssetWebhook(
             },
 
           );
+
+        const currentDocument =
+          await documentRepository
+            .findByTenantProviderDocument(
+              tenant.id,
+
+              "gohighlevel",
+
+              "rich_text",
+
+              documentId,
+            );
+
+
+        const index =
+          await reconcileKnowledgeDocumentIndex(
+            db,
+
+            ai,
+
+            vectorize,
+
+            tenant.id,
+
+            previousDocument,
+
+            currentDocument,
+          );
+
+
+        console.log(
+          "GHL Rich Text vector reconciliation",
+          {
+            tenantId:
+              tenant.id,
+
+            knowledgeBaseId,
+
+            documentId,
+
+            action:
+              index.action,
+
+            chunksIndexed:
+              index.chunksIndexed,
+
+            vectorsDeleted:
+              index.vectorsDeleted,
+
+            vectorizeMutations:
+              index.vectorizeMutations,
+          },
+        );
 
 
         console.log(
@@ -660,6 +736,59 @@ export async function processGHLKnowledgeAssetWebhook(
 
             syncedAt,
 
+          );
+
+          const currentDocument =
+            await documentRepository
+              .findByTenantProviderDocument(
+                tenant.id,
+
+                "gohighlevel",
+
+                "rich_text",
+
+                documentId,
+              );
+
+
+          const index =
+            await reconcileKnowledgeDocumentIndex(
+              db,
+
+              ai,
+
+              vectorize,
+
+              tenant.id,
+
+              previousDocument,
+
+              currentDocument,
+            );
+
+
+          console.log(
+            "GHL Rich Text deletion vector reconciliation",
+            {
+              tenantId:
+                tenant.id,
+
+              knowledgeBaseId,
+
+              documentId,
+
+              action:
+                index.action,
+
+              vectorsDeleted:
+                index.vectorsDeleted,
+
+              vectorizeMutations:
+                index.vectorizeMutations,
+
+              deletionMode:
+                "local_fallback",
+            },
           );
 
 
@@ -798,6 +927,59 @@ export async function processGHLKnowledgeAssetWebhook(
             },
 
           );
+
+        const currentDocument =
+          await documentRepository
+            .findByTenantProviderDocument(
+              tenant.id,
+
+              "gohighlevel",
+
+              "rich_text",
+
+              documentId,
+            );
+
+
+        const index =
+          await reconcileKnowledgeDocumentIndex(
+            db,
+
+            ai,
+
+            vectorize,
+
+            tenant.id,
+
+            previousDocument,
+
+            currentDocument,
+          );
+
+
+        console.log(
+          "GHL Rich Text vector reconciliation",
+          {
+            tenantId:
+              tenant.id,
+
+            knowledgeBaseId,
+
+            documentId,
+
+            action:
+              index.action,
+
+            chunksIndexed:
+              index.chunksIndexed,
+
+            vectorsDeleted:
+              index.vectorsDeleted,
+
+            vectorizeMutations:
+              index.vectorizeMutations,
+          },
+        );
 
 
         console.log(

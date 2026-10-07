@@ -422,7 +422,7 @@ export async function ghlInboundMessageController(
 
         c.env.AI,
 
-        c.env.VECTORIZE,
+        c.env.VECTORIZE_V2,
 
         payload as
           GHLKnowledgeFaqWebhookPayload,
@@ -1083,18 +1083,18 @@ export async function ghlInboundMessageController(
 
       processGHLKnowledgeBaseDeleteWebhook(
 
-        c.env.DB,
+          c.env.DB,
 
-        c.env.AI,
+          c.env.AI,
 
-        c.env.VECTORIZE,
+          c.env.VECTORIZE_V2,
 
-        payload as
-          GHLKnowledgeBaseDeleteWebhookPayload,
+          payload as
+            GHLKnowledgeBaseDeleteWebhookPayload,
 
-        integrationRuntime,
+          integrationRuntime,
 
-      ).then(
+        ).then(
 
         (
           result,
@@ -1183,6 +1183,10 @@ export async function ghlInboundMessageController(
       processGHLKnowledgeAssetWebhook(
 
         c.env.DB,
+
+        c.env.AI,
+
+        c.env.VECTORIZE_V2,
 
         payload as
           GHLKnowledgeAssetWebhookPayload,
@@ -1473,7 +1477,7 @@ export async function ghlInboundMessageController(
         const result =
           await searchKnowledgeForTenant(
             c.env.AI,
-            c.env.VECTORIZE,
+            c.env.VECTORIZE_V2,
             context.tenant.id,
             query,
             20,

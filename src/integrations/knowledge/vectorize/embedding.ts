@@ -13,7 +13,11 @@ interface WorkersAIEmbeddingResponse {
 
 
 const EMBEDDING_MODEL =
-  "@cf/baai/bge-base-en-v1.5";
+  "@cf/baai/bge-m3";
+
+
+const EMBEDDING_DIMENSIONS =
+  1024;
 
 
 export async function createKnowledgeEmbeddings(
@@ -90,11 +94,11 @@ export async function createKnowledgeEmbeddings(
 
     if (
       vector.length !==
-      768
+      EMBEDDING_DIMENSIONS
     ) {
 
       throw new Error(
-        `Workers AI returned an embedding with dimension ${vector.length}; expected 768.`,
+        `Workers AI returned an embedding with dimension ${vector.length}; expected ${EMBEDDING_DIMENSIONS}.`,
       );
     }
   }

@@ -18,6 +18,9 @@ export type AppBindings = {
     D1Database;
 
   VECTORIZE:
+  Vectorize;
+
+  VECTORIZE_V2:
     Vectorize;
 
   JWT_SECRET:
