@@ -25,6 +25,15 @@ export const GHL_CANONICAL_FIELD_MAP: Record<string, string> = {
 
   "DOB": ContactFields.DOB,
 
+  "Last Visited Date": ContactFields.LastVisitedDate,
+
+  "Notes": ContactFields.Notes,
+
+  "Review Date": ContactFields.ReviewDate,
+  "Review Type": ContactFields.ReviewType,
+
+  "Branch": ContactFields.BranchName,
+
   // -------------------------------------------------
   // RESERVATION
   // -------------------------------------------------

@@ -2,17 +2,27 @@
 /**
  * GoHighLevel Contact Custom Field
  */
-export interface GHLContactCustomField {
+export interface GHLOpportunityCustomField {
 
   /**
    * GHL Custom Field ID
    */
-  id: string;
+  id:
+    string;
+
 
   /**
-   * Value stored in the custom field
+   * Legacy/internal response representation.
    */
-  field_value: string;
+  field_value:
+  string;
+
+
+  /**
+   * Current GHL opportunity response representation.
+   */
+  fieldValue?:
+    unknown;
 
 }
 
@@ -105,8 +115,9 @@ identityType?: string;
     /**
      * Value stored in the custom field
      */
-    field_value: string;
-  }[];
+   field_value?: string;
+  value?: string;
+}[];
   
 }
 

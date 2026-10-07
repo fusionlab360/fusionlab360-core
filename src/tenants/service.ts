@@ -24,3 +24,41 @@ export async function resolveTenant(
 
   return tenant;
 }
+
+/**
+ * Resolve a Fusionlab360 tenant from an external integration
+ * provider and its provider-specific location identifier.
+ *
+ * Example:
+ *
+ * provider   = "gohighlevel"
+ * locationId = "xxxxxxxxxxxxxxxx"
+ *
+ * The location is mapped through integration_credentials
+ * rather than being hard-coded in application logic.
+ */
+export async function resolveTenantByProviderLocation(
+  db: D1Database,
+  provider: string,
+  locationId: string,
+): Promise<Tenant> {
+  const credentialRepository =
+    new CredentialRepository(db);
+
+  const tenantId =
+    await credentialRepository.findTenantIdByProviderAndLocation(
+      provider,
+      locationId,
+    );
+
+  if (!tenantId) {
+    throw new Error(
+      `No tenant found for provider=${provider} location=${locationId}`,
+    );
+  }
+
+  return resolveTenant(
+    db,
+    tenantId,
+  );
+}

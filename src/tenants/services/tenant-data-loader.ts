@@ -5,7 +5,7 @@ import { ConfigurationRepository } from "../../persistence/repositories/configur
 import { mapTenant } from "./tenant-mapper";
 import type { Tenant } from "../types";
 import type { IntegrationAggregate } from "../models/integration-aggregate";
-
+import type { ResolveTenantOptions } from "../types";
 
 export class TenantDataLoader {
   constructor(
@@ -15,7 +15,10 @@ export class TenantDataLoader {
     private readonly configurationRepository: ConfigurationRepository,
   ) {}
 
-  async load(tenantId: string): Promise<Tenant> {
+  async load(
+  tenantId: string,
+  options: ResolveTenantOptions = {},
+): Promise<Tenant> {
     const tenant = await this.tenantRepository.findById(tenantId);
 
     if (!tenant) {

@@ -1,0 +1,3 @@
+export {
+  ABSHotelAdapter,
+} from "./adapter";

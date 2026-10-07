@@ -7,6 +7,9 @@ import type {
 import { logger } from "../../core/logger";
 import { processReservation } from "./service";
 
+
+
+
 export async function processReservationController(
   c: Context<{
     Bindings: AppBindings;
@@ -32,10 +35,12 @@ console.log("================================");
       crmProvider: context.tenant.integrations.crm.provider,
     });
 
-    const result = await processReservation(
-      context,
-      body
-    );
+   const result =
+  await processReservation(
+    c.env.DB,
+    context,
+    body,
+  );
 
     logger.info("Reservation processed successfully", result);
 

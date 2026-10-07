@@ -7,3 +7,4 @@ export * from "./cache";
 export * from "./adapter";
 export * from "./discovery";
 export * from "./service";
+export * from "./onboarding";

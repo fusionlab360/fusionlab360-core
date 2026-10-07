@@ -3,7 +3,12 @@ import type { RequestContext } from "../../context";
 import { resolveCRMAdapter } from "../../core/crm";
 
 import type { CreateContactRequest } from "./schemas";
+
+import { parseContactEvents } from "./event-parser";
+
 import type { Contact } from "../../core/crm/models/contact";
+
+import type { ContactEvent } from "./event";
 
 /**
  * Create or update a contact.
@@ -15,10 +20,67 @@ export async function createContactService(
 ) {
   const crm = resolveCRMAdapter(context.tenant);
 
-  return crm.upsertContact(
-    context,
-    payload as Contact
+ console.log(
+  "CONTACT NOTES RAW",
+  {
+    notes:
+      payload.notes,
+  },
+);
+
+const events =
+  parseContactEvents(
+    payload.notes,
   );
+
+console.log(
+  "CONTACT EVENTS PARSED",
+  events,
+);
+
+  const contact: Contact = {
+    ...payload,
+    events,
+  };
+
+    const savedContact =
+    await crm.upsertContact(
+      context,
+      contact,
+    );
+
+    console.log(
+  "CONTACT EVENT SYNC CALL",
+  {
+    contactId:
+      savedContact.id,
+
+    eventCount:
+      events.length,
+
+    events,
+  },
+);
+
+    if (savedContact.id) {
+  try {
+    await crm.syncContactEvents(
+      context,
+      {
+        contactId: savedContact.id,
+        events,
+      },
+    );
+  } 
+  catch (error) {
+    console.error(
+      "Contact event synchronization failed:",
+      error,
+    );
+  }
+}
+
+  return savedContact;
 }
 
 /**
@@ -58,12 +120,61 @@ export async function updateContactService(
     throw new Error("Contact ID is required.");
   }
 
-  return crm.updateContact(
-    context,
-    payload.id,
-    payload as Partial<Contact>
-  );
+  const contactUpdate: Partial<Contact> = {
+    ...payload,
+  };
+
+  let events: ContactEvent[] | undefined;
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      payload,
+      "notes",
+    )
+  ) {
+    events = parseContactEvents(
+      payload.notes,
+    );
+
+    console.log(
+  "CONTACT EVENTS PARSED ON UPDATE",
+  JSON.stringify(
+    events,
+    null,
+    2,
+  ),
+);
+
+    contactUpdate.events = events;
+  }
+
+  const updatedContact =
+    await crm.updateContact(
+      context,
+      payload.id,
+      contactUpdate,
+    );
+
+  if (events !== undefined && updatedContact.id) {
+  try {
+    await crm.syncContactEvents(
+      context,
+      {
+        contactId: updatedContact.id,
+        events,
+      },
+    );
+  } catch (error) {
+    console.error(
+      "Contact event synchronization failed:",
+      error,
+    );
+  }
 }
+
+  return updatedContact;
+}
+
 
 /**
  * Delete an existing contact.

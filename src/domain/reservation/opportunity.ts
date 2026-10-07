@@ -6,7 +6,7 @@ export interface ReservationOpportunity {
 
   guestName: string;
 
-  reservationId?: string;
+  reservationId: string;
   otaReferenceNumber?: string;
 
   provider?: string;

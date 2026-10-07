@@ -1,15 +1,47 @@
-import { ghlFetch } from "../client";
-import { GHL } from "../config";
+import {
+  ghlFetchAuthenticated,
+} from "../client";
+
+import {
+  GHL,
+} from "../config";
+
+import type {
+  RequestContext,
+} from "../../../../context";
+
 
 export function deleteContact(
-  apiKey: string,
-  contactId: string
+  context:
+    RequestContext,
+
+  contactId:
+    string,
 ) {
-  return ghlFetch<{ succeeded: boolean }>(
-    apiKey,
-    `${GHL.ENDPOINTS.CONTACTS}/${contactId}`,
+
+  if (
+    !contactId.trim()
+  ) {
+
+    throw new Error(
+      "Contact ID is required.",
+    );
+  }
+
+
+  return ghlFetchAuthenticated<{
+    succeeded:
+      boolean;
+  }>(
+    context,
+
+    `${GHL.ENDPOINTS.CONTACTS}/${encodeURIComponent(
+      contactId,
+    )}`,
+
     {
-      method: "DELETE",
-    }
+      method:
+        "DELETE",
+    },
   );
 }

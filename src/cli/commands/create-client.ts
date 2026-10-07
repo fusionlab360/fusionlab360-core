@@ -1,10 +1,10 @@
 import { prompt, closePrompt } from "../utils/prompt";
 import { title, success } from "../utils/output";
+
+import { createClient } from "../services/client-service";
+
 import { executeSql } from "../utils/wrangler";
 
-import { generateApiKey } from "../../clients/generator";
-import { hashApiKey } from "../../core/security/api-key";
-import { buildInsertClientSql } from "../sql/insert-client";
 
 export async function createClientCommand() {
   title("FusionLab360 Client Creator");
@@ -13,25 +13,21 @@ export async function createClientCommand() {
   const clientId = await prompt("Client ID: ");
   const clientName = await prompt("Client Name: ");
 
-  const apiKey = generateApiKey();
-  const apiKeyHash = await hashApiKey(apiKey);
-
-  const sql = buildInsertClientSql({
-    tenantId,
-    clientId,
-    clientName,
-    apiKeyHash,
-  });
-
-  executeSql(sql);
+  const result = await createClient({
+  tenantId,
+  clientId,
+  clientName,
+});
+  
+  executeSql(result.sql);
 
   success("Client created.");
-
+  
   console.log("");
   console.log("================================");
   console.log("SAVE THIS API KEY");
   console.log("================================");
-  console.log(apiKey);
+  console.log(result.apiKey);
   console.log("================================");
 
   await closePrompt();

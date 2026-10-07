@@ -1,21 +1,66 @@
-import { ghlFetch } from "../client";
-import { GHL } from "../config";
-import type { GHLOpportunity } from "../types";
+import {
+  ghlFetchAuthenticated,
+} from "../client";
+
+import {
+  GHL,
+} from "../config";
+
+import type {
+  GHLOpportunity,
+} from "../types";
+
+import type {
+  RequestContext,
+} from "../../../../context";
+
 
 export function upsertOpportunity(
-  apiKey: string,
-  locationId: string,
-  payload: GHLOpportunity
+  context:
+    RequestContext,
+
+  payload:
+    GHLOpportunity,
 ) {
-  return ghlFetch<{ opportunity: GHLOpportunity }>(
-    apiKey,
+
+  const locationId =
+    context
+      .tenant
+      .integrations
+      .crm
+      .credentials
+      .locationId
+      .trim();
+
+
+  if (
+    !locationId
+  ) {
+
+    throw new Error(
+      "Missing GoHighLevel location ID.",
+    );
+  }
+
+
+  return ghlFetchAuthenticated<{
+    opportunity:
+      GHLOpportunity;
+  }>(
+    context,
+
     GHL.ENDPOINTS.OPPORTUNITIES_UPSERT,
+
     {
-      method: "POST",
-      body: JSON.stringify({
-        locationId,
-        ...payload,
-      }),
-    }
+      method:
+        "POST",
+
+      body:
+        JSON.stringify({
+          locationId,
+
+          ...payload,
+        }),
+    },
   );
 }

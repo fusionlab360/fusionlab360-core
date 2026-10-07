@@ -1,0 +1,2 @@
+ALTER TABLE ai_agent_profiles
+ADD COLUMN ai_instructions_knowledge_base_id TEXT;

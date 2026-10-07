@@ -1,28 +1,44 @@
-import type { ReservationOpportunity } from "./opportunity";
+import type {
+  ReservationLifecycle,
+} from "./lifecycle";
+
 
 export function resolveReservationStage(
-  opportunity: ReservationOpportunity
+  lifecycle:
+    ReservationLifecycle,
 ): string {
-  switch (opportunity.status) {
-    case "CANCELLED":
-      return "cancelled";
 
-    case "NO_SHOW":
-      return "no_show";
+  switch (lifecycle) {
 
-    case "CHECKED_OUT":
-      return "checked_out";
+    case "new_booking":
+      return "new_booking";
 
-    case "CHECKED_IN":
+    case "confirmed":
+      return "new_booking";
+
+    case "arrival_today":
+      return "today_arrival";
+
+    case "checked_in":
       return "checked_in";
 
-    case "ARRIVING":
-      return "arriving_today";
+    case "checked_out":
+      return "checked_out";
 
-    case "CONFIRMED":
-      return "confirmed";
+    case "completed":
+      return "checked_out";
+
+    case "cancelled":
+      return "cancelled";
+
+    case "no_show":
+      return "no_show";
 
     default:
-      return "new_reservation";
+      throw new Error(
+        `Unsupported reservation lifecycle: ${lifecycle}`,
+      );
+
   }
+
 }

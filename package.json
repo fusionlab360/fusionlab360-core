@@ -21,7 +21,7 @@
     "@types/node": "^26.1.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.142.0"
   },
   "allowScripts": {
     "argon2@0.45.1": true

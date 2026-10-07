@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  "name": "fusionlab360-core",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-01",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fusionlab360",
+      "database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
+    }
+  ],
+
+  "env": {
+    "dev": {
+      "name": "fusionlab360-core-dev",
+
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "fusionlab360",
+          "database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
+        }
+      ]
+    }
+  }
+}

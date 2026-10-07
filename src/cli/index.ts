@@ -1,4 +1,8 @@
 import { createClientCommand } from "./commands/create-client";
+import { createTenantCommand } from "./commands/create-tenant";
+
+// Future commands
+// import { createTenantCommand } from "./commands/create-tenant";
 // import { listClientsCommand } from "./commands/list-clients";
 // import { rotateClientCommand } from "./commands/rotate-key";
 // import { revokeClientCommand } from "./commands/revoke-key";
@@ -22,6 +26,15 @@ async function main() {
     case "client:revoke":
       console.log("Coming soon...");
       break;
+      
+    case "tenant:create":
+      await createTenantCommand();
+      break;
+
+    // Future
+    // case "tenant:create":
+    //   await createTenantCommand();
+    //   break;
 
     default:
       console.log(`
@@ -33,6 +46,10 @@ Available commands
   client:list
   client:rotate
   client:revoke
+
+Future
+
+  tenant:create
 `);
       process.exit(1);
   }

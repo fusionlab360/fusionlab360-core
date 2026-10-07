@@ -1,13 +1,46 @@
-import { ghlFetch } from "../client";
-import { GHL } from "../config";
-import type { GHLContact } from "../types";
+import {
+  ghlFetchAuthenticated,
+} from "../client";
+
+import {
+  GHL,
+} from "../config";
+
+import type {
+  GHLContact,
+} from "../types";
+
+import type {
+  RequestContext,
+} from "../../../../context";
+
 
 export function getContact(
-  apiKey: string,
-  contactId: string
+  context:
+    RequestContext,
+
+  contactId:
+    string,
 ) {
-  return ghlFetch<{ contact: GHLContact }>(
-    apiKey,
-    `${GHL.ENDPOINTS.CONTACTS}/${contactId}`
+
+  if (
+    !contactId.trim()
+  ) {
+
+    throw new Error(
+      "Contact ID is required.",
+    );
+  }
+
+
+  return ghlFetchAuthenticated<{
+    contact:
+      GHLContact;
+  }>(
+    context,
+
+    `${GHL.ENDPOINTS.CONTACTS}/${encodeURIComponent(
+      contactId,
+    )}`,
   );
 }

@@ -1,8 +1,32 @@
 import type { RequestContext } from "../../context";
-import type { AttributeMapping } from "../../persistence/models/integration-configuration";
+import type {
+  AttributeMapping,
+  IntegrationConfiguration,
+} from "../../persistence/models/integration-configuration";
 
-function getMappings(context: RequestContext): AttributeMapping[] {
-  return context.tenant.integrations.crm.configuration.attributeMappings;
+function getConfiguration(
+  context: RequestContext,
+): IntegrationConfiguration {
+
+  const configuration =
+    context.tenant.integrations.crm.configuration;
+
+  if (!configuration) {
+    throw new Error(
+      "CRM integration has not been configured.",
+    );
+  }
+
+  return configuration;
+}
+
+function getMappings(
+  context: RequestContext,
+): AttributeMapping[] {
+
+  return getConfiguration(
+    context,
+  ).attributeMappings;
 }
 
 /**
@@ -11,15 +35,18 @@ function getMappings(context: RequestContext): AttributeMapping[] {
  */
 export function resolveFieldMapping(
   context: RequestContext,
-  canonicalField: string
+  canonicalField: string,
 ): AttributeMapping {
-  const mapping = getMappings(context).find(
-    (mapping) => mapping.canonicalKey === canonicalField
-  );
+
+  const mapping =
+    getMappings(context).find(
+      (mapping) =>
+        mapping.canonicalKey === canonicalField,
+    );
 
   if (!mapping) {
     throw new Error(
-      `Missing required field mapping for canonical field '${canonicalField}'.`
+      `Missing required field mapping for canonical field '${canonicalField}'.`,
     );
   }
 
@@ -32,9 +59,13 @@ export function resolveFieldMapping(
  */
 export function tryResolveFieldMapping(
   context: RequestContext,
-  canonicalField: string
+  canonicalField: string,
 ): AttributeMapping | undefined {
-  return getMappings(context).find(
-    (mapping) => mapping.canonicalKey === canonicalField
+
+  return getMappings(
+    context,
+  ).find(
+    (mapping) =>
+      mapping.canonicalKey === canonicalField,
   );
 }

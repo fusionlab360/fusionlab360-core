@@ -23,6 +23,17 @@ export const ContactFields = {
 
   DOB: "contact.dob",
 
+  LastVisitedDate: "contact.lastVisitedDate",
+
+  Notes: "contact.notes",
+
+  ReviewDate: "contact.review.date",
+  ReviewType: "contact.review.type",
+
+  BranchName: "contact.branch",
+
+  Branch: "contact.branch",
+
   // ----------------------------------------
   // Address
   // ----------------------------------------

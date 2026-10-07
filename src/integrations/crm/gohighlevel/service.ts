@@ -13,7 +13,20 @@ export const goHighLevelDiscovery: CRMDiscovery = {
     context: RequestContext,
   ): Promise<IntegrationConfiguration> {
     const crm = context.tenant.integrations.crm;
-    const locationId = crm.credentials.locationId;
+
+const locationId = crm.credentials.locationId;
+
+const crmConfiguration =
+  crm.configuration;
+
+if (!crmConfiguration) {
+  throw new Error(
+    "CRM integration has not been configured.",
+  );
+}
+
+const pipelineId =
+  crmConfiguration.workflow.providerWorkflowId;
 
     logger.info("GHL discovery started", {
       tenantId: context.tenant.id,
@@ -43,7 +56,10 @@ export const goHighLevelDiscovery: CRMDiscovery = {
       });
     }
 
-    const configuration = discoverConfiguration(metadata);
+    const configuration = discoverConfiguration(
+  metadata,
+  pipelineId,
+);
 
     logger.info("GHL discovery completed", {
       tenantId: context.tenant.id,

@@ -1,6 +1,7 @@
 import type { RequestContext } from "../../../../context";
 import type { ReservationOpportunity } from "../../../../domain/reservation/opportunity";
 import type { GHLOpportunity } from "../types";
+import type { IntegrationConfiguration } from "../../../../persistence/models/integration-configuration";
 
 import { logger } from "../../../../core/logger";
 import { mapOpportunityStatus } from "./status";
@@ -9,6 +10,10 @@ import {
   resolveFieldMapping,
   tryResolveFieldMapping,
 } from "../../../../core/crm/field-mapping";
+
+import {
+  resolveReservationLifecycle,
+} from "../../../../domain/reservation/lifecycle";
 
 import { ReservationFields } from "../../../../canonical/reservation";
 import { resolveReservationStage } from "../../../../domain/reservation/stage";
@@ -33,6 +38,22 @@ function addField(
   });
 }
 
+function getConfiguration(
+  context: RequestContext,
+): IntegrationConfiguration {
+
+  const configuration =
+    context.tenant.integrations.crm.configuration;
+
+  if (!configuration) {
+    throw new Error(
+      "CRM integration has not been configured.",
+    );
+  }
+
+  return configuration;
+}
+
 export function mapReservationOpportunityToGHL(
   context: RequestContext,
   opportunity: ReservationOpportunity,
@@ -45,10 +66,19 @@ export function mapReservationOpportunityToGHL(
   });
 
   const workflow =
-    context.tenant.integrations.crm.configuration.workflow;
+    getConfiguration(
+      context,
+    ).workflow;
 
-  const stageKey =
-    resolveReservationStage(opportunity);
+  const lifecycle =
+  resolveReservationLifecycle(
+    opportunity,
+  );
+
+const stageKey =
+  resolveReservationStage(
+    lifecycle,
+  );
 
   const workflowState =
     workflow.states.find(
@@ -255,10 +285,10 @@ export function mapReservationOpportunityToGHL(
     opportunity.extractedAt,
   );
 
-  console.log("===== GHL OPPORTUNITY PAYLOAD =====");
-  console.log(
-    JSON.stringify(customFields, null, 2),
-  );
+  logger.debug("GHL opportunity payload built", {
+    reservationId: opportunity.reservationId,
+    customFields: customFields.length,
+  });
 
   return {
     name: opportunity.guestName,
@@ -270,5 +300,4 @@ export function mapReservationOpportunityToGHL(
     ),
     customFields,
   };
-
 }

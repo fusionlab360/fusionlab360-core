@@ -96,6 +96,15 @@ export async function resolveMetadata(
   "contact",
 );
 
+console.log(
+  "GHL CONTACT CUSTOM FIELDS RESPONSE:",
+  JSON.stringify(
+    contactFields,
+    null,
+    2,
+  ),
+);
+
 logger.info("Contact custom fields fetched", {
   count: contactFields.customFields.length,
 });

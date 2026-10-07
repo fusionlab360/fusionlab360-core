@@ -4,3 +4,4 @@ export * from "./update";
 export * from "./delete";
 export * from "./upsert";
 export * from "./search"
+export * from "./notes";

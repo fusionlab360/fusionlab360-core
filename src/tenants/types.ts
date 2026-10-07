@@ -13,6 +13,9 @@ export type PMSProvider =
   | "rategain"
   | "littlehotelier";
 
+export type MessagingProvider =
+  | "gohighlevel";
+
 export interface Tenant {
   id: string;
 
@@ -31,7 +34,7 @@ export interface Tenant {
     locationId: string;
   };
 
-  configuration: IntegrationConfiguration;
+  configuration: IntegrationConfiguration | null;
 };
 
     pms: {
@@ -39,3 +42,10 @@ export interface Tenant {
     };
   };
 }
+
+export interface ResolveTenantOptions {
+  requireConfiguration?: boolean;
+}
+
+
+

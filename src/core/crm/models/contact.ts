@@ -1,4 +1,5 @@
 import type { Attribute } from "./attribute";
+import type { ContactEvent } from "../../../domain/contact/event";
 
 export interface Contact {
   /**
@@ -48,12 +49,27 @@ export interface Contact {
    */
   nationality?: string;
 
+   /**
+   * Last Visited Date
+   */
+  lastVisitedDate?: string;
+
   
 
   /**
    * Date of Birth
    */
   dob?: string;
+
+  /**
+ * Contact Notes
+ */
+  notes?: string;
+
+    /**
+   * Structured Contact Event Information
+   */
+  events?: ContactEvent[];
 
     /**
    * Passport Number
@@ -93,7 +109,8 @@ export interface Contact {
   /**
  * Branch Name
  */
-  branchName?: string;
+  
+  branch?: string;
 
   /**
    * Platform Attributes

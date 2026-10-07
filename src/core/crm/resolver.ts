@@ -8,6 +8,10 @@ import { goHighLevelAdapter } from "../../integrations/crm/gohighlevel";
 import type { CRMDiscovery } from "./discovery";
 import { goHighLevelDiscovery } from "../../integrations/crm/gohighlevel";
 
+import type { CRMOnboarding } from "./onboarding";
+import { goHighLevelOnboarding } from "../../integrations/crm/gohighlevel";
+
+
 export function resolveCRMAdapter(
   tenant: Tenant
 ): CRMAdapter {
@@ -56,6 +60,29 @@ export function resolveCRMDiscovery(
       throw new ApiError(
         500,
         "Unsupported CRM provider."
+      );
+  }
+}
+
+export function resolveCRMOnboarding(
+  tenant: Tenant,
+): CRMOnboarding {
+  switch (tenant.integrations.crm.provider) {
+    case "gohighlevel":
+      return goHighLevelOnboarding;
+
+    case "hubspot":
+    case "salesforce":
+    case "zoho":
+      throw new ApiError(
+        501,
+        `${tenant.integrations.crm.provider} CRM provider is not implemented.`,
+      );
+
+    default:
+      throw new ApiError(
+        500,
+        "Unsupported CRM provider.",
       );
   }
 }

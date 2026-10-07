@@ -10,6 +10,7 @@ import { GHL_CANONICAL_FIELD_MAP } from "../../../domain/integration/canonical-f
 
 export function discoverConfiguration(
   metadata: GHLMetadata,
+  pipelineId: string,
 ): IntegrationConfiguration {
 
   logger.info("Building GoHighLevel integration configuration", {
@@ -22,13 +23,15 @@ export function discoverConfiguration(
     throw new Error("No pipelines found.");
   }
 
-  // Temporary: use the Reservation pipeline if available.
-  const primaryPipeline =
-    metadata.pipelines.find(
-      (pipeline) =>
-        normalizeKey(pipeline.name) === "reservation",
-    ) ??
-    metadata.pipelines[0];
+  const primaryPipeline = metadata.pipelines.find(
+  (pipeline) => pipeline.id === pipelineId,
+);
+
+if (!primaryPipeline) {
+  throw new Error(
+    `Pipeline '${pipelineId}' not found.`,
+  );
+}
 
   logger.debug("Selected pipeline", {
     id: primaryPipeline.id,
@@ -66,6 +69,21 @@ export function discoverConfiguration(
         GHL_CANONICAL_FIELD_MAP[field.name] ??
         GHL_CANONICAL_FIELD_MAP[field.key ?? ""];
 
+        console.log(
+  "GHL FIELD MAP DEBUG:",
+  JSON.stringify(
+    {
+      model: field.model,
+      name: field.name,
+      key: field.key,
+      id: field.id,
+      canonicalKey,
+    },
+    null,
+    2,
+  ),
+);
+
         logger.info("FIELD MAPPING RESULT", {
   model: field.model,
   name: field.name,
@@ -96,6 +114,15 @@ export function discoverConfiguration(
       ];
     },
   );
+
+  console.log(
+  "GHL FINAL ATTRIBUTE MAPPINGS:",
+  JSON.stringify(
+    attributeMappings,
+    null,
+    2,
+  ),
+);
 
   logger.info("GoHighLevel configuration discovered", {
     workflow: workflow.key,

@@ -16,9 +16,7 @@ if (!crm) {
   throw new Error("CRM integration not found.");
 }
 
-if (!crm.configuration) {
-  throw new Error("CRM integration configuration is missing.");
-}
+
 
   return {
     id: tenant.id,

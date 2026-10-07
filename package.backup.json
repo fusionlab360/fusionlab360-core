@@ -1,0 +1,29 @@
+{
+  "name": "fusionlab360-core",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "client:create": "tsx src/cli/index.ts client:create",
+    "client:list": "tsx src/cli/index.ts client:list",
+    "client:rotate": "tsx src/cli/index.ts client:rotate",
+    "client:revoke": "tsx src/cli/index.ts client:revoke"
+  },
+  "dependencies": {
+    "hono": "^4.12.32",
+    "jose": "^6.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260727.1",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.110.0"
+  },
+  "allowScripts": {
+    "argon2@0.45.1": true
+  }
+}

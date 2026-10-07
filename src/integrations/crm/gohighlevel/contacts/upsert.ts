@@ -1,7 +1,23 @@
-import { ghlFetch } from "../client";
-import { GHL } from "../config";
-import type { GHLContact } from "../types";
-import { logger } from "../../../../core/logger";
+import {
+  ghlFetchAuthenticated,
+} from "../client";
+
+import {
+  GHL,
+} from "../config";
+
+import type {
+  GHLContact,
+} from "../types";
+
+import {
+  logger,
+} from "../../../../core/logger";
+
+import type {
+  RequestContext,
+} from "../../../../context";
+
 
 /**
  * Upsert a GoHighLevel contact.
@@ -11,34 +27,74 @@ import { logger } from "../../../../core/logger";
  * to the service/adapter layer.
  */
 export async function upsertContact(
-  apiKey: string,
-  locationId: string,
-  payload: GHLContact,
+  context:
+    RequestContext,
+
+  payload:
+    GHLContact,
 ) {
-  if (!apiKey?.trim()) {
-    throw new Error("Missing GoHighLevel API key.");
+
+  const locationId =
+    context
+      .tenant
+      .integrations
+      .crm
+      .credentials
+      .locationId
+      .trim();
+
+
+  if (
+    !locationId
+  ) {
+
+    throw new Error(
+      "Missing GoHighLevel location ID.",
+    );
   }
 
-  if (!locationId?.trim()) {
-    throw new Error("Missing GoHighLevel location ID.");
-  }
 
-  logger.info("FINAL GHL UPSERT PAYLOAD", {
-  payload: {
-    locationId,
-    ...payload,
-  },
-});
-
-  return ghlFetch<{ contact: GHLContact }>(
-    apiKey,
-    `${GHL.ENDPOINTS.CONTACTS}/upsert`,
+  logger.info(
+    "FINAL GHL UPSERT PAYLOAD",
     {
-      method: "POST",
-      body: JSON.stringify({
+      payload: {
         locationId,
+
         ...payload,
-      }),
+      },
+    },
+  );
+
+
+  logger.info(
+    "FINAL GHL UPSERT REQUEST START",
+    {
+      endpoint:
+        `${GHL.ENDPOINTS.CONTACTS}/upsert`,
+
+      locationId,
+    },
+  );
+
+
+  return ghlFetchAuthenticated<{
+    contact:
+      GHLContact;
+  }>(
+    context,
+
+    `${GHL.ENDPOINTS.CONTACTS}/upsert`,
+
+    {
+      method:
+        "POST",
+
+      body:
+        JSON.stringify({
+          locationId,
+
+          ...payload,
+        }),
     },
   );
 }

@@ -261,15 +261,32 @@ addField(
   contact.nationality,
 );
 
+// Last Visited Date
+addField(
+  customFields,
+  tryResolveFieldMapping(
+    _context,
+    ContactFields.LastVisitedDate,
+  ),
+  contact.lastVisitedDate,
+);
+
+
+// Branch
+addField(
+  customFields,
+  tryResolveFieldMapping(
+    _context,
+    ContactFields.Branch,
+  ),
+  contact.branch,
+);
 
 
   if (customFields.length > 0) {
   result.customFields = customFields;
 }
 
-// TEMP DEBUG
-console.log("===== GHL CONTACT PAYLOAD =====");
-console.log(JSON.stringify(result, null, 2));
 
   return result as GHLContact;
 
@@ -278,41 +295,67 @@ console.log(JSON.stringify(result, null, 2));
  * GoHighLevel -> Canonical Contact
  */
 export function fromGHLContact(
+  context: RequestContext,
   contact: GHLContact,
 ): Contact {
 
-  return {
+  const getCustomFieldValue = (
+    canonicalField: string,
+  ): string => {
 
-    id:
-      contact.id ?? "",
+    const mapping = tryResolveFieldMapping(
+      context,
+      canonicalField,
+    );
 
-    firstName:
-      contact.firstName ?? "",
+    if (!mapping) {
+      return "";
+    }
 
-    lastName:
-      contact.lastName ?? "",
+    const field = contact.customFields?.find(
+  (field) =>
+    field.id === mapping.providerFieldId,
+);
 
-    email:
-      contact.email ?? "",
-
-    phone:
-      contact.phone ?? "",
-
-    passport: "",
-
-    identityNumber: "",
-    identityType: "",
-
-    nationality: "",
-
-    address: "",
-    city: "",
-    state: "",
-    country: "",
-    postalCode: "",
-
-    dob: "",
-
+return field?.value ?? field?.field_value ?? "";
   };
 
+  return {
+  id: contact.id ?? "",
+  firstName: contact.firstName ?? "",
+  lastName: contact.lastName ?? "",
+  email: contact.email ?? "",
+  phone: contact.phone ?? "",
+  passport: "",
+  identityNumber:
+    getCustomFieldValue(
+      ContactFields.IdentityNumber,
+    ),
+  identityType:
+    getCustomFieldValue(
+      ContactFields.IdentityType,
+    ),
+  nationality:
+    getCustomFieldValue(
+      ContactFields.Nationality,
+    ),
+  lastVisitedDate:
+    getCustomFieldValue(
+      ContactFields.LastVisitedDate,
+    ),
+
+  branch:
+    getCustomFieldValue(
+      ContactFields.Branch,
+    ),
+
+  address: contact.address1 ?? "",
+  city: contact.city ?? "",
+  state: contact.state ?? "",
+  country: contact.country ?? "",
+  postalCode: contact.postalCode ?? "",
+  dob: contact.dateOfBirth ?? "",
+};
 }
+
+ 

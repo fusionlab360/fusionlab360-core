@@ -11,4 +11,10 @@ export interface CreateContactRequest {
   identityType?: string;
 
   nationality?: string;
+
+  lastVisitedDate?: string;
+
+  notes?: string;
+
+  branch?: string;
 }
