@@ -1,131 +1,68 @@
 /*
-
  * --------------------------------------------------
-
  * Retrieval Intelligence
-
  * --------------------------------------------------
-
  *
-
  * Provider-neutral knowledge analysis.
-
  *
-
  * This module does NOT call Gemini, Cloudflare, or
-
  * any other LLM.
-
  *
-
  * It prepares, ranks, and selects retrieved approved
-
  * knowledge before generation.
-
  *
-
  * Design goals:
-
  *
-
  * 1. Natural conversational retrieval.
-
  * 2. Strong semantic matches should not be rejected
-
  *    merely because exact keywords are absent.
-
  * 3. Exact and lexical matches remain stronger.
-
  * 4. Entity-specific knowledge should outrank generic
-
  *    fallback knowledge when the customer names an entity.
-
  * 5. High-risk business facts remain conservative.
-
  * 6. No tenant-specific facts are hardcoded here.
-
  * 7. Handoff is the fallback when approved knowledge
-
  *    genuinely cannot support the answer.
-
  *
-
  * --------------------------------------------------
-
  */
 
-
-
 export interface KnowledgeContextItem {
-
   title:
-
-    string;
-
-
-
+   string;
   sourceType:
-
     string;
-
-
-
   content:
-
     string;
-
-
-
   score:
-
     number;
-
 }
 
-
-
 export type KnowledgeIntent =
-
   | "greeting"
-
   | "services"
-
   | "price"
-
   | "discount"
-
   | "promotion"
-
   | "availability"
-
   | "booking"
-
   | "facilities"
-
   | "location"
-
   | "hours"
-
   | "staff"
-
   | "package"
-
   | "medical"
-
   | "contact"
-
   | "general";
-
-
 
 export interface KnowledgeQueryAnalysis {
 
   /*
    * Primary intent retained for backward compatibility.
    */
+
   intent:
     KnowledgeIntent;
-
 
   /*
    * All detected intents for compound questions.
@@ -139,9 +76,9 @@ export interface KnowledgeQueryAnalysis {
    *   "price"
    * ]
    */
+
   intents:
     KnowledgeIntent[];
-
 
   language:
     | "en"
@@ -149,571 +86,298 @@ export interface KnowledgeQueryAnalysis {
     | "zh"
     | "other";
 
-
   terms:
     string[];
-
 
   focusPhrases:
     string[];
 
-
   highRisk:
     boolean;
-
 
   requiresBusinessEvidence:
     boolean;
 }
 
-
-
 export interface RankedKnowledgeItem
-
   extends KnowledgeContextItem {
-
-
-
   rerankScore:
-
     number;
-
-
-
   matchedTerms:
-
     string[];
-
-
-
   matchedFocusPhrases:
-
     string[];
-
-
-
   titleMatch:
-
     boolean;
-
-
-
   intentMatch:
-
     boolean;
-
-
 
   focusPhraseMatch:
-
     boolean;
 
-
-
-  exactPhraseMatch:
-
+    exactPhraseMatch:
     boolean;
-
-
 
   entityMatch:
-
     boolean;
-
-
 
   entityTermMatches:
-
     string[];
 
-
-
   fallbackLike:
-
     boolean;
-
 }
 
 
-
 /*
-
  * --------------------------------------------------
-
  * Configuration
-
  * --------------------------------------------------
-
  *
-
  * These thresholds distinguish between:
-
  *
-
  * - high-risk factual requests
-
  * - ordinary business information
-
  *
-
  * Ordinary business information may use strong
-
  * semantic evidence even when lexical overlap is weak.
-
  * --------------------------------------------------
-
  */
 
-
-
 const NORMAL_VECTOR_THRESHOLD =
-
   0.70;
 
-
-
 const HIGH_RISK_VECTOR_THRESHOLD =
-
   0.80;
 
-
-
 const NORMAL_RERANK_THRESHOLD =
-
   0.78;
 
-
-
 const HIGH_RISK_RERANK_THRESHOLD =
-
   0.88;
 
-
-
 /*
-
  * Strong semantic rescue.
-
  */
 
 const SEMANTIC_RESCUE_VECTOR_THRESHOLD =
-
   0.64;
 
-
-
 const SEMANTIC_RESCUE_RERANK_THRESHOLD =
-
   0.75;
 
-
-
 /*
-
  * Moderate semantic rescue.
-
  */
 
 const SUPPORTED_RESCUE_VECTOR_THRESHOLD =
-
   0.58;
 
-
-
 const SUPPORTED_RESCUE_RERANK_THRESHOLD =
-
   0.72;
 
-
-
 /*
-
  * Exact phrase matches.
-
  */
-
 const EXACT_PHRASE_VECTOR_THRESHOLD =
-
   0.55;
 
-
-
 const EXACT_PHRASE_RERANK_THRESHOLD =
-
   0.70;
 
-
-
 /*
-
  * Entity-aware ranking.
-
  */
 
 const ENTITY_TITLE_BOOST =
-
   0.18;
 
-
-
 const ENTITY_CONTENT_BOOST =
-
   0.10;
 
-
-
 const ENTITY_EXACT_PHRASE_BOOST =
-
   0.05;
 
-
-
 /*
-
  * Generic fallback documents should not outrank an
-
  * entity-specific document merely because they contain
-
  * words such as "number", "contact", "phone", etc.
-
  */
 
 const GENERIC_FALLBACK_PENALTY =
-
   0.16;
 
-
-
 const MAX_SELECTED_RESULTS =
-
   6;
 
-
-
 const MAX_RESULTS_PER_SOURCE =
-
   2;
 
-
-
 /*
-
  * --------------------------------------------------
-
  * Stop words
-
  * --------------------------------------------------
-
  */
 
-
-
 const STOP_WORDS =
-
   new Set<string>([
-
     /*
-
      * English
-
      */
-
     "the",
-
     "a",
-
     "an",
-
     "and",
-
     "or",
-
     "but",
-
     "if",
-
     "then",
-
     "than",
-
     "that",
-
     "this",
-
     "these",
-
     "those",
-
     "with",
-
     "from",
-
     "for",
-
     "to",
-
     "of",
-
     "in",
-
     "on",
-
     "at",
-
     "by",
-
     "as",
-
     "is",
-
     "are",
-
     "was",
-
     "were",
-
     "be",
-
     "been",
-
     "it",
-
     "its",
-
     "we",
-
     "our",
-
     "you",
-
     "your",
-
     "they",
-
     "their",
-
     "them",
-
     "i",
-
     "me",
-
     "my",
-
     "mine",
-
     "can",
-
     "could",
-
     "would",
-
     "should",
-
     "will",
-
     "may",
-
     "might",
-
     "must",
-
     "do",
-
     "does",
-
     "did",
-
     "have",
-
     "has",
-
     "had",
-
     "please",
-
     "tell",
-
     "give",
-
     "show",
-
     "know",
-
     "want",
-
     "need",
-
     "about",
-
     "what",
-
     "which",
-
     "where",
-
     "when",
-
     "who",
-
     "why",
-
     "how",
 
-
-
     /*
-
      * Malay / Manglish
-
      */
 
     "apa",
-
     "adakah",
-
     "ada",
-
     "tak",
-
     "tidak",
-
     "yang",
-
     "ini",
-
     "itu",
-
     "dan",
-
     "atau",
-
     "dengan",
-
     "untuk",
-
     "dari",
-
     "saya",
-
     "kami",
-
     "awak",
-
     "anda",
-
     "nak",
-
     "mahu",
-
     "ingin",
-
     "boleh",
-
     "berapa",
-
+    "tahu",
     "bila",
-
     "siapa",
-
     "mana",
-
     "perkhidmatan",
-
     "servis",
 
 
-
     /*
-
      * Chinese function words
-
      */
 
     "什么",
-
     "哪里",
-
     "哪儿",
-
     "什么时候",
-
     "多少",
-
     "谁",
-
     "可以",
-
     "请问",
-
     "有没有",
-
     "这是",
-
     "这个",
-
     "那个",
 
   ]);
 
-
-
 /*
-
  * --------------------------------------------------
-
  * Query attribute vocabulary
-
  * --------------------------------------------------
-
  *
-
  * These words describe WHAT the user wants rather
-
  * than WHICH entity they are asking about.
-
  *
-
  * Everything else is a candidate entity term.
-
  * --------------------------------------------------
-
  */
 
-
-
 const ATTRIBUTE_TERMS_BY_INTENT:
-
   Record<
-
     KnowledgeIntent,
-
     Set<string>
-
   > = {
 
-
-
   greeting:
-
     new Set<string>([
-
-      "hi",
-
-      "hello",
-
+     "hi",
+     "hello",
       "hey",
-
-      "hai",
-
-      "helo",
-
+     "hai",
+     "helo",
     ]),
 
-
-
   services:
-  new Set<string>([
+ new Set<string>([
     "service",
     "services",
     "servis",
@@ -762,33 +426,19 @@ const ATTRIBUTE_TERMS_BY_INTENT:
   discount:
 
     new Set<string>([
-
       "discount",
-
       "discounts",
-
       "diskaun",
-
       "promotion",
-
       "promotions",
-
-      "promo",
-
+     "promo",
       "promosi",
-
       "offer",
-
       "offers",
-
       "deal",
-
       "deals",
-
       "voucher",
-
       "coupon",
-
     ]),
 
 
@@ -798,25 +448,15 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "promotion",
-
       "promotions",
-
       "promo",
-
       "promosi",
-
       "offer",
-
-      "offers",
-
+     "offers",
       "deal",
-
       "deals",
-
       "voucher",
-
       "coupon",
-
     ]),
 
 
@@ -826,23 +466,14 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "available",
-
       "availability",
-
       "slot",
-
       "slots",
-
       "vacancy",
-
       "appointment",
-
       "appointments",
-
       "ketersediaan",
-
       "kosong",
-
     ]),
 
 
@@ -852,47 +483,26 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "facility",
-
       "facilities",
-
       "amenity",
-
       "amenities",
-
       "parking",
-
-      "car park",
-
+     "car park",
       "parking area",
-
       "wifi",
-
       "wi-fi",
-
       "internet",
-
       "toilet",
-
       "toilets",
-
       "restroom",
-
-      "washroom",
-
-      "lift",
-
+     "washroom",
+     "lift",
       "elevator",
-
-      "wheelchair",
-
+     "wheelchair",
       "accessible",
-
       "waiting area",
-
       "tempat letak kereta",
-
       "tandas",
-
       "lif",
 
     ]),
@@ -904,25 +514,15 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "book",
-
       "booking",
-
       "bookings",
-
       "reserve",
-
-      "reservation",
-
+     "reservation",
       "reservations",
-
       "appointment",
-
       "appointments",
-
       "tempah",
-
       "tempahan",
-
       "temujanji",
 
     ]),
@@ -934,23 +534,14 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "branch",
-
       "branches",
-
       "location",
-
       "locations",
-
       "where",
-
-      "address",
-
+     "address",
       "alamat",
-
       "cawangan",
-
       "lokasi",
-
     ]),
 
 
@@ -958,23 +549,16 @@ const ATTRIBUTE_TERMS_BY_INTENT:
   hours:
 
     new Set<string>([
-
       "open",
-
       "opening",
-
       "closing",
-
       "hours",
-
       "operating",
-
+      "time",
+      "times",
       "waktu",
-
       "buka",
-
       "tutup",
-
     ]),
 
 
@@ -984,178 +568,107 @@ const ATTRIBUTE_TERMS_BY_INTENT:
     new Set<string>([
 
       "doctor",
-
       "doctors",
-
       "staff",
-
       "specialist",
-
       "specialists",
 
-      "doktor",
-
+     "doktor",
       "staf",
-
     ]),
-
-
 
   package:
-
     new Set<string>([
 
-      "package",
-
+     "package",
       "packages",
-
       "pakej",
-
     ]),
 
 
-
-  medical:
-
+ medical:
     new Set<string>([
+     "medical",
 
-      "medical",
-
-      "medicine",
-
+     "medicine",
       "medication",
-
       "treatment",
-
       "symptom",
-
       "diagnosis",
 
-      "rawatan",
-
+     "rawatan",
       "ubat",
-
       "suntikan",
-
       "injection",
-
     ]),
-
 
 
   contact:
-
     new Set<string>([
-
       "phone",
-
       "mobile",
-
       "number",
-
       "contact",
-
       "call",
 
-      "whatsapp",
-
+     "whatsapp",
       "email",
-
       "telephone",
-
       "telefon",
 
-      "emel",
-
+     "emel",
       "hubungi",
-
     ]),
 
 
-
-  general:
-
+ general:
     new Set<string>(),
-
 };
 
 
-
 /*
-
  * --------------------------------------------------
-
  * Normalization
-
  * --------------------------------------------------
-
  */
-
 
 
 function normalize(
-
   value:
-
     string,
-
 ):
-
   string {
 
-
-
   return value
-
     .normalize(
-
       "NFKC",
-
     )
-
     .toLowerCase()
 
-    .replace(
-
+   .replace(
       /[^\p{L}\p{N}%₹$.\-]+/gu,
-
       " ",
-
     )
-
     .replace(
 
-      /\s+/g,
-
+     /\s+/g,
       " ",
-
     )
-
     .trim();
-
 }
-
-
 
 /*
 
- * --------------------------------------------------
-
+* --------------------------------------------------
  * Extract meaningful terms
-
  * --------------------------------------------------
-
  */
 
-
-
 function extractTerms(
-
   value:
-
     string,
 
-):
+ ):
 
   string[] {
 
@@ -2814,38 +2327,23 @@ function getIntentTerms(
 
     case "hours":
 
-
-
       return [
-
         "open",
-
         "opening",
-
         "closing",
-
         "hours",
-
         "operating",
-
+        "time",
+        "times",
         "business hours",
-
         "opening hours",
-
         "operating hours",
-
         "clinic hours",
-
         "waktu operasi",
-
         "waktu buka",
-
         "waktu tutup",
-
         "buka",
-
         "tutup",
-
       ];
 
 
@@ -3062,6 +2560,10 @@ function normalizeEntityToken(
       "NFKC",
     )
     .toLowerCase()
+    .replace(
+      /[-_]/g,
+      "",
+    )
     .replace(
       /[^\p{L}\p{N}]/gu,
       "",
@@ -4675,37 +4177,59 @@ function hasSupportingEvidence(
 
 
 function hasStrongEntityCandidate(
-
-  ranked:
-
-    RankedKnowledgeItem[],
-
+ ranked:
+   RankedKnowledgeItem[],
 ):
-
   boolean {
 
-
-
   return ranked.some(
-
     (
-
       item,
-
     ) =>
-
       item.entityMatch &&
-
       item.rerankScore >=
-
         0.68 &&
-
       item.score >=
-
         0.55,
-
   );
+}
 
+/*
+ * --------------------------------------------------
+ * Knowledge document identity
+ * --------------------------------------------------
+ *
+ * Used to prevent the same logical knowledge document
+ * from being selected more than once.
+ *
+ * This is intentionally provider-neutral and
+ * industry-neutral.
+ * --------------------------------------------------
+ */
+
+function getKnowledgeDocumentKey(
+  item:
+    KnowledgeContextItem,
+):
+  string {
+
+  return [
+    item.sourceType
+      ?.trim()
+      .toLowerCase() ??
+      "",
+
+    item.title
+      ?.trim()
+      .toLowerCase() ??
+      "",
+
+    normalize(
+      item.content,
+    ),
+  ].join(
+    "|",
+  );
 }
 
 /*
@@ -4833,41 +4357,427 @@ function getKnowledgeIntentCoverage(
 }
 
 /*
-
  * --------------------------------------------------
+ * Attribute-level answerability
+ * --------------------------------------------------
+ *
+ * Intent tells us WHAT broad category the customer
+ * is asking about.
+ *
+ * Attribute tells us WHAT information is required.
+ *
+ * This remains industry-neutral.
+ * --------------------------------------------------
+ */
 
+type KnowledgeRequestedAttribute =
+  | "time"
+  | "price"
+  | "location"
+  | "contact"
+  | "availability"
+  | "service"
+  | "facility"
+  | "staff"
+  | "package"
+  | "discount"
+  | "promotion"
+  | "booking"
+  | "medical"
+  | "general";
+
+
+export interface KnowledgeAttributeRequirement {
+
+  intent:
+    KnowledgeIntent;
+
+  attribute:
+    KnowledgeRequestedAttribute;
+}
+
+
+export interface KnowledgeAttributeCoverage {
+
+  requested:
+    KnowledgeAttributeRequirement[];
+
+  covered:
+    KnowledgeAttributeRequirement[];
+
+  missing:
+    KnowledgeAttributeRequirement[];
+}
+
+
+function getPrimaryAttributeForIntent(
+  intent:
+    KnowledgeIntent,
+):
+  KnowledgeRequestedAttribute {
+
+  switch (
+    intent
+  ) {
+
+    case "hours":
+      return "time";
+
+    case "price":
+      return "price";
+
+    case "location":
+      return "location";
+
+    case "contact":
+      return "contact";
+
+    case "availability":
+      return "availability";
+
+    case "services":
+      return "service";
+
+    case "facilities":
+      return "facility";
+
+    case "staff":
+      return "staff";
+
+    case "package":
+      return "package";
+
+    case "discount":
+      return "discount";
+
+    case "promotion":
+      return "promotion";
+
+    case "booking":
+      return "booking";
+
+    case "medical":
+      return "medical";
+
+    default:
+      return "general";
+  }
+}
+
+function hasRequestedAttributeEvidence(
+  item:
+    RankedKnowledgeItem,
+
+  requirement:
+    KnowledgeAttributeRequirement,
+):
+  boolean {
+
+  const combined =
+    normalize(
+      [
+        item.title,
+        item.content,
+      ].join(
+        " ",
+      ),
+    );
+
+
+  switch (
+    requirement.attribute
+  ) {
+
+    case "time":
+
+      return (
+        /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(
+          combined,
+        ) ||
+
+        /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(
+          combined,
+        ) ||
+
+        /\b(opening hours|operating hours|business hours|clinic hours|opening time|closing time|check[\s-]?in time|check[\s-]?out time)\b/i.test(
+          combined,
+        ) ||
+
+        /\b(waktu buka|waktu tutup|waktu operasi)\b/i.test(
+          combined,
+        )
+      );
+
+
+    case "price":
+
+      return (
+        hasIntentEvidence(
+          "price",
+          combined,
+        ) ||
+
+        /\b(?:rm|myr)\s*\d/i.test(
+          combined,
+        ) ||
+
+        /\b\d[\d,]*(?:\.\d+)?\s*(?:ringgit|myr)\b/i.test(
+          combined,
+        )
+      );
+
+
+    case "location":
+
+      return hasIntentEvidence(
+        "location",
+        combined,
+      );
+
+
+    case "contact":
+
+      return hasIntentEvidence(
+        "contact",
+        combined,
+      );
+
+
+    case "availability":
+
+      return hasIntentEvidence(
+        "availability",
+        combined,
+      );
+
+
+    case "service":
+
+      return hasIntentEvidence(
+        "services",
+        combined,
+      );
+
+
+    case "facility":
+
+      return hasIntentEvidence(
+        "facilities",
+        combined,
+      );
+
+
+    case "staff":
+
+      return hasIntentEvidence(
+        "staff",
+        combined,
+      );
+
+
+    case "package":
+
+      return hasIntentEvidence(
+        "package",
+        combined,
+      );
+
+
+    case "discount":
+
+      return hasIntentEvidence(
+        "discount",
+        combined,
+      );
+
+
+    case "promotion":
+
+      return hasIntentEvidence(
+        "promotion",
+        combined,
+      );
+
+
+    case "booking":
+
+      return hasIntentEvidence(
+        "booking",
+        combined,
+      );
+
+
+    case "medical":
+
+      return hasIntentEvidence(
+        "medical",
+        combined,
+      );
+
+
+    default:
+
+      return false;
+  }
+}
+
+function supportsRequestedAttribute(
+  item:
+    RankedKnowledgeItem,
+
+  requirement:
+    KnowledgeAttributeRequirement,
+
+  entityTerms:
+    string[],
+):
+  boolean {
+
+  if (
+    !hasRequestedAttributeEvidence(
+      item,
+      requirement,
+    )
+  ) {
+
+    return false;
+  }
+
+
+  /*
+   * If the customer identified an entity,
+   * the attribute evidence must belong to
+   * an entity-matching document.
+   *
+   * This prevents:
+   *
+   * "check-out charge"
+   *
+   * from being answered by an unrelated
+   * generic pricing document.
+   */
+
+  if (
+    entityTerms.length >
+    0
+  ) {
+
+    return item.entityMatch;
+  }
+
+
+  return true;
+}
+
+function getKnowledgeAttributeCoverage(
+  intents:
+    KnowledgeIntent[],
+
+  entityTerms:
+    string[],
+
+  selected:
+    RankedKnowledgeItem[],
+):
+  KnowledgeAttributeCoverage {
+
+  const requested =
+    [
+      ...new Map(
+        intents
+          .filter(
+            (
+              intent,
+            ) =>
+              intent !==
+              "general",
+          )
+          .map(
+            (
+              intent,
+            ) => {
+
+              const attribute =
+                getPrimaryAttributeForIntent(
+                  intent,
+                );
+
+              return [
+                `${intent}:${attribute}`,
+
+                {
+                  intent,
+
+                  attribute,
+                },
+              ];
+            },
+          ),
+      ).values(),
+    ];
+
+
+  const covered =
+    requested.filter(
+      (
+        requirement,
+      ) =>
+        selected.some(
+          (
+            item,
+          ) =>
+            supportsRequestedAttribute(
+              item,
+              requirement,
+              entityTerms,
+            ),
+        ),
+    );
+
+
+  const missing =
+    requested.filter(
+      (
+        requirement,
+      ) =>
+        !covered.some(
+          (
+            coveredRequirement,
+          ) =>
+            coveredRequirement.intent ===
+              requirement.intent &&
+
+            coveredRequirement.attribute ===
+              requirement.attribute,
+        ),
+    );
+
+
+  return {
+    requested,
+    covered,
+    missing,
+  };
+}
+
+/*
+ * --------------------------------------------------
  * Final knowledge selection
-
  * --------------------------------------------------
-
  *
-
  * Important:
-
  *
-
  * We do NOT require:
-
  *
-
  *   matchedTerms > 0
-
  *
-
  * for every ordinary business question.
-
  *
-
  * A strong semantic result may qualify by itself.
-
  *
-
  * Entity-aware matching is additionally used when the
-
  * customer identifies a specific business entity.
-
  * --------------------------------------------------
-
  */
 
 
@@ -4875,49 +4785,29 @@ function getKnowledgeIntentCoverage(
 export function selectKnowledgeForAnswer(
 
   question:
-
     string,
 
-
-
   knowledge:
-
     KnowledgeContextItem[],
 
-
-
   analysisQuestion:
-
     string =
-
       question,
-
 ):
 
   {
 
     analysis:
-
       KnowledgeQueryAnalysis;
 
-
-
     ranked:
-
       RankedKnowledgeItem[];
-
-
 
     selected:
-
       RankedKnowledgeItem[];
 
-
-
-    answerable:
-
+      answerable:
       boolean;
-
     intentCoverage: {
       covered:
         KnowledgeIntent[];
@@ -4926,130 +4816,72 @@ export function selectKnowledgeForAnswer(
         KnowledgeIntent[];
     };
 
+    attributeCoverage:
+       KnowledgeAttributeCoverage;
   } 
   {
 
 
 
   /*
-
    * ------------------------------------------------
-
    * Analyze the customer's current message
-
    * separately from the retrieval query.
-
    * ------------------------------------------------
-
    *
-
    * Current-message analysis controls:
-
    *
-
    * - intent
-
    * - language
-
    * - high-risk classification
-
    * - business-evidence requirement
-
    *
-
    * Retrieval analysis controls:
-
    *
-
    * - retrieval terms
-
    * - focus phrases
-
    * - lexical overlap
-
    * - intent evidence against retrieved content
-
    * ------------------------------------------------
-
    */
-
-
 
   const analysis =
-
     analyzeKnowledgeQuery(
-
       analysisQuestion,
-
     );
-
-
 
   const ranked =
-
     rerankKnowledge(
-
       question,
-
       knowledge,
-
       analysisQuestion,
-
     );
 
-
-
   /*
-
    * ------------------------------------------------
-
    * If the customer identified a specific entity and
-
    * at least one sufficiently relevant entity-specific
-
    * source exists, generic fallback sources must not
-
    * be selected instead.
-
    * ------------------------------------------------
-
    */
-
-
 
   const entityCandidateExists =
-
     hasStrongEntityCandidate(
-
       ranked,
-
     );
 
-
-
   /*
-
    * ------------------------------------------------
-
    * Eligibility
-
    * ------------------------------------------------
-
    */
 
-
-
   const eligible =
-
     ranked.filter(
-
       (
-
         item,
-
       ) => {
-
-
 
         /*
 
@@ -5551,6 +5383,9 @@ export function selectKnowledgeForAnswer(
     RankedKnowledgeItem[] =
     [];
 
+  const selectedDocumentKeys =
+  new Set<string>();
+
 /*
  * --------------------------------------------------
  * Intent coverage pass
@@ -5601,19 +5436,29 @@ for (
 
 
   const candidate =
-    eligible.find(
-      (
-        item,
-      ) =>
-        !selected.includes(
+  eligible.find(
+    (
+      item,
+    ) => {
+
+      const documentKey =
+        getKnowledgeDocumentKey(
           item,
+        );
+
+
+      return (
+        !selectedDocumentKeys.has(
+          documentKey,
         ) &&
 
         supportsRequestedIntent(
           item,
           requestedIntent,
-        ),
-    );
+        )
+      );
+    },
+  );
 
 
   if (
@@ -5659,12 +5504,18 @@ for (
     candidate,
   );
 
+  selectedDocumentKeys.add(
+    getKnowledgeDocumentKey(
+      candidate,
+    ),
+  );
+
 
   sourceCounts.set(
-    sourceKey,
-    currentCount + 1,
-  );
-}
+      sourceKey,
+      currentCount + 1,
+    );
+  }
 
 
 for (
@@ -5678,14 +5529,23 @@ for (
       selected.length >=
       MAX_SELECTED_RESULTS
     ) {
-
-
-
       break;
-
     }
 
+    const documentKey =
+  getKnowledgeDocumentKey(
+    item,
+  );
 
+
+if (
+  selectedDocumentKeys.has(
+    documentKey,
+  )
+) {
+
+  continue;
+}
 
     const sourceKey =
       [
@@ -5698,60 +5558,38 @@ for (
           ?.trim()
           .toLowerCase() ??
           "",
-
       ].join(
         "|",
       );
 
-
-
     const currentCount =
-
       sourceCounts.get(
-
         sourceKey,
-
       ) ??
-
       0;
 
-
-
     if (
-
       currentCount >=
-
       MAX_RESULTS_PER_SOURCE
-
     ) {
-
-
 
       continue;
 
     }
 
-
-
     selected.push(
-
       item,
-
     );
 
-
+    selectedDocumentKeys.add(
+      documentKey,
+    );
 
     sourceCounts.set(
-
       sourceKey,
-
       currentCount + 1,
-
     );
-
   }
-
-
 
   /*
 
@@ -5799,11 +5637,18 @@ for (
         break;
       }
 
-      if (
-        selected.includes(
+      const documentKey =
+        getKnowledgeDocumentKey(
           item,
+        );
+
+
+      if (
+        selectedDocumentKeys.has(
+          documentKey,
         )
       ) {
+
         continue;
       }
 
@@ -5837,6 +5682,10 @@ for (
       selected.push(
         item,
       );
+
+      selectedDocumentKeys.add(
+        documentKey,
+      );
       sourceCounts.set(
         sourceKey,
         currentCount + 1,
@@ -5849,6 +5698,20 @@ for (
     analysis.intents,
     selected,
       );
+
+  const entityTerms =
+  extractEntityTerms(
+    analysisQuestion,
+    analysis.intents,
+  );
+
+
+  const attributeCoverage =
+    getKnowledgeAttributeCoverage(
+      analysis.intents,
+      entityTerms,
+      selected,
+    );
 
   console.log(
   "AI KNOWLEDGE INTENT COVERAGE",
@@ -5867,13 +5730,34 @@ for (
   },
 );
 
+console.log(
+  "AI KNOWLEDGE ATTRIBUTE COVERAGE",
+  {
+    requested:
+      attributeCoverage.requested,
+
+    covered:
+      attributeCoverage.covered,
+
+    missing:
+      attributeCoverage.missing,
+
+    selectedCount:
+      selected.length,
+  },
+);
+
       return {
         analysis,
         ranked,
         selected,
+
         answerable:
           selected.length >
           0,
+
         intentCoverage,
+
+        attributeCoverage,
       };
 }

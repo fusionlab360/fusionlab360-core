@@ -277,6 +277,13 @@ export interface BookingResult {
  */
 export interface BookingProvider {
 
+    supportsBookingType?(
+    type:
+      BookingType,
+    ):
+      boolean |
+      Promise<boolean>;
+
   listOfferings(
     context:
       IntegrationContext,

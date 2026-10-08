@@ -267,6 +267,24 @@ export const goHighLevelBookingProvider:
 
 
     /*
+     * ----------------------------------------------
+     * Booking domain capability
+     * ----------------------------------------------
+     */
+
+    supportsBookingType(
+      type:
+        BookingType,
+    ):
+      boolean {
+
+      return (
+        type ===
+        "appointment"
+      );
+    },
+
+    /*
      * ------------------------------------------------
      * List bookable offerings
      * ------------------------------------------------

@@ -13,6 +13,77 @@ import type {
 } from "../../core/booking";
 
 
+/*
+ * --------------------------------------------------
+ * Booking type capability check
+ * --------------------------------------------------
+ *
+ * The domain layer asks the configured provider whether
+ * a booking type is supported.
+ *
+ * The provider remains responsible for its own
+ * implementation details.
+ *
+ * This keeps the Core generic across:
+ *
+ * - clinic appointments
+ * - hotel accommodation
+ * - future booking domains
+ * --------------------------------------------------
+ */
+
+export async function supportsBookingType(
+  context:
+    IntegrationContext,
+
+  type:
+    BookingType,
+):
+  Promise<boolean> {
+
+  const provider =
+    resolveBookingProvider(
+      context,
+    );
+
+
+  /*
+   * A provider may expose an optional capability
+   * function. Older providers remain compatible.
+   */
+
+  if (
+    typeof provider.supportsBookingType ===
+      "function"
+  ) {
+
+    return provider.supportsBookingType(
+      type,
+    );
+  }
+
+
+  /*
+   * Backward-compatible fallback:
+   *
+   * attempt to discover offerings for the requested
+   * booking type.
+   *
+   * An empty result means the provider does not
+   * currently expose that booking domain.
+   */
+
+  const offerings =
+    await provider.listOfferings(
+      context,
+      type,
+    );
+
+
+  return offerings.length >
+    0;
+}
+
 export async function listBookingOfferings(
   context:
     IntegrationContext,

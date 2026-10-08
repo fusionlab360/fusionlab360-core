@@ -2,16 +2,13 @@ import type {
   AIProvider,
 } from "../../core/ai";
 
-
 import type {
   MessagingMessage,
 } from "../../core/messaging";
 
-
 import type {
   AIBookingSession,
 } from "../../persistence/repositories/ai-booking-session-repository";
-
 
 /*
  * --------------------------------------------------
@@ -27,12 +24,10 @@ export type BookingIntentAction =
   | "confirm"
   | "cancel";
 
-
 export type BookingIntentType =
   | "appointment"
   | "accommodation"
   | null;
-
 
 export interface BookingIntent {
 
@@ -93,7 +88,6 @@ export interface BookingIntent {
     string;
 }
 
-
 /*
  * --------------------------------------------------
  * Empty intent helper
@@ -153,7 +147,6 @@ function emptyBookingIntent(
   };
 }
 
-
 /*
  * --------------------------------------------------
  * Extract JSON object from model response
@@ -170,14 +163,12 @@ function extractJSONObject(
   const trimmed =
     text.trim();
 
-
   if (
     !trimmed
   ) {
 
     return null;
   }
-
 
   /*
    * Direct JSON
@@ -191,7 +182,6 @@ function extractJSONObject(
     return trimmed;
   }
 
-
   /*
    * Markdown JSON block
    */
@@ -201,14 +191,12 @@ function extractJSONObject(
       /```(?:json)?\s*([\s\S]*?)\s*```/i,
     );
 
-
   if (
     fenced?.[1]
   ) {
 
     const candidate =
       fenced[1].trim();
-
 
     if (
       candidate.startsWith("{") &&
@@ -219,7 +207,6 @@ function extractJSONObject(
     }
   }
 
-
   /*
    * JSON object embedded in text
    */
@@ -229,12 +216,10 @@ function extractJSONObject(
       "{",
     );
 
-
   const last =
     trimmed.lastIndexOf(
       "}",
     );
-
 
   if (
     first >= 0 &&
@@ -247,10 +232,8 @@ function extractJSONObject(
     );
   }
 
-
   return null;
 }
-
 
 /*
  * --------------------------------------------------
@@ -273,16 +256,13 @@ function nullableString(
     return null;
   }
 
-
   const normalized =
     value.trim();
-
 
   return normalized
     ? normalized
     : null;
 }
-
 
 /*
  * --------------------------------------------------
@@ -300,7 +280,6 @@ function nullableNumber(
   if (
     typeof value ===
       "number" &&
-
     Number.isFinite(
       value,
     )
@@ -308,7 +287,6 @@ function nullableNumber(
 
     return value;
   }
-
 
   if (
     typeof value ===
@@ -320,7 +298,6 @@ function nullableNumber(
         value,
       );
 
-
     if (
       Number.isFinite(
         parsed,
@@ -331,10 +308,8 @@ function nullableNumber(
     }
   }
 
-
   return null;
 }
-
 
 /*
  * --------------------------------------------------
@@ -362,12 +337,10 @@ function normalizeBookingIntent(
 
       : {};
 
-
   const rawAction =
     nullableString(
       input.action,
     );
-
 
   const allowedActions:
     BookingIntentAction[] =
@@ -380,7 +353,6 @@ function normalizeBookingIntent(
       "cancel",
     ];
 
-
   const action =
     allowedActions.includes(
       rawAction as
@@ -392,12 +364,10 @@ function normalizeBookingIntent(
 
       : "none";
 
-
   const rawType =
     nullableString(
       input.bookingType,
     );
-
 
   const bookingType:
     BookingIntentType =
@@ -413,13 +383,11 @@ function normalizeBookingIntent(
 
         : null;
 
-
   const confidence =
     nullableNumber(
       input.confidence,
     ) ??
     0;
-
 
   return {
 
@@ -499,7 +467,6 @@ function normalizeBookingIntent(
   };
 }
 
-
 /*
  * --------------------------------------------------
  * Build recent conversation context
@@ -520,7 +487,7 @@ function buildHistoryContext(
         item.text
           .trim()
           .length >
-          0 &&
+        0 &&
 
         item.senderType !==
           "system",
@@ -559,7 +526,6 @@ function buildHistoryContext(
 
               : "ASSISTANT";
 
-
         return `${speaker}: ${item.text}`;
       },
     )
@@ -567,7 +533,6 @@ function buildHistoryContext(
       "\n",
     );
 }
-
 
 /*
  * --------------------------------------------------
@@ -607,7 +572,6 @@ export async function extractBookingIntent(
       history,
     );
 
-
   const existingSessionContext =
     existingSession
 
@@ -643,7 +607,6 @@ export async function extractBookingIntent(
         })
 
       : "null";
-
 
   /*
    * ------------------------------------------------
@@ -684,13 +647,91 @@ Use exactly this structure:
   "time": "HH:mm|null",
   "start": "ISO-8601|null",
   "end": "ISO-8601|null",
-  "adults": "number|null",
-  "children": "number|null",
-  "quantity": "number|null",
-  "slotNumber": "number|null",
+  "adults": number_or_null,
+  "children": number_or_null,
+  "quantity": number_or_null,
+  "slotNumber": number_or_null,
   "confidence": 0.0,
   "reason": "brief reason"
 }
+
+/*
+ * --------------------------------------------------
+ * Booking-type semantics
+ * --------------------------------------------------
+ *
+ * The same generic intent schema supports multiple
+ * booking domains.
+ *
+ * APPOINTMENT
+ *
+ * - date = appointment date
+ * - time = appointment time
+ * - start = appointment start datetime
+ * - end = appointment end datetime when known
+ * - offeringQuery = service / treatment / calendar
+ * - resourceQuery = doctor / therapist / staff/resource
+ * - adults/children/quantity are optional
+ *
+ * ACCOMMODATION
+ *
+ * - date = check-in date
+ * - time = optional check-in time when explicitly known
+ * - start = check-in timestamp or normalized check-in
+ *   boundary when the provider requires it
+ * - end = check-out timestamp or normalized check-out
+ *   boundary
+ * - offeringQuery = room type / accommodation offering
+ * - branchQuery = property / hotel / location
+ * - resourceQuery = optional room/resource/rate
+ * - adults = number of adult guests
+ * - children = number of child guests
+ * - quantity = number of rooms/units
+ *
+ * IMPORTANT:
+ *
+ * For accommodation, NEVER interpret the check-out
+ * date as the appointment end time.
+ *
+ * For accommodation:
+ *
+ * "10 Oct to 12 Oct"
+ *
+ * means:
+ *
+ * start = check-in
+ * end = check-out
+ *
+ * For appointment:
+ *
+ * "10 Oct at 3pm"
+ *
+ * means:
+ *
+ * date = 10 Oct
+ * time = 3pm
+ *
+ * Preserve the customer's explicitly supplied values.
+ * Do not invent missing dates, times, guest counts or
+ * room quantities.
+ *
+ * When adults, children or quantity are present,
+ * return them as JSON numbers, not strings.
+ */
+
+/*
+ * --------------------------------------------------
+ * Booking-type selection rules
+ * --------------------------------------------------
+ */
+
+Booking-type selection rules:
+
+- Use bookingType = "appointment" for time-slot based services, consultations, treatments, visits or appointments.
+- Use bookingType = "accommodation" for rooms, stays, hotel/property reservations or date-range stays.
+- When the customer clearly refers to a stay, room, hotel, check-in or check-out, classify as accommodation.
+- When the customer clearly refers to an appointment, consultation, treatment, service slot or practitioner, classify as appointment.
+- If bookingType cannot be determined confidently, return bookingType = null rather than guessing.
 
 Rules:
 
@@ -737,9 +778,56 @@ Rules:
 
 13. If there is no booking intent, return action "none".
 
+Accommodation examples:
+
+- Customer: "I need a room from 10 to 12 October."
+  bookingType = "accommodation"
+  date = "2026-10-10"
+  start represents check-in
+  end represents check-out
+
+- Customer: "I need two rooms for 2 adults and 1 child."
+  bookingType = "accommodation"
+  quantity = 2
+  adults = 2
+  children = 1
+
+- Customer: "Book a deluxe room at Alam Impian from 10 to 12 October."
+  bookingType = "accommodation"
+  offeringQuery = "deluxe room"
+  branchQuery = "Alam Impian"
+  start represents check-in
+  end represents check-out
+
+- Customer: "Can I stay from Friday to Sunday for two adults?"
+  bookingType = "accommodation"
+  start represents Friday check-in
+  end represents Sunday check-out
+  adults = 2
+
+- Customer: "I need one room for 2 adults and 2 children."
+  bookingType = "accommodation"
+  quantity = 1
+  adults = 2
+  children = 2
+
+For accommodation, do not convert a check-out date into an appointment-style end time.
+
+For appointment:
+
+- Customer: "I want wound dressing tomorrow at 3pm."
+  bookingType = "appointment"
+  offeringQuery = "wound dressing"
+  date = the appropriate calendar date for tomorrow
+  time = "15:00"
+
+- Customer: "Book physiotherapy at 4pm."
+  bookingType = "appointment"
+  offeringQuery = "physiotherapy"
+  time = "16:00"
+
 Return JSON only.
 `.trim();
-
 
   /*
    * ------------------------------------------------
@@ -751,7 +839,6 @@ Return JSON only.
 
     const response =
       await ai.chat({
-
         messages: [
 
           {
@@ -779,7 +866,6 @@ Return JSON only.
           0,
       });
 
-
     /*
      * ----------------------------------------------
      * Diagnostic logging
@@ -799,7 +885,6 @@ Return JSON only.
       },
     );
 
-
     /*
      * ----------------------------------------------
      * Extract JSON
@@ -810,7 +895,6 @@ Return JSON only.
       extractJSONObject(
         response.text,
       );
-
 
     if (
       !json
@@ -825,12 +909,10 @@ Return JSON only.
         },
       );
 
-
       return emptyBookingIntent(
         "AI did not return a JSON object.",
       );
     }
-
 
     /*
      * ----------------------------------------------
@@ -840,7 +922,6 @@ Return JSON only.
 
     let parsed:
       unknown;
-
 
     try {
 
@@ -867,12 +948,10 @@ Return JSON only.
         },
       );
 
-
       return emptyBookingIntent(
         "AI returned invalid JSON.",
       );
     }
-
 
     /*
      * ----------------------------------------------
@@ -918,7 +997,6 @@ Return JSON only.
             : error,
       },
     );
-
 
     return emptyBookingIntent(
       "AI booking intent request failed.",

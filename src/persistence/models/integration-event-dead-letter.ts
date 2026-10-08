@@ -1,23 +1,32 @@
 export interface IntegrationEventDeadLetter {
 
-  id?: number;
+  id?:
+    number;
 
-  eventId: string;
+  eventId:
+    string;
 
-  tenantId: string;
+  tenantId:
+    string;
 
-  errorCode: string;
+  errorCode:
+    string;
 
-  errorMessage: string;
+  errorMessage:
+    string;
 
-  retryable: boolean;
+  retryable:
+    boolean;
 
-  attempts: number;
+  attempts:
+    number;
 
-  payload: string;
+  payload:
+    string;
 
-  createdAt: string;
+  createdAt:
+    string;
 
-  updatedAt: string;
-
+  updatedAt:
+    string;
 }

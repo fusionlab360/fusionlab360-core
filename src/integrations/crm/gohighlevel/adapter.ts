@@ -61,6 +61,10 @@ import type {
   GHLEventConfiguration,
 } from "./events/config";
 
+import {
+  discoverGHLEventConfiguration,
+} from "./events/discovery";
+
 const FUSIONLAB_CONTACT_NOTE_TITLE =
   "FusionLab360 Contact Notes";
 
@@ -297,6 +301,138 @@ function getGHLEventConfiguration(
   };
 }
 
+async function resolveGHLEventConfiguration(
+  context:
+    RequestContext,
+):
+  Promise<GHLEventConfiguration> {
+
+  const providerConfiguration =
+    context.tenant.integrations.crm
+      .configuration
+      ?.providerConfiguration;
+
+  const rawConfiguration =
+    providerConfiguration?.contactEvents;
+
+  if (
+    typeof rawConfiguration !== "object" ||
+    rawConfiguration === null
+  ) {
+    throw new Error(
+      "GoHighLevel Contact Events configuration is not configured.",
+    );
+  }
+
+  const configuration =
+    rawConfiguration as Record<
+      string,
+      unknown
+    >;
+
+  const schemaKey =
+    typeof configuration.schemaKey ===
+      "string"
+      ? configuration.schemaKey.trim()
+      : "";
+
+  const dateFieldKey =
+    typeof configuration.dateFieldKey ===
+      "string"
+      ? configuration.dateFieldKey.trim()
+      : "";
+
+  const typeFieldKey =
+    typeof configuration.typeFieldKey ===
+      "string"
+      ? configuration.typeFieldKey.trim()
+      : "";
+
+  if (
+    !schemaKey ||
+    !dateFieldKey ||
+    !typeFieldKey
+  ) {
+    throw new Error(
+      "GoHighLevel Contact Events requires schemaKey, dateFieldKey and typeFieldKey.",
+    );
+  }
+
+  const derivedConfigurationFields = [
+    configuration.primaryDisplayFieldKey,
+    configuration.associationId,
+    configuration.firstObjectKey,
+    configuration.secondObjectKey,
+  ];
+
+  const hasCompleteConfiguration =
+    derivedConfigurationFields.every(
+      (
+        value,
+      ) =>
+        typeof value ===
+          "string" &&
+        value.trim().length >
+          0,
+    );
+
+  if (
+    hasCompleteConfiguration
+  ) {
+    return getGHLEventConfiguration(
+      context,
+    );
+  }
+
+  const credentials =
+    getGHLCredentials(
+      context,
+    );
+
+  const discovered =
+    await discoverGHLEventConfiguration(
+      credentials.apiKey,
+      credentials.locationId,
+      schemaKey,
+      dateFieldKey,
+      typeFieldKey,
+    );
+
+  logger.info(
+    "GHL contact event configuration dynamically discovered",
+    {
+      tenantId:
+        context.tenant.id,
+
+      locationId:
+        credentials.locationId,
+
+      schemaKey:
+        discovered.schemaKey,
+
+      primaryDisplayFieldKey:
+        discovered.primaryDisplayFieldKey,
+
+      dateFieldKey:
+        discovered.dateFieldKey,
+
+      typeFieldKey:
+        discovered.typeFieldKey,
+
+      associationId:
+        discovered.associationId,
+
+      firstObjectKey:
+        discovered.firstObjectKey,
+
+      secondObjectKey:
+        discovered.secondObjectKey,
+    },
+  );
+
+  return discovered;
+}
+
 
 function getGHLRecordProperty(
   properties:
@@ -346,8 +482,10 @@ function getGHLRecordProperty(
 
 
 function normalizeEventDate(
-  value: unknown,
-): string | undefined {
+  value:
+    unknown,
+):
+  string | undefined {
 
   if (
     typeof value !==
@@ -356,27 +494,45 @@ function normalizeEventDate(
     return undefined;
   }
 
-
   const trimmed =
     value.trim();
 
-
-  if (!trimmed) {
-    return undefined;
-  }
-
-
   if (
-    /^\d{4}-\d{2}-\d{2}/.test(
+    !/^\d{4}-\d{2}-\d{2}$/.test(
       trimmed,
     )
   ) {
-    return trimmed.slice(
-      0,
-      10,
-    );
+    return undefined;
   }
 
+  const [
+    year,
+    month,
+    day,
+  ] =
+    trimmed
+      .split("-")
+      .map(Number);
+
+  const date =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day,
+      ),
+    );
+
+  if (
+    date.getUTCFullYear() !==
+      year ||
+    date.getUTCMonth() !==
+      month - 1 ||
+    date.getUTCDate() !==
+      day
+  ) {
+    return undefined;
+  }
 
   return trimmed;
 }
@@ -524,53 +680,6 @@ export const goHighLevelAdapter: CRMAdapter = {
       ),
     );
 
-
-  /*
-   * --------------------------------------------------
-   * 2. Synchronize Contact Events
-   * --------------------------------------------------
-   *
-   * The domain layer parses Notes into events[].
-   *
-   * The GHL adapter owns the provider-specific
-   * persistence of those events.
-   */
-
-  if (
-    Object.prototype.hasOwnProperty.call(
-      payload,
-      "events",
-    )
-  ) {
-
-    const events =
-      payload.events ??
-      [];
-
-
-    logger.info(
-      "GHL contact event synchronization requested",
-      {
-        contactId:
-          id,
-
-        eventCount:
-          events.length,
-      },
-    );
-
-
-    await this.syncContactEvents(
-      context,
-
-      {
-        contactId:
-          id,
-
-        events,
-      },
-    );
-  }
 
 
   logger.info(
@@ -733,7 +842,7 @@ logger.info(
 
   },
 
-      async deleteContact(
+    async deleteContact(
     context: RequestContext,
     id: string,
   ) {
@@ -743,125 +852,198 @@ logger.info(
         context,
       );
 
+    let deletedEventCount =
+      0;
 
-    const eventConfiguration =
-      getGHLEventConfiguration(
-        context,
-      );
+    /*
+     * --------------------------------------------------
+     * 1. Best-effort Event cleanup
+     * --------------------------------------------------
+     *
+     * Event cleanup must never prevent the primary
+     * Contact deletion from happening.
+     * --------------------------------------------------
+     */
 
+    try {
 
-    const relations =
-      await getGHLEventRelations(
-        context,
+      const eventConfiguration =
+        await resolveGHLEventConfiguration(
+          context,
+        );
 
-        id,
+      const relations =
+        await getGHLEventRelations(
+          context,
+          id,
+          eventConfiguration.associationId,
+        );
 
-        eventConfiguration.associationId,
-      );
+      const eventIsFirst =
+        eventConfiguration.firstObjectKey ===
+        eventConfiguration.schemaKey;
 
+      const eventIsSecond =
+        eventConfiguration.secondObjectKey ===
+        eventConfiguration.schemaKey;
 
-    const eventIsFirst =
-      eventConfiguration.firstObjectKey ===
-      eventConfiguration.schemaKey;
+      if (
+        !eventIsFirst &&
+        !eventIsSecond
+      ) {
 
+        throw new Error(
+          "GoHighLevel Contact Events association does not reference the configured event object.",
+        );
+      }
 
-    const eventIsSecond =
-      eventConfiguration.secondObjectKey ===
-      eventConfiguration.schemaKey;
+      const eventRecordIds =
+        relations.relations
+          ?.map(
+            (
+              relation,
+            ) => {
 
+              const contactRecordId =
+                eventIsFirst
+                  ? relation.secondRecordId
+                  : relation.firstRecordId;
 
-    if (
-      !eventIsFirst &&
-      !eventIsSecond
+              const eventRecordId =
+                eventIsFirst
+                  ? relation.firstRecordId
+                  : relation.secondRecordId;
+
+              if (
+                contactRecordId !==
+                id
+              ) {
+                return undefined;
+              }
+
+              return eventRecordId;
+            },
+          )
+          .filter(
+            (
+              recordId,
+            ): recordId is string =>
+              typeof recordId ===
+                "string" &&
+              recordId.length >
+                0,
+          ) ??
+        [];
+
+      for (
+        const eventRecordId of
+          eventRecordIds
+      ) {
+
+        try {
+
+          await deleteGHLEventRecord(
+            context,
+            eventConfiguration.schemaKey,
+            eventRecordId,
+          );
+
+          deletedEventCount++;
+
+        } catch (
+          error
+        ) {
+
+          const status =
+            typeof error ===
+              "object" &&
+            error !== null &&
+            "status" in error
+              ? (
+                  error as {
+                    status?:
+                      unknown;
+                  }
+                ).status
+              : undefined;
+
+          if (
+            status ===
+            404
+          ) {
+
+            deletedEventCount++;
+
+            logger.warn(
+              "GHL contact event already absent during contact deletion",
+              {
+                contactId:
+                  id,
+
+                eventRecordId,
+              },
+            );
+
+            continue;
+          }
+
+          throw error;
+        }
+      }
+
+    } catch (
+      error
     ) {
-      throw new Error(
-        "GoHighLevel Contact Events association does not reference the configured event object.",
+
+      logger.warn(
+        "GHL contact event cleanup skipped during contact deletion",
+        {
+          tenantId:
+            context.tenant.id,
+
+          locationId:
+            credentials.locationId,
+
+          contactId:
+            id,
+
+          deletedEventCount,
+
+          error,
+        },
       );
     }
 
-
-    const eventRecordIds =
-      relations.relations
-        ?.map(
-          (relation) => {
-
-            const contactRecordId =
-              eventIsFirst
-                ? relation.secondRecordId
-                : relation.firstRecordId;
-
-
-            const eventRecordId =
-              eventIsFirst
-                ? relation.firstRecordId
-                : relation.secondRecordId;
-
-
-            if (
-              contactRecordId !==
-              id
-            ) {
-              return undefined;
-            }
-
-
-            return eventRecordId;
-          },
-        )
-        .filter(
-          (
-            recordId,
-          ): recordId is string =>
-            typeof recordId ===
-            "string" &&
-            recordId.length > 0,
-        ) ??
-      [];
-
-
-    for (
-      const eventRecordId of
-        eventRecordIds
-    ) {
-
-      await deleteGHLEventRecord(
-        context,
-
-        eventConfiguration.schemaKey,
-
-        eventRecordId,
-      );
-    }
-
+    /*
+     * --------------------------------------------------
+     * 2. Delete the Contact
+     * --------------------------------------------------
+     */
 
     const response =
-  await deleteContact(
-    context,
-
-    id,
-  );
-
+      await deleteContact(
+        context,
+        id,
+      );
 
     if (
       !response.succeeded
     ) {
+
       throw new Error(
         "Failed to delete GoHighLevel contact.",
       );
     }
 
-
     logger.info(
       "GHL contact deleted",
       {
         id,
-
-        deletedEventCount:
-          eventRecordIds.length,
+        deletedEventCount,
       },
     );
-  },
 
+  },
   // -------------------------------------------------
   // CONTACT EVENT OPERATIONS
   // -------------------------------------------------
@@ -878,9 +1060,44 @@ logger.info(
 
 
     const eventConfiguration =
-      getGHLEventConfiguration(
-        context,
-      );
+  await resolveGHLEventConfiguration(
+    context,
+  );
+
+  logger.info(
+  "GHL contact event configuration resolved",
+  {
+    tenantId:
+      context.tenant.id,
+
+    locationId:
+      credentials.locationId,
+
+    contactId:
+      input.contactId,
+
+    schemaKey:
+      eventConfiguration.schemaKey,
+
+    primaryDisplayFieldKey:
+      eventConfiguration.primaryDisplayFieldKey,
+
+    dateFieldKey:
+      eventConfiguration.dateFieldKey,
+
+    typeFieldKey:
+      eventConfiguration.typeFieldKey,
+
+    associationId:
+      eventConfiguration.associationId,
+
+    firstObjectKey:
+      eventConfiguration.firstObjectKey,
+
+    secondObjectKey:
+      eventConfiguration.secondObjectKey,
+  },
+);
 
 
     logger.info(
@@ -1107,15 +1324,37 @@ logger.info(
      */
 
     const incomingEventKeys =
-      new Set(
-        input.events.map(
-          (event) =>
-            buildContactEventKey(
-              event.date,
-              event.type.trim(),
-            ),
-        ),
+    new Set<string>();
+
+  for (
+    const event of
+      input.events
+  ) {
+
+    const normalizedDate =
+      normalizeEventDate(
+        event.date,
       );
+
+    const normalizedType =
+      normalizeEventType(
+        event.type,
+      );
+
+    if (
+      !normalizedDate ||
+      !normalizedType
+    ) {
+      continue;
+    }
+
+    incomingEventKeys.add(
+      buildContactEventKey(
+        normalizedDate,
+        normalizedType,
+      ),
+    );
+  }
 
 
     let created = 0;
@@ -1136,13 +1375,41 @@ logger.info(
         input.events
     ) {
 
+      const normalizedDate =
+        normalizeEventDate(
+          event.date,
+        );
+
       const normalizedType =
-        event.type.trim();
+        normalizeEventType(
+          event.type,
+        );
 
+      if (
+        !normalizedDate ||
+        !normalizedType
+      ) {
 
+        logger.warn(
+          "GHL contact event skipped because date/type is invalid",
+          {
+            contactId:
+              input.contactId,
+
+            eventDate:
+              event.date,
+
+            eventType:
+              event.type,
+          },
+        );
+
+        continue;
+      }
+           
       const eventKey =
         buildContactEventKey(
-          event.date,
+          normalizedDate,
           normalizedType,
         );
 
@@ -1258,7 +1525,7 @@ if (
 
 
       const eventLabel =
-        `${normalizedType} - ${event.date}`;
+        `${normalizedType} - ${normalizedDate}`;
 
 
       logger.info(
@@ -1305,8 +1572,7 @@ if (
           .dateFieldKey,
       )
     ]:
-      event.date,
-
+        normalizedDate,
     [
       getGHLPropertyName(
         eventConfiguration
@@ -1330,7 +1596,6 @@ if (
       const eventRecordId =
         recordResponse.record?.id;
 
-
       if (
         !eventRecordId
       ) {
@@ -1338,6 +1603,20 @@ if (
           "GHL contact event creation returned no record ID.",
         );
       }
+
+      const currentRecordIds =
+        existingEvents.get(
+          eventKey,
+        ) ?? [];
+
+      currentRecordIds.push(
+        eventRecordId,
+      );
+
+      existingEvents.set(
+        eventKey,
+        currentRecordIds,
+      );
 
 
       /*
@@ -1357,18 +1636,66 @@ if (
           : eventRecordId;
 
 
-      await createGHLEventRelation(
-          context,
+      try {
 
-          eventConfiguration.associationId,
+  await createGHLEventRelation(
+    context,
+    eventConfiguration.associationId,
+    firstRecordId,
+    secondRecordId,
+  );
 
-          firstRecordId,
+} catch (
+  error
+) {
 
-          secondRecordId,
-        );
+  logger.error(
+    "GHL contact event relation creation failed; deleting orphan event record",
+    {
+      contactId:
+        input.contactId,
 
+      eventRecordId,
 
-      created++;
+      eventDate:
+        normalizedDate,
+
+      eventType:
+        normalizedType,
+
+      error,
+    },
+  );
+
+  try {
+
+    await deleteGHLEventRecord(
+      context,
+      eventConfiguration.schemaKey,
+      eventRecordId,
+    );
+
+  } catch (
+    cleanupError
+  ) {
+
+    logger.error(
+      "GHL orphan contact event cleanup failed",
+      {
+        contactId:
+          input.contactId,
+
+        eventRecordId,
+
+        cleanupError,
+      },
+    );
+  }
+
+  throw error;
+}
+
+created++;
 
 
       logger.info(

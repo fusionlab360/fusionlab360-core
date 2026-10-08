@@ -65,17 +65,6 @@ export class AIAgentProfileRepository
       handoffTemplate:
         result.handoff_template as string,
 
-      systemInstructions:
-        result.system_instructions as string,
-
-      aiInstructionsKnowledgeBaseId:
-        (
-          result.ai_instructions_knowledge_base_id as
-            string |
-            null
-        ) ??
-        undefined,
-
       createdAt:
         result.created_at as string,
 
@@ -106,15 +95,15 @@ export class AIAgentProfileRepository
           created_at,
           updated_at
         )
-        VALUES (
+       VALUES (
           ?,
           ?,
           ?,
           ?,
           ?,
           ?,
-          ?,
-          ?,
+          '',
+          NULL,
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
         )
@@ -160,10 +149,6 @@ export class AIAgentProfileRepository
 
         profile.handoffTemplate,
 
-        profile.systemInstructions,
-
-        profile.aiInstructionsKnowledgeBaseId ??
-          null,
       )
       .run();
   }

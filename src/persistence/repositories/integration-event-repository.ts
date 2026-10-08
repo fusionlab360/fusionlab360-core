@@ -238,4 +238,170 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
   }
 
+  //
+
+  async claimForProcessing(
+  tenantId:
+    string,
+
+  eventId:
+    string,
+
+  now:
+    string,
+
+  staleBefore:
+    string,
+
+  maxAttempts:
+    number,
+):
+  Promise<boolean> {
+
+  const result =
+    await this.db
+      .prepare(
+        `
+        UPDATE integration_events
+        SET
+          processing_status =
+            'processing',
+
+          processing_attempts =
+            processing_attempts + 1,
+
+          processing_started_at =
+            ?,
+
+          processed_at =
+            NULL,
+
+          last_error_code =
+            NULL,
+
+          last_error_message =
+            NULL
+
+        WHERE tenant_id =
+          ?
+
+          AND event_id =
+          ?
+
+          AND processing_attempts <
+          ?
+
+          AND (
+            processing_status IN
+              ('received', 'failed')
+
+            OR (
+              processing_status =
+                'processing'
+
+              AND (
+                processing_started_at
+                  IS NULL
+
+                OR processing_started_at <=
+                  ?
+              )
+            )
+          )
+        `,
+      )
+      .bind(
+        now,
+        tenantId,
+        eventId,
+        maxAttempts,
+        staleBefore,
+      )
+      .run();
+
+  return (
+    result.meta.changes ===
+    1
+  );
 }
+
+//
+async markProcessed(
+  tenantId:
+    string,
+
+  eventId:
+    string,
+
+  processedAt:
+    string,
+):
+  Promise<void> {
+
+  await this.db
+    .prepare(
+      `
+      UPDATE integration_events
+      SET
+        processing_status = 'processed',
+        processing_started_at = NULL,
+        processed_at = ?,
+        last_error_code = NULL,
+        last_error_message = NULL
+      WHERE tenant_id = ?
+        AND event_id = ?
+      `,
+    )
+    .bind(
+      processedAt,
+      tenantId,
+      eventId,
+    )
+    .run();
+}
+
+//
+async markFailed(
+  tenantId:
+    string,
+
+  eventId:
+    string,
+
+  status:
+    "failed" |
+    "dead_letter",
+
+  errorCode:
+    string,
+
+  errorMessage:
+    string,
+):
+  Promise<void> {
+
+  await this.db
+    .prepare(
+      `
+      UPDATE integration_events
+      SET
+        processing_status = ?,
+        processing_started_at = NULL,
+        last_error_code = ?,
+        last_error_message = ?
+      WHERE tenant_id = ?
+        AND event_id = ?
+      `,
+    )
+    .bind(
+      status,
+      errorCode,
+      errorMessage,
+      tenantId,
+      eventId,
+    )
+    .run();
+}
+
+}
+

@@ -26,6 +26,7 @@ import {
   getBooking,
   updateBooking,
   cancelBooking,
+  supportsBookingType,
 } from "./service";
 
 
@@ -76,6 +77,8 @@ export interface ProcessAIBookingInput {
 
   timezone?:
     string;
+
+  
 }
 
 
@@ -188,6 +191,7 @@ function readSessionData(
 }
 
 
+
 /*
  * Merge arbitrary booking data into session.
  */
@@ -269,11 +273,57 @@ function buildDataJson(
       intent.end;
   }
 
+  /*
+ * ----------------------------------------------
+ * Accommodation guest/unit data
+ * ----------------------------------------------
+ *
+ * These fields are optional for appointments but
+ * become important for accommodation bookings.
+ *
+ * A null value means "not supplied in this message",
+ * so an existing confirmed conversational value is
+ * preserved.
+ *
+ * Zero is valid and must not be treated as missing.
+ * ----------------------------------------------
+ */
+
+if (
+  intent.adults !==
+  null
+) {
+
+  data.adults =
+    intent.adults;
+}
+
+
+if (
+  intent.children !==
+  null
+) {
+
+  data.children =
+    intent.children;
+}
+
+
+if (
+  intent.quantity !==
+  null
+) {
+
+  data.quantity =
+    intent.quantity;
+}
+
 
   return JSON.stringify(
     data,
   );
 }
+
 
 
 /*
@@ -306,6 +356,70 @@ function getStoredString(
     ? value
 
     : null;
+}
+
+/*
+ * --------------------------------------------------
+ * Get stored numeric value
+ * --------------------------------------------------
+ */
+
+function getStoredNumber(
+  session:
+    AIBookingSession |
+    null,
+
+  key:
+    string,
+):
+  number |
+  null {
+
+  const data =
+    readSessionData(
+      session,
+    );
+
+
+  const value =
+    data[key];
+
+
+  if (
+    typeof value ===
+      "number" &&
+    Number.isFinite(
+      value,
+    )
+  ) {
+
+    return value;
+  }
+
+
+  if (
+    typeof value ===
+      "string"
+  ) {
+
+    const parsed =
+      Number(
+        value,
+      );
+
+
+    if (
+      Number.isFinite(
+        parsed,
+      )
+    ) {
+
+      return parsed;
+    }
+  }
+
+
+  return null;
 }
 
 
@@ -616,8 +730,16 @@ function buildOfferingPrompt(
         typeof listBookingOfferings
       >
     >,
+
+  bookingType:
+    BookingType,
 ):
   string {
+
+  const isAccommodation =
+    bookingType ===
+    "accommodation";
+
 
   if (
     offerings.length ===
@@ -625,8 +747,9 @@ function buildOfferingPrompt(
   ) {
 
     return (
-      "I’m sorry, but I don't have any appointment calendars available right now. " +
-      "A member of the team can assist you."
+      isAccommodation
+        ? "I’m sorry, but I don't have any accommodation options available right now. A member of the team can assist you."
+        : "I’m sorry, but I don't have any appointment options available right now. A member of the team can assist you."
     );
   }
 
@@ -637,8 +760,9 @@ function buildOfferingPrompt(
   ) {
 
     return (
-      `Sure, I can help with ${offerings[0].name}. ` +
-      "What date would you like to book?"
+      isAccommodation
+        ? `Sure, I can help with ${offerings[0].name}. What check-in date would you like?`
+        : `Sure, I can help with ${offerings[0].name}. What date would you like to book?`
     );
   }
 
@@ -659,14 +783,17 @@ function buildOfferingPrompt(
 
 
   return (
-    "Sure, I can help with that. " +
-    "Which appointment would you like to book?\n\n" +
-    lines.join(
-      "\n",
-    )
+    isAccommodation
+      ? "Sure, I can help with that. Which accommodation would you like to book?\n\n" +
+        lines.join(
+          "\n",
+        )
+      : "Sure, I can help with that. Which appointment would you like to book?\n\n" +
+        lines.join(
+          "\n",
+        )
   );
 }
-
 
 /*
  * --------------------------------------------------
@@ -679,6 +806,29 @@ function buildDatePrompt():
 
   return (
     "What date would you like to book the appointment?"
+  );
+}
+
+/*
+ * --------------------------------------------------
+ * Accommodation prompts
+ * --------------------------------------------------
+ */
+
+function buildAccommodationCheckInPrompt():
+  string {
+
+  return (
+    "What check-in date would you like?"
+  );
+}
+
+
+function buildAccommodationCheckOutPrompt():
+  string {
+
+  return (
+    "What check-out date would you like?"
   );
 }
 
@@ -774,6 +924,241 @@ function localDateTimeToISO(
   return result.toISOString();
 }
 
+
+/*
+ * --------------------------------------------------
+ * Validate accommodation quantities
+ * --------------------------------------------------
+ *
+ * Provider-neutral validation.
+ *
+ * These fields represent quantities, not free-form
+ * text. Reject invalid negative/fractional values
+ * before they reach a PMS or channel manager.
+ *
+ * null means the customer has not supplied the value.
+ * --------------------------------------------------
+ */
+
+function validateAccommodationQuantities(
+  adults:
+    number |
+    null,
+
+  children:
+    number |
+    null,
+
+  quantity:
+    number |
+    null,
+):
+  string |
+  null {
+
+  const values:
+    Array<{
+      name:
+        string;
+
+      value:
+        number |
+        null;
+
+      minimum:
+        number;
+
+      integer:
+        boolean;
+    }> =
+    [
+      {
+        name:
+          "adults",
+
+        value:
+          adults,
+
+        minimum:
+          0,
+
+        integer:
+          true,
+      },
+
+      {
+        name:
+          "children",
+
+        value:
+          children,
+
+        minimum:
+          0,
+
+        integer:
+          true,
+      },
+
+      {
+        name:
+          "quantity",
+
+        value:
+          quantity,
+
+        minimum:
+          1,
+
+        integer:
+          true,
+      },
+    ];
+
+
+  for (
+    const item of
+      values
+  ) {
+
+    if (
+      item.value ===
+      null
+    ) {
+
+      continue;
+    }
+
+
+    if (
+      !Number.isFinite(
+        item.value,
+      )
+    ) {
+
+      return (
+        `${item.name} must be a valid number.`
+      );
+    }
+
+
+    if (
+      item.integer &&
+      !Number.isInteger(
+        item.value,
+      )
+    ) {
+
+      return (
+        `${item.name} must be a whole number.`
+      );
+    }
+
+
+    if (
+      item.value <
+      item.minimum
+    ) {
+
+      return (
+        item.name ===
+          "quantity"
+
+          ? "The number of rooms or units must be at least 1."
+
+          : `${item.name} cannot be negative.`
+      );
+    }
+  }
+
+
+  return null;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Accommodation date range
+ * --------------------------------------------------
+ *
+ * Accommodation uses:
+ *
+ * start = check-in
+ * end   = check-out
+ *
+ * Unlike appointments, the end is not calculated from
+ * a duration and is not a same-day slot boundary.
+ * --------------------------------------------------
+ */
+
+function buildAccommodationRange(
+  start:
+    string |
+    null,
+
+  end:
+    string |
+    null,
+):
+  {
+    start:
+      string;
+
+    end:
+      string;
+  }
+  | null {
+
+  if (
+    !start ||
+    !end
+  ) {
+
+    return null;
+  }
+
+
+  const startDate =
+    new Date(
+      start,
+    );
+
+  const endDate =
+    new Date(
+      end,
+    );
+
+
+  if (
+    Number.isNaN(
+      startDate.getTime(),
+    ) ||
+    Number.isNaN(
+      endDate.getTime(),
+    )
+  ) {
+
+    return null;
+  }
+
+
+  if (
+    endDate.getTime() <=
+    startDate.getTime()
+  ) {
+
+    return null;
+  }
+
+
+  return {
+    start:
+      startDate.toISOString(),
+
+    end:
+      endDate.toISOString(),
+  };
+}
 
 /*
  * --------------------------------------------------
@@ -2181,9 +2566,30 @@ function isAuthorizedBookingExecution(
   return true;
 }
 
-async function isBookingSlotStillAvailable(
+/*
+ * --------------------------------------------------
+ * Re-check booking availability before confirmation
+ * --------------------------------------------------
+ *
+ * Appointment:
+ *
+ *   checks the exact slot inside the requested day.
+ *
+ * Accommodation:
+ *
+ *   checks the exact check-in -> check-out range.
+ *
+ * This is provider-neutral and works for both
+ * booking domains.
+ * --------------------------------------------------
+ */
+
+async function isBookingStillAvailable(
   context:
     IntegrationContext,
+
+  bookingType:
+    BookingType,
 
   offeringId:
     string,
@@ -2196,68 +2602,168 @@ async function isBookingSlotStillAvailable(
 
   timezone:
     string,
+
+  adults:
+    number |
+    null = null,
+
+  children:
+    number |
+    null = null,
+
+  quantity:
+    number |
+    null = null,
 ):
   Promise<boolean> {
 
-  const date =
-    new Intl.DateTimeFormat(
-      "en-CA",
-      {
-        timeZone:
-          timezone,
+  let availabilityStart:
+    string;
 
-        year:
-          "numeric",
+  let availabilityEnd:
+    string;
 
-        month:
-          "2-digit",
 
-        day:
-          "2-digit",
-      },
-    ).format(
-      new Date(
-        startAt,
-      ),
-    );
+  /*
+   * ----------------------------------------------
+   * Appointment availability
+   * ----------------------------------------------
+   */
 
-  const range =
-    buildDayRange(
-      date,
-      timezone,
-    );
+  if (
+    bookingType ===
+    "appointment"
+  ) {
+
+    const date =
+      new Intl.DateTimeFormat(
+        "en-CA",
+        {
+          timeZone:
+            timezone,
+
+          year:
+            "numeric",
+
+          month:
+            "2-digit",
+
+          day:
+            "2-digit",
+        },
+      ).format(
+        new Date(
+          startAt,
+        ),
+      );
+
+
+    const range =
+      buildDayRange(
+        date,
+        timezone,
+      );
+
+
+    availabilityStart =
+      range.start;
+
+    availabilityEnd =
+      range.end;
+  }
+
+  /*
+   * ----------------------------------------------
+   * Accommodation availability
+   * ----------------------------------------------
+   */
+
+  else {
+
+    availabilityStart =
+      startAt;
+
+    availabilityEnd =
+      endAt;
+  }
+
 
   const availability =
     await getBookingAvailability(
       context,
+
       {
         type:
-          "appointment",
+          bookingType,
 
         offeringId,
 
         start:
-          range.start,
+          availabilityStart,
 
         end:
-          range.end,
+          availabilityEnd,
 
         timezone,
+
+        adults:
+          adults ??
+          undefined,
+
+        children:
+          children ??
+          undefined,
+
+        quantity:
+          quantity ??
+          undefined,
       },
     );
+
+
+  /*
+   * ----------------------------------------------
+   * Match the exact validated booking range
+   * ----------------------------------------------
+   */
 
   return availability.some(
     (
       slot,
-    ) =>
-      slot.available !==
-        false &&
+    ) => {
 
-      slot.start ===
-        startAt &&
+      if (
+        slot.available ===
+        false
+      ) {
 
-      slot.end ===
-        endAt,
+        return false;
+      }
+
+
+      if (
+        bookingType ===
+        "appointment"
+      ) {
+
+        return (
+          slot.start ===
+            startAt &&
+
+          slot.end ===
+            endAt
+        );
+      }
+
+
+      return (
+        slot.start ===
+          startAt &&
+
+        slot.end ===
+          endAt
+      );
+    },
   );
 }
 
@@ -2461,9 +2967,8 @@ if (
       session,
     );
 
-  
-
-  const availabilityRefinementRequested =
+   
+ const availabilityRefinementRequested =
     isAvailabilityRefinementMessage(
       input.currentMessage,
     );
@@ -5393,14 +5898,26 @@ if (
   )
 ) {
 
-  const slotStillAvailable =
-  await isBookingSlotStillAvailable(
+ const slotStillAvailable =
+  await isBookingStillAvailable(
     input.context,
+
+    session.bookingType,
+
     session.offeringId,
+
     session.startAt,
+
     session.endAt,
+
     input.timezone ??
       DEFAULT_TIMEZONE,
+
+    session.adults,
+
+    session.children,
+
+    session.quantity,
   );
 
 if (
@@ -5720,40 +6237,58 @@ if (
    */
 
   if (
-    intent.action ===
-    "start"
-  ) {
-
-    /*
-     * If a previous booking is completed/cancelled,
-     * start fresh.
-     */
-
-if (
-  !session ||
-  session.status ===
-    "confirmed" ||
-  session.status ===
-    "cancelled" ||
-  session.status ===
-    "awaiting_slot_selection"
+  intent.action ===
+  "start"
 ) {
-      session =
-        createFreshSession(
-          input.context,
 
-          input.conversationId,
+  /*
+   * Start fresh when:
+   *
+   * - no session exists
+   * - previous booking is confirmed
+   * - previous booking is cancelled
+   * - previous flow is awaiting slot selection
+   * - booking type has changed
+   *
+   * The last condition prevents stale state from
+   * one booking type leaking into another.
+   */
 
-          bookingType,
-        );
+  const shouldCreateFreshSession =
+    !session ||
 
-    } else {
+    session.status ===
+      "confirmed" ||
 
-      session.bookingType =
-        bookingType;
-    }
-  }
+    session.status ===
+      "cancelled" ||
 
+    session.status ===
+      "awaiting_slot_selection" ||
+
+    session.bookingType !==
+      bookingType;
+
+
+  if (
+  shouldCreateFreshSession
+) {
+  session =
+    createFreshSession(
+      input.context,
+
+      input.conversationId,
+
+      bookingType,
+    );
+
+} else if (
+  session
+) {
+  session.bookingType =
+    bookingType;
+}
+}
 
   /*
    * ----------------------------------------------
@@ -5800,6 +6335,83 @@ if (
       intent,
     );
 
+  /*
+ * ----------------------------------------------
+ * Synchronize structured session fields
+ * ----------------------------------------------
+ *
+ * The session fields are the authoritative working
+ * state for the booking engine.
+ *
+ * Current intent values take precedence.
+ * Existing values are retained when the current
+ * message does not provide them.
+ * ----------------------------------------------
+ */
+
+session.adults =
+  intent.adults ??
+  getStoredNumber(
+    session,
+    "adults",
+  );
+
+
+session.children =
+  intent.children ??
+  getStoredNumber(
+    session,
+    "children",
+  );
+
+
+session.quantity =
+  intent.quantity ??
+  getStoredNumber(
+    session,
+    "quantity",
+  );
+
+console.log(
+  "AI BOOKING SESSION ATTRIBUTES",
+  {
+    tenantId:
+      input.context.tenant.id,
+
+    provider:
+      input.context.provider,
+
+    conversationId:
+      input.conversationId,
+
+    bookingType:
+      bookingType,
+
+    offeringId:
+      session.offeringId,
+
+    adults:
+      session.adults,
+
+    children:
+      session.children,
+
+    quantity:
+      session.quantity,
+
+    date:
+      getStoredString(
+        session,
+        "date",
+      ),
+
+    time:
+      getStoredString(
+        session,
+        "time",
+      ),
+  },
+);
 
   /*
    * ----------------------------------------------
@@ -5867,47 +6479,76 @@ session.updatedAt =
 
 
   /*
-   * ----------------------------------------------
-   * Current implementation is appointment-first.
-   * ----------------------------------------------
-   */
+ * ----------------------------------------------
+ * Provider capability check
+ * ----------------------------------------------
+ *
+ * The booking engine must never assume that every
+ * configured provider supports every booking domain.
+ *
+ * Capability is determined by the provider rather
+ * than by hard-coded industry logic.
+ * ----------------------------------------------
+ */
 
-  if (
-    bookingType !==
-    "appointment"
-  ) {
+const bookingTypeSupported =
+  await supportsBookingType(
+    input.context,
+    bookingType,
+  );
 
-    session.status =
-      "collecting";
+console.log(
+  "AI BOOKING PROVIDER CAPABILITY",
+  {
+    tenantId:
+      input.context.tenant.id,
+
+    provider:
+      input.context.provider,
+
+    conversationId:
+      input.conversationId,
+
+    bookingType,
+
+    supported:
+      bookingTypeSupported,
+  },
+);
 
 
-    session.updatedAt =
-      input.occurredAt;
+if (
+  !bookingTypeSupported
+) {
+
+  session.status =
+    "collecting";
+
+  session.updatedAt =
+    input.occurredAt;
+
+  await saveSession(
+    repository,
+    session,
+  );
 
 
-    await saveSession(
-      repository,
+  return {
 
-      session,
-    );
+    handled:
+      true,
 
+    state:
+      "collecting",
 
-    return {
+    intent,
 
-      handled:
-        true,
+    message:
+      "I can help with that booking, but this booking type is not connected to the current booking provider yet.",
 
-      state:
-        "collecting",
-
-      intent,
-
-      message:
-        "I can help with that booking, but accommodation booking is not connected to this provider yet.",
-
-      session,
-    };
-  }
+    session,
+  };
+}
 
 
   /*
@@ -5993,6 +6634,8 @@ session.updatedAt =
       message:
         buildOfferingPrompt(
           resolved.offerings,
+
+          bookingType,
         ),
 
       session,
@@ -6033,6 +6676,12 @@ if (
     input.currentMessage,
   )
 ) {
+
+ 
+
+  /*
+   * Existing appointment execution continues below.
+   */
 
   /*
    * ----------------------------------------------
@@ -6247,29 +6896,53 @@ if (
 
 
   const booking =
-    await createBooking(
+      await createBooking(
+        input.context,
+        {
+          type:
+            bookingType,
 
-      input.context,
+          offeringId:
+            session.offeringId,
 
-      {
+          customerId:
+            input.customerId,
 
-        type:
-          "appointment",
+          start:
+            session.startAt,
 
-        offeringId:
-          session.offeringId,
+          end:
+            session.endAt,
 
-        customerId:
-          input.customerId,
+          adults:
+            session.adults ??
+            undefined,
 
-        start:
-          session.startAt,
+          children:
+            session.children ??
+            undefined,
 
-        end:
-          session.endAt,
+          quantity:
+            session.quantity ??
+            undefined,
 
-      },
-    );
+          resourceId:
+            session.resourceId ??
+            undefined,
+
+          metadata:
+            {
+              bookingConversationId:
+                input.conversationId,
+
+              bookingSessionStatus:
+                session.status,
+
+              bookingType:
+                bookingType,
+            },
+        },
+      );
 
     if (
   !booking?.bookingId
@@ -6334,6 +7007,152 @@ if (
   };
 }
 
+/*
+ * ----------------------------------------------
+ * Verify provider-created booking
+ * ----------------------------------------------
+ *
+ * A booking is not considered successfully created
+ * merely because createBooking() returned a booking ID.
+ *
+ * Re-read the booking from the provider and verify:
+ *
+ * - the booking exists
+ * - it was not immediately cancelled
+ * - the offering is the expected offering
+ * - the start time matches the validated slot
+ * - the end time matches the validated slot
+ *
+ * This keeps the Core provider-neutral.
+ * ----------------------------------------------
+ */
+
+const verifiedCreatedBooking =
+  await getBooking(
+    input.context,
+
+    booking.bookingId,
+  );
+
+
+const providerBookingVerified =
+  verifiedCreatedBooking.bookingId ===
+    booking.bookingId &&
+
+  verifiedCreatedBooking.status !==
+    "cancelled" &&
+
+  verifiedCreatedBooking.offeringId ===
+    session.offeringId &&
+
+  verifiedCreatedBooking.start ===
+    session.startAt &&
+
+  verifiedCreatedBooking.end ===
+    session.endAt;
+
+
+if (
+  !providerBookingVerified
+) {
+
+  console.error(
+    "AI BOOKING CREATE VERIFICATION FAILED",
+    {
+      tenantId:
+        input.context.tenant.id,
+
+      provider:
+        input.context.provider,
+
+      conversationId:
+        input.conversationId,
+
+      bookingId:
+        booking.bookingId,
+
+      expectedOfferingId:
+        session.offeringId,
+
+      actualOfferingId:
+        verifiedCreatedBooking.offeringId,
+
+      expectedStart:
+        session.startAt,
+
+      actualStart:
+        verifiedCreatedBooking.start,
+
+      expectedEnd:
+        session.endAt,
+
+      actualEnd:
+        verifiedCreatedBooking.end,
+
+      providerStatus:
+        verifiedCreatedBooking.status,
+    },
+  );
+
+
+  const failedBookingData =
+    readSessionData(
+      session,
+    );
+
+
+  failedBookingData.bookingVerification =
+    "failed";
+
+  failedBookingData.bookingVerificationAt =
+    input.occurredAt;
+
+
+  session.dataJson =
+    JSON.stringify(
+      failedBookingData,
+    );
+
+  session.status =
+    "collecting";
+
+  session.pendingSlotsJson =
+    null;
+
+  session.updatedAt =
+    input.occurredAt;
+
+
+  await saveSession(
+    repository,
+
+    session,
+  );
+
+
+  return {
+    handled:
+      true,
+
+    state:
+      "collecting",
+
+    intent,
+
+    message:
+      "I couldn't verify the appointment with our booking system. Please contact our team before trying again.",
+
+    session,
+
+    actionExecuted:
+      true,
+
+    actionResult:
+      "failed",
+
+    booking,
+  };
+}
 
   /*
    * ----------------------------------------------
@@ -6348,12 +7167,11 @@ if (
 
 
   bookingData.bookingId =
-    booking.bookingId;
-
+  verifiedCreatedBooking.bookingId;
 
   bookingData.confirmationCode =
-    booking.confirmationCode ??
-    booking.bookingId;
+    verifiedCreatedBooking.confirmationCode ??
+    verifiedCreatedBooking.bookingId;
 
 
   bookingData.confirmedAt =
@@ -6380,26 +7198,25 @@ if (
     input.context.provider,
 
   bookingId:
-    booking.bookingId,
+  verifiedCreatedBooking.bookingId,
 
   offeringId:
-    booking.offeringId,
+    verifiedCreatedBooking.offeringId,
 
   customerId:
-    booking.customerId,
+    verifiedCreatedBooking.customerId,
 
   start:
-    booking.start,
+    verifiedCreatedBooking.start,
 
   end:
-    booking.end,
+    verifiedCreatedBooking.end,
 };
 
-session.dataJson =
-  JSON.stringify(
-    bookingData,
-  );
-
+  session.dataJson =
+    JSON.stringify(
+      bookingData,
+    );
 
   session.status =
     "confirmed";
@@ -6408,17 +7225,14 @@ session.dataJson =
   session.pendingSlotsJson =
     null;
 
-
   session.updatedAt =
     input.occurredAt;
-
 
   await saveSession(
     repository,
 
     session,
   );
-
 
   console.log(
     "AI BOOKING CREATE SUCCESS",
@@ -6482,7 +7296,6 @@ session.dataJson =
       ),
     );
 
-
   const bookingTime =
     formatSlot(
       {
@@ -6506,7 +7319,6 @@ session.dataJson =
         DEFAULT_TIMEZONE,
     );
 
-
   return {
 
   handled:
@@ -6518,8 +7330,33 @@ session.dataJson =
   intent,
 
   message:
-    `You're all booked. Your appointment is confirmed for ${bookingDate} at ${bookingTime}.`,
+  bookingType ===
+    "accommodation"
 
+    ? `Your accommodation booking is confirmed from ${bookingDate} to ${new Intl.DateTimeFormat(
+        "en-MY",
+        {
+          timeZone:
+            input.timezone ??
+            DEFAULT_TIMEZONE,
+
+          year:
+            "numeric",
+
+          month:
+            "long",
+
+          day:
+            "numeric",
+        },
+      ).format(
+        new Date(
+          booking.end,
+        ),
+      )}.`
+
+    : `You're all booked. Your appointment is confirmed for ${bookingDate} at ${bookingTime}.`,
+  
   session,
 
   actionExecuted:
@@ -6532,7 +7369,552 @@ session.dataJson =
 };
 }
 
+/*
+ * ==================================================
+ * Accommodation booking flow
+ * ==================================================
+ *
+ * Accommodation is date-range based.
+ *
+ * Required:
+ *
+ * - offering
+ * - check-in
+ * - check-out
+ *
+ * Optional:
+ *
+ * - adults
+ * - children
+ * - quantity
+ *
+ * This branch must never use appointment slot logic.
+ * ==================================================
+ */
 
+if (
+  bookingType ===
+  "accommodation"
+) {
+
+  const storedAccommodationStart =
+    getStoredString(
+      session,
+      "accommodationStart",
+    );
+
+
+  const storedAccommodationEnd =
+    getStoredString(
+      session,
+      "accommodationEnd",
+    );
+
+
+  /*
+   * Prefer explicit intent values.
+   */
+
+  const accommodationStart =
+    intent.start ??
+    storedAccommodationStart ??
+    null;
+
+
+  const accommodationEnd =
+    intent.end ??
+    storedAccommodationEnd ??
+    null;
+
+  /*
+   * Persist explicit accommodation dates.
+   */
+
+  const accommodationData =
+    readSessionData(
+      session,
+    );
+
+
+  if (
+    intent.start
+  ) {
+
+    accommodationData.accommodationStart =
+      intent.start;
+  }
+
+
+  if (
+    intent.end
+  ) {
+
+    accommodationData.accommodationEnd =
+      intent.end;
+  }
+
+
+  if (
+    intent.date
+  ) {
+
+    accommodationData.checkInDate =
+      intent.date;
+  }
+
+
+  session.dataJson =
+    JSON.stringify(
+      accommodationData,
+    );
+
+
+  /*
+   * ------------------------------------------------
+   * Require check-in and check-out.
+   * ------------------------------------------------
+   */
+
+  if (
+    !accommodationStart
+  ) {
+
+    session.status =
+      "collecting";
+
+    session.updatedAt =
+      input.occurredAt;
+
+    await saveSession(
+      repository,
+      session,
+    );
+
+    return {
+      handled:
+        true,
+
+      state:
+        "collecting",
+
+      intent,
+
+      message:
+        buildAccommodationCheckInPrompt(),
+
+      session,
+    };
+  }
+
+
+  if (
+    !accommodationEnd
+  ) {
+
+    session.status =
+      "collecting";
+
+    session.updatedAt =
+      input.occurredAt;
+
+    await saveSession(
+      repository,
+      session,
+    );
+
+    return {
+      handled:
+        true,
+
+      state:
+        "collecting",
+
+      intent,
+
+      message:
+        buildAccommodationCheckOutPrompt(),
+
+      session,
+    };
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * Validate the date range.
+   * ------------------------------------------------
+   */
+
+  const accommodationRange =
+    buildAccommodationRange(
+      accommodationStart,
+      accommodationEnd,
+    );
+
+
+  if (
+    !accommodationRange
+  ) {
+
+    session.status =
+      "collecting";
+
+    session.updatedAt =
+      input.occurredAt;
+
+    await saveSession(
+      repository,
+      session,
+    );
+
+    return {
+      handled:
+        true,
+
+      state:
+        "collecting",
+
+      intent,
+
+      message:
+  "The check-in and check-out dates need to be valid, with check-out after check-in. Please provide the dates again.",
+      session,
+    };
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * Persist guest/unit attributes.
+   * ------------------------------------------------
+   */
+
+  if (
+    intent.adults !==
+    null
+  ) {
+
+    session.adults =
+      intent.adults;
+  }
+
+
+  if (
+    intent.children !==
+    null
+  ) {
+
+    session.children =
+      intent.children;
+  }
+
+
+  if (
+    intent.quantity !==
+    null
+  ) {
+
+    session.quantity =
+      intent.quantity;
+  }
+
+  /*
+ * ------------------------------------------------
+ * Validate accommodation quantities
+ * ------------------------------------------------
+ */
+
+const accommodationQuantityError =
+  validateAccommodationQuantities(
+    session.adults,
+    session.children,
+    session.quantity,
+  );
+
+
+if (
+  accommodationQuantityError
+) {
+
+  session.status =
+    "collecting";
+
+  session.updatedAt =
+    input.occurredAt;
+
+
+  await saveSession(
+    repository,
+    session,
+  );
+
+
+  return {
+    handled:
+      true,
+
+    state:
+      "collecting",
+
+    intent,
+
+    message:
+      accommodationQuantityError,
+
+    session,
+  };
+}
+
+  const accommodationAvailability =
+    await getBookingAvailability(
+      input.context,
+      {
+        type:
+          "accommodation",
+
+        offeringId:
+          resolved.offering.id,
+
+        start:
+          accommodationRange.start,
+
+        end:
+          accommodationRange.end,
+
+        timezone:
+          input.timezone ??
+          DEFAULT_TIMEZONE,
+
+        adults:
+          session.adults ??
+          undefined,
+
+        children:
+          session.children ??
+          undefined,
+
+        quantity:
+          session.quantity ??
+          undefined,
+      },
+    );
+
+
+  /*
+   * ------------------------------------------------
+   * No accommodation availability.
+   * ------------------------------------------------
+   */
+
+  const availableAccommodation =
+    accommodationAvailability.filter(
+      (
+        slot,
+      ) =>
+        slot.available !==
+        false,
+    );
+
+
+  if (
+    availableAccommodation.length ===
+    0
+  ) {
+
+    session.status =
+      "collecting";
+
+    session.startAt =
+      null;
+
+    session.endAt =
+      null;
+
+    session.updatedAt =
+      input.occurredAt;
+
+    await saveSession(
+      repository,
+      session,
+    );
+
+    return {
+      handled:
+        true,
+
+      state:
+        "collecting",
+
+      intent,
+
+      message:
+        "I couldn't find availability for those dates. Would you like to try different dates?",
+
+      session,
+    };
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * Use the provider-confirmed date range.
+   * ------------------------------------------------
+   *
+   * For accommodation, the availability result
+   * represents the stay itself rather than an
+   * appointment slot.
+   */
+
+  const selectedAccommodation =
+    availableAccommodation.find(
+      (
+        slot,
+      ) =>
+        slot.start ===
+          accommodationRange.start &&
+        slot.end ===
+          accommodationRange.end,
+    ) ??
+    availableAccommodation[0];
+
+
+  session.startAt =
+    selectedAccommodation.start;
+
+
+  session.endAt =
+    selectedAccommodation.end;
+
+
+  const selectedAccommodationData =
+    readSessionData(
+      session,
+    );
+
+
+  selectedAccommodationData.accommodationStart =
+    selectedAccommodation.start;
+
+
+  selectedAccommodationData.accommodationEnd =
+    selectedAccommodation.end;
+
+
+  selectedAccommodationData.checkInDate =
+    selectedAccommodation.start.slice(
+      0,
+      10,
+    );
+
+
+  selectedAccommodationData.checkOutDate =
+    selectedAccommodation.end.slice(
+      0,
+      10,
+    );
+
+
+  if (
+    selectedAccommodation.price !==
+    undefined
+  ) {
+
+    selectedAccommodationData.price =
+      selectedAccommodation.price;
+  }
+
+
+  if (
+    selectedAccommodation.currency
+  ) {
+
+    selectedAccommodationData.currency =
+      selectedAccommodation.currency;
+  }
+
+
+  session.dataJson =
+    JSON.stringify(
+      selectedAccommodationData,
+    );
+
+
+  session.pendingSlotsJson =
+    JSON.stringify(
+      [
+        selectedAccommodation,
+      ],
+    );
+
+
+  session.status =
+    "awaiting_confirmation";
+
+
+  session.updatedAt =
+    input.occurredAt;
+
+
+  await saveSession(
+    repository,
+    session,
+  );
+
+
+  console.log(
+    "AI ACCOMMODATION AVAILABILITY CONFIRMED",
+    {
+      tenantId:
+        input.context.tenant.id,
+
+      provider:
+        input.context.provider,
+
+      conversationId:
+        input.conversationId,
+
+      offeringId:
+        resolved.offering.id,
+
+      start:
+        selectedAccommodation.start,
+
+      end:
+        selectedAccommodation.end,
+
+      adults:
+        session.adults,
+
+      children:
+        session.children,
+
+      quantity:
+        session.quantity,
+    },
+  );
+
+
+  return {
+    handled:
+      true,
+
+    state:
+      "awaiting_confirmation",
+
+    intent,
+
+    message:
+      `The accommodation is available from ${selectedAccommodation.start.slice(
+        0,
+        10,
+      )} to ${selectedAccommodation.end.slice(
+        0,
+        10,
+      )}. Would you like me to confirm this booking?`,
+
+    session,
+  };
+}
 
   /*
    * ----------------------------------------------

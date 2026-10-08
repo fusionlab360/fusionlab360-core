@@ -70,6 +70,10 @@ import {
   processAIBooking,
 } from "../booking/ai-booking-service";
 
+import {
+  IntegrationEventDeadLetterRepository,
+} from "../../persistence/repositories/integration-event-dead-letter-repository";
+
 /*
  * ----------------------------------------------------------
  * Resolve tenant-configured booking timezone
@@ -496,9 +500,13 @@ export async function processGHLInboundMessage(
     );
 
   const eventService =
-    new IntegrationEventService(
-      eventRepository,
-    );
+  new IntegrationEventService(
+    eventRepository,
+
+    new IntegrationEventDeadLetterRepository(
+      db,
+    ),
+  );
 
   const eventResult =
     await eventService.accept({
@@ -527,12 +535,41 @@ export async function processGHLInboundMessage(
         message,
     });
 
+    const claimedForProcessing =
+  await eventService.claimForProcessing(
+    context.tenant.id,
+    message.providerMessageId,
+  );
+
   if (
-    eventResult.duplicate
+    !claimedForProcessing
   ) {
+
+    console.log(
+      "GHL inbound event is already processed or currently being processed.",
+      {
+        tenantId:
+          context.tenant.id,
+
+        conversationId:
+          message.conversationId,
+
+        messageId:
+          message.providerMessageId,
+
+        duplicate:
+          eventResult.duplicate,
+      },
+    );
 
     return;
   }
+
+ 
+ let processingSucceeded =
+  true;
+
+try {
 
   /*
    * --------------------------------------------------------
@@ -1164,6 +1201,8 @@ export async function processGHLInboundMessage(
               context,
             ),
         });
+
+      
 
       console.log(
         "AI BOOKING ENGINE RESULT",
@@ -1973,4 +2012,102 @@ console.log(
       },
     );
   }
+}
+
+catch (
+  error:
+    unknown
+) {
+
+  processingSucceeded =
+    false;
+
+  try {
+
+    await eventService.markFailed(
+      context.tenant.id,
+      message.providerMessageId,
+      error,
+    );
+
+  } catch (
+    persistenceError:
+      unknown
+  ) {
+
+    console.error(
+      "Failed to persist GHL inbound processing failure state.",
+      {
+        tenantId:
+          context.tenant.id,
+
+        messageId:
+          message.providerMessageId,
+
+        error:
+          persistenceError instanceof Error
+            ? persistenceError.message
+            : persistenceError,
+      },
+    );
+  }
+
+  console.error(
+    "GHL inbound message processing failed after event claim.",
+    {
+      tenantId:
+        context.tenant.id,
+
+      provider:
+        message.provider,
+
+      conversationId:
+        message.conversationId,
+
+      messageId:
+        message.providerMessageId,
+
+      error:
+        error instanceof Error
+          ? error.message
+          : error,
+    },
+  );
+
+} finally {
+
+  if (
+    processingSucceeded
+  ) {
+
+    try {
+
+      await eventService.markProcessed(
+        context.tenant.id,
+        message.providerMessageId,
+      );
+
+    } catch (
+      error:
+        unknown
+    ) {
+
+      console.error(
+        "Failed to mark GHL inbound event as processed.",
+        {
+          tenantId:
+            context.tenant.id,
+
+          messageId:
+            message.providerMessageId,
+
+          error:
+            error instanceof Error
+              ? error.message
+              : error,
+        },
+      );
+    }
+  }
+}
 }

@@ -1,23 +1,58 @@
 export interface IntegrationEventRecord {
 
-  eventId: string;
+  eventId:
+    string;
 
-  tenantId: string;
+  tenantId:
+    string;
 
-  eventType: string;
+  eventType:
+    string;
 
-  aggregateType: string;
+  aggregateType:
+    string;
 
-  aggregateId: string;
+  aggregateId:
+    string;
 
-  provider?: string;
+  provider?:
+    string;
 
-  revision?: number;
+  revision?:
+    number;
 
-  occurredAt: string;
+  occurredAt:
+    string;
 
-  receivedAt: string;
+  receivedAt:
+    string;
 
-  payload: string;
+  payload:
+    string;
 
+  processingStatus?:
+    | "received"
+    | "processing"
+    | "processed"
+    | "failed"
+    | "dead_letter";
+
+  processingAttempts?:
+    number;
+
+  processingStartedAt?:
+    string |
+    null;
+
+  processedAt?:
+    string |
+    null;
+
+  lastErrorCode?:
+    string |
+    null;
+
+  lastErrorMessage?:
+    string |
+    null;
 }

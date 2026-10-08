@@ -11,10 +11,6 @@ export interface AIAgentProfile {
 
   handoffTemplate: string;
 
-  systemInstructions: string;
-
-  aiInstructionsKnowledgeBaseId?: string;
-
   createdAt: string;
 
   updatedAt: string;
