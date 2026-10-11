@@ -5,6 +5,14 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "typecheck": "tsc --noEmit",
+
+
+
+
+"test:ai-retrieval": "tsx --test src/domain/messaging/retrieval-evaluation.test.ts src/domain/messaging/ai-chat-service.test.ts src/domain/knowledge/relevance-policy.test.ts src/domain/knowledge/answer-service.test.ts src/domain/knowledge/answer-controller.test.ts src/core/ai/evidence-answer.test.ts src/core/ai/validated-generation.test.ts src/core/ai/providers/hybrid.test.ts src/bootstrap/error.test.ts src/integrations/knowledge/vectorize/retriever.test.ts src/domain/knowledge/retrieval-service.test.ts src/domain/messaging/knowledge-intelligence.test.ts"
+,
+
+
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "client:create": "tsx src/cli/index.ts client:create",
     "client:list": "tsx src/cli/index.ts client:list",

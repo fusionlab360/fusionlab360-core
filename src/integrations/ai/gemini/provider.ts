@@ -12,6 +12,8 @@ const DEFAULT_MODEL =
 
 interface GeminiGenerateContentResponse {
   candidates?: Array<{
+    finishReason?: string;
+
     content?: {
       parts?: Array<{
         text?: string;
@@ -19,7 +21,6 @@ interface GeminiGenerateContentResponse {
     };
   }>;
 }
-
 
 function buildGeminiContents(
   messages: AIChatMessage[],
@@ -219,8 +220,14 @@ export function createGeminiAIProvider(
             method:
               "POST",
 
-            headers: {
+            // Bound reasoning requests so HybridAIProvider can
+            // catch the timeout and fall back to Cloudflare AI.
+            signal:
+              request.task === "reasoning"
+                ? AbortSignal.timeout(6_000)
+                : undefined,
 
+            headers: {
               "Content-Type":
                 "application/json",
 
@@ -266,8 +273,10 @@ export function createGeminiAIProvider(
           GeminiGenerateContentResponse;
 
 
-      return {
+     const finishReason =
+  data.candidates?.[0]?.finishReason;
 
+      return {
         text:
           extractGeminiText(
             data,
@@ -277,6 +286,12 @@ export function createGeminiAIProvider(
           "gemini",
 
         model,
+
+        finishReason,
+
+        truncated:
+          finishReason ===
+          "MAX_TOKENS",
       };
     },
   };

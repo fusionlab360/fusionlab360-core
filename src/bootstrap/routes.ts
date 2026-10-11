@@ -30,6 +30,8 @@ import oauthRoutes
 import knowledgeRoutes
   from "../domain/knowledge/routes";
 
+import featureRoutes from "../domain/features/routes";
+
 
 /*
  * --------------------------------------------------
@@ -251,3 +253,8 @@ app.route(
   "/knowledge",
   knowledgeRoutes,
 );
+
+
+app.use("/features", authMiddleware);
+app.use("/features/*", authMiddleware);
+app.route("/features", featureRoutes);

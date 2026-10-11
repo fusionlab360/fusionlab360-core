@@ -1417,6 +1417,14 @@ export function isHandoffOffer(
 
     "i can confirm with our team",
 
+    "i can have our team confirm",
+
+    "i can have our team verify",
+
+    "i can ask our team to confirm",
+
+    "i can ask our team to verify",
+
     "would you like me to pass this to our team",
 
     "would you like me to connect you with our team",

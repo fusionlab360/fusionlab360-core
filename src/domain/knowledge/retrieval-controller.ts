@@ -97,18 +97,14 @@ export async function searchKnowledgeController(
     );
 
 
-  const result =
-    await searchKnowledgeForTenant(
-      c.env.AI,
-
-      c.env.VECTORIZE_V2,
-
-      context.tenant.id,
-
-      query,
-
-      topK,
-    );
+  const result = await searchKnowledgeForTenant(
+  c.env.AI,
+  c.env.VECTORIZE_V2,
+  context.tenant.id,
+  query,
+  topK,
+  c.env.DB,
+);
 
 
   return c.json({

@@ -101,45 +101,34 @@ export async function answerKnowledgeController(
     );
 
 
-  const aiProvider =
-    resolveAIProvider(
-      c.env.AI,
-    );
+ const aiProvider =
+  resolveAIProvider(
+    c.env.AI,
+    {
+      provider: "hybrid",
+      geminiApiKey: c.env.GEMINI_API_KEY,
+    },
+  );
 
 
-  const result =
-    await answerKnowledgeQuestion(
-      aiProvider,
-
-      c.env.AI,
-
-      c.env.VECTORIZE_V2,
-
-      context.tenant.id,
-
-      query,
-
-      topK,
-    );
+  const result = await answerKnowledgeQuestion(
+  aiProvider,
+  c.env.AI,
+  c.env.VECTORIZE_V2,
+  context.tenant.id,
+  query,
+  topK,
+  c.env.DB,
+);
 
 
   return c.json({
-    success:
-      true,
-
-    answer:
-      result.answer,
-
-    grounded:
-      result.grounded,
-
-    query:
-      result.query,
-
-    tenantId:
-      result.tenantId,
-
-    sources:
-      result.sources,
-  });
+  success: true,
+  answer: result.answer,
+  grounded: result.grounded,
+  answerStatus: result.answerStatus,
+  query: result.query,
+  tenantId: result.tenantId,
+  sources: result.sources,
+});
 }

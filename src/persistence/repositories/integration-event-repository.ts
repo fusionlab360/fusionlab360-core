@@ -65,7 +65,7 @@ export class IntegrationEventRepository
       provider:
         result.provider ??
         undefined,
-   
+
       revision:
         result.revision ??
         undefined,
@@ -401,6 +401,158 @@ async markFailed(
       eventId,
     )
     .run();
+}
+
+async findRetryable(
+  limit:
+    number,
+):
+  Promise<IntegrationEventRecord[]> {
+
+  const rows =
+    await this.db
+      .prepare(
+        `
+        SELECT
+          event_id,
+          tenant_id,
+          event_type,
+          aggregate_type,
+          aggregate_id,
+          provider,
+          revision,
+          occurred_at,
+          received_at,
+          payload,
+          processing_status,
+          processing_attempts,
+          processing_started_at,
+          processed_at,
+          last_error_code,
+          last_error_message
+        FROM integration_events
+        WHERE
+          processing_status IN
+            ('failed', 'processing')
+          AND processing_attempts < 3
+        ORDER BY received_at ASC
+        LIMIT ?
+        `,
+      )
+      .bind(
+        limit,
+      )
+      .all<{
+        event_id:
+          string;
+
+        tenant_id:
+          string;
+
+        event_type:
+          string;
+
+        aggregate_type:
+          string;
+
+        aggregate_id:
+          string;
+
+        provider:
+          string | null;
+
+        revision:
+          number | null;
+
+        occurred_at:
+          string;
+
+        received_at:
+          string;
+
+        payload:
+          string;
+
+        processing_status:
+          string;
+
+        processing_attempts:
+          number;
+
+        processing_started_at:
+          string | null;
+
+        processed_at:
+          string | null;
+
+        last_error_code:
+          string | null;
+
+        last_error_message:
+          string | null;
+      }>();
+
+  return (
+    rows.results ??
+    []
+  ).map(
+    (
+      row,
+    ) => ({
+      eventId:
+        row.event_id,
+
+      tenantId:
+        row.tenant_id,
+
+      eventType:
+        row.event_type,
+
+      aggregateType:
+        row.aggregate_type,
+
+      aggregateId:
+        row.aggregate_id,
+
+      provider:
+        row.provider ??
+        undefined,
+
+      revision:
+        row.revision ??
+        undefined,
+
+      occurredAt:
+        row.occurred_at,
+
+      receivedAt:
+        row.received_at,
+
+      payload:
+        row.payload,
+
+      processingStatus:
+        row.processing_status as
+          IntegrationEventRecord[
+            "processingStatus"
+          ],
+
+      processingAttempts:
+        row.processing_attempts,
+
+      processingStartedAt:
+        row.processing_started_at,
+
+      processedAt:
+        row.processed_at,
+
+      lastErrorCode:
+        row.last_error_code,
+
+      lastErrorMessage:
+        row.last_error_message,
+    }),
+  );
 }
 
 }

@@ -188,12 +188,16 @@ function normalizeText(
   string {
 
   return text
-    .trim()
-    .toLowerCase()
-    .replace(
-      /[.,!?]/g,
-      "",
-    );
+      .trim()
+      .toLowerCase()
+      .replace(
+        /[.,!?]/g,
+        "",
+      )
+      .replace(
+        /\s+/g,
+        " ",
+      );
 }
 
 /*
@@ -376,6 +380,11 @@ function classifyChoice(
     /^chat with ai$/,
     /^yes continue$/,
     /^yes please$/,
+    /^sure please$/,
+
+    /^(?:yes|yeah|yep|sure|ok|okay)(?:\s+(?:please|thank you|thanks|very much|so much))*$/,
+
+    /^go ahead$/,
   ];
 
   if (
@@ -437,6 +446,8 @@ function classifyHandoffConfirmation(
 
     /^yes please$/,
     /^sure please$/,
+
+    /^(?:yes|yeah|yep|sure|ok|okay)(?:\s+(?:please|thank you|thanks|very much|so much))*$/,
 
     /^go ahead$/,
     /^please do$/,
@@ -567,11 +578,12 @@ export class AISessionService {
      */
 
     const existing =
-      await this.repository.find(
-        input.tenantId,
-        input.provider,
-        input.conversationId,
-      );
+    await this.repository.find(
+    input.tenantId,
+    input.provider,
+    input.conversationId,
+  );
+
 
     /*
      * ------------------------------------------------
@@ -659,69 +671,54 @@ export class AISessionService {
         sessionActivityTime;
 
       /*
-       * 12-hour inactivity has expired.
-       */
+ * 12-hour inactivity has expired.
+ *
+ * Preserve human-controlled conversations.
+ * Restart ordinary AI sessions after inactivity.
+ * Keep pending handoffs pending.
+ */
 
-      if (
-        inactivityMs >=
-        SESSION_WINDOW_MS
-      ) {
+    if (
+  inactivityMs >=
+  SESSION_WINDOW_MS
+) {
+  console.log(
+    "AI INACTIVE - conversation exceeded 12-hour inactivity window",
+    {
+      tenantId: input.tenantId,
+      provider: input.provider,
+      conversationId: input.conversationId,
+      sessionActivityAt,
+      currentMessageAt: input.occurredAt,
+      inactivityHours:
+        inactivityMs / (60 * 60 * 1000),
+      existingState: existing?.state ?? null,
+    },
+  );
 
-        console.log(
-          "AI INACTIVE - conversation exceeded 12-hour inactivity window",
-          {
-            tenantId:
-              input.tenantId,
+  return {
+    action: "ignore",
+    state: existing?.state ?? "human_handoff",
+  };
+}
 
-            provider:
-              input.provider,
-
-            conversationId:
-              input.conversationId,
-
-            sessionActivityAt,
-
-            currentMessageAt:
-              input.occurredAt,
-
-            inactivityHours:
-              inactivityMs /
-              (60 * 60 * 1000),
-
-            existingState:
-              existing?.state ??
-              null,
-          },
-        );
-
-        return {
-          action:
-            "ignore",
-
-          state:
-            existing?.state ??
-            "human_handoff",
-        };
-      }
     }
-
-    /*
-     * ------------------------------------------------
-     * 4. Determine new session
-     * ------------------------------------------------
-     */
+  /*
+   * ------------------------------------------------
+   * 4. Determine new session
+   * ------------------------------------------------
+   */
 
     const newSession =
-      existing
-        ? false
-        : (
-            !input.previousActivityAt ||
-            isNewSessionByInactivity(
-              input.previousActivityAt,
-              input.occurredAt,
-            )
-          );
-
+        existing
+          ? false
+          : (
+              !input.previousActivityAt ||
+              isNewSessionByInactivity(
+                input.previousActivityAt,
+                input.occurredAt,
+              )
+            );
     /*
      * ------------------------------------------------
      * 5. Existing HANDOFF_PENDING

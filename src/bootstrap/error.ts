@@ -28,25 +28,26 @@ export function handleError(error: unknown): Response {
   }
 
   if (error instanceof Error) {
-    logger.error("Unhandled application error", {
-      message: error.message,
-      stack: error.stack,
-    });
+  // Avoid returning or logging raw provider error messages.
+  // They may contain sensitive request details or credentials.
+  logger.error("Unhandled application error", {
+    errorName: error.name,
+  });
 
-    return Response.json(
-      {
-        success: false,
-        message: error.message,
-      },
-      {
-        status: 500,
-      },
-    );
-  }
+  return Response.json(
+    {
+      success: false,
+      message: "Internal Server Error",
+    },
+    {
+      status: 500,
+    },
+  );
+}
 
   logger.error("Unknown application error", {
-    error,
-  });
+  errorType: typeof error,
+});
 
   return Response.json(
     {

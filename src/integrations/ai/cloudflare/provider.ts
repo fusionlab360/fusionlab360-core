@@ -424,6 +424,31 @@ export function createCloudflareAIProvider(
         rawResponse as
           CloudflareAIRawResponse;
 
+      const firstChoice =
+        Array.isArray(
+          result.choices,
+        )
+          ? (
+              result.choices[0] as
+                | Record<string, unknown>
+                | undefined
+            )
+          : undefined;
+
+      const finishReason =
+        typeof firstChoice?.finish_reason ===
+        "string"
+          ? firstChoice.finish_reason
+          : undefined;
+
+      const normalizedFinishReason =
+        finishReason?.toLowerCase();
+
+      const truncated =
+        normalizedFinishReason === "length" ||
+        normalizedFinishReason === "max_tokens" ||
+        normalizedFinishReason === "max_output_tokens";
+
 
       /*
        * --------------------------------------------
@@ -501,7 +526,6 @@ export function createCloudflareAIProvider(
        */
 
       return {
-
         text,
 
         provider:
@@ -510,6 +534,9 @@ export function createCloudflareAIProvider(
         model:
           CLOUDFLARE_AI.model,
 
+        finishReason,
+
+        truncated,
       };
     },
   };

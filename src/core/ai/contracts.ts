@@ -39,14 +39,25 @@ export interface AIChatResponse {
 
   model:
     string;
+
+  finishReason?:
+    string;
+
+  truncated?:
+    boolean;
 }
 
 
 export interface AIProvider {
   chat(
-    request:
-      AIChatRequest,
-  ): Promise<
-    AIChatResponse
-  >;
+    request: AIChatRequest,
+  ): Promise<AIChatResponse>;
+
+  /**
+   * Explicitly invoke the fallback provider when a
+   * response retry must not repeat the primary model.
+   */
+  chatFallback?(
+    request: AIChatRequest,
+  ): Promise<AIChatResponse>;
 }

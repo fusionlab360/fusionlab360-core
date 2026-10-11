@@ -34,6 +34,20 @@ export interface KnowledgeSearchMatch {
 
   content:
     string;
+
+  retrievalMethod?:
+    "vector" | "lexical" | "hybrid";
+  rrfScore?:
+    number;
+  vectorRank?:
+    number;
+  lexicalRank?:
+    number;
+  lexicalScore?:
+    number;
+
+  rerankerScore?: number;
+  rerankerRank?: number;
 }
 
 
@@ -128,91 +142,55 @@ const RETRIEVAL_STOP_WORDS =
 
 
 function buildRetrievalQueryVariants(
-  query:
-    string,
-):
-  string[] {
+  query: string,
+  alternateQueries: string[] = [],
+): string[] {
+  const variants: string[] = [];
 
-  const normalized =
-    query
-      .normalize(
-        "NFKC",
-      )
-      .replace(
-        /[^\p{L}\p{N}]+/gu,
-        " ",
-      )
-      .replace(
-        /\s+/g,
-        " ",
-      )
+  for (const sourceQuery of [
+    query,
+    ...alternateQueries,
+  ]) {
+    const normalized = sourceQuery
+      .normalize("NFKC")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .replace(/\s+/g, " ")
       .trim();
 
-  if (
-    !normalized
-  ) {
-    return [];
-  }
+    if (!normalized) {
+      continue;
+    }
 
-  const tokens =
-    normalized
-      .split(
-        " ",
-      )
-      .filter(
-        Boolean,
-      );
+    const tokens = normalized.split(" ").filter(Boolean);
 
-  const compactTokens =
-    tokens.filter(
-      (
-        token,
-      ) =>
+    const compactTokens = tokens.filter(
+      (token) =>
         !RETRIEVAL_STOP_WORDS.has(
           token.toLowerCase(),
         ),
     );
 
-  const variants =
-    [
-      normalized,
+    variants.push(normalized);
 
-      compactTokens.join(
-        " ",
-      ),
-    ];
+    const compact = compactTokens.join(" ");
 
-  return [
-    ...new Set(
-      variants.filter(
-        (
-          value,
-        ) =>
-          value.trim().length > 0,
-      ),
-    ),
-  ];
+    if (compact) {
+      variants.push(compact);
+    }
+  }
+
+  return [...new Set(variants)].slice(0, 6);
 }
 
 
 export async function searchKnowledgeVectors(
-  ai:
-    Ai,
-
-  vectorize:
-    Vectorize,
-
-  tenantId:
-    string,
-
-  query:
-    string,
-
-  topK:
-    number = 5,
-): Promise<
-  KnowledgeSearchMatch[]
-> {
+  ai: Ai,
+  vectorize: Vectorize,
+  tenantId: string,
+  query: string,
+  topK: number = 5,
+  alternateQueries: string[] = [],
+): Promise<KnowledgeSearchMatch[]> {
 
   const normalizedQuery =
     query.trim();
@@ -241,9 +219,10 @@ export async function searchKnowledgeVectors(
    */
 
   const queryVariants =
-    buildRetrievalQueryVariants(
-      normalizedQuery,
-    );
+  buildRetrievalQueryVariants(
+    normalizedQuery,
+    alternateQueries,
+  );
 
   if (
     queryVariants.length ===
@@ -335,6 +314,11 @@ export async function searchKnowledgeVectors(
           {}
         ) as KnowledgeVectorMetadata;
 
+      // Fail closed: vector metadata must confirm the requested tenant.
+      if (metadata.tenantId !== tenantId) {
+        continue;
+      }
+
       const normalizedMatch:
         KnowledgeSearchMatch = {
 
@@ -375,6 +359,8 @@ export async function searchKnowledgeVectors(
         content:
           metadata.content ??
           "",
+        retrievalMethod:
+          "vector",
       };
 
       const existing =

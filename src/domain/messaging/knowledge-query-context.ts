@@ -576,7 +576,9 @@ function isFollowUpPattern(
     /\bhow\s+about\s+this\b/i,
 
     /\bthe\s+same\b/i,
-    
+
+    /\bwhat\s+(?:information|details)\s+(?:(?:do|can)\s+)?you\s+have(?:\s+(?:right\s+now|about\s+(?:it|that|this)))?\b/i,
+
   ].some(
     (
       pattern,

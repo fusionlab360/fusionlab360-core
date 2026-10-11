@@ -255,6 +255,16 @@ function resolveGHLSenderType(
     direction ===
       "outbound" &&
 
+    message.userId?.trim()
+  ) {
+    return "human";
+  }
+
+
+  if (
+    direction ===
+      "outbound" &&
+
     (
       message.type ===
         29 ||

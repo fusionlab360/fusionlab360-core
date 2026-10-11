@@ -28,14 +28,18 @@
  */
 
 export interface KnowledgeContextItem {
-  title:
-   string;
-  sourceType:
-    string;
-  content:
-    string;
-  score:
-    number;
+  title: string;
+  sourceType: string;
+  content: string;
+  score: number;
+
+  retrievalMethod?: "vector" | "lexical" | "hybrid";
+  rrfScore?: number;
+  vectorRank?: number;
+  lexicalRank?: number;
+  lexicalScore?: number;
+  rerankerScore?: number;
+  rerankerRank?: number;
 }
 
 export type KnowledgeIntent =
@@ -126,6 +130,16 @@ export interface RankedKnowledgeItem
 
   fallbackLike:
     boolean;
+
+  retrievalMethod?:
+    "vector" | "lexical" | "hybrid";
+
+    rrfScore?:
+    number;
+
+  vectorRank?: number;
+  lexicalRank?: number;
+  lexicalScore?: number;
 }
 
 
@@ -224,6 +238,11 @@ const STOP_WORDS =
     /*
      * English
      */
+    "hi",
+    "hello",
+    "hey",
+    "hai",
+    "helo",
     "the",
     "a",
     "an",
@@ -664,93 +683,76 @@ function normalize(
  * --------------------------------------------------
  */
 
-function extractTerms(
-  value:
-    string,
 
- ):
+function tokenizeKnowledgeText(value: string): string[] {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[’']/g, "");
 
-  string[] {
+  const chunks =
+    normalized.match(/[\p{Script=Han}]+|[\p{L}\p{N}]+/gu) ?? [];
 
+  return chunks.flatMap((chunk) => {
+    // Chinese text has no dependable whitespace boundaries.
+    // Include both individual characters and adjacent pairs
+    // so short Chinese phrases can match across documents.
+    if (/^\p{Script=Han}+$/u.test(chunk)) {
+      const characters = Array.from(chunk);
 
+      if (characters.length <= 1) {
+        return characters;
+      }
 
-  const normalized =
+      return [
+        ...characters,
+        ...characters
+          .slice(0, -1)
+          .map((character, index) =>
+            `${character}${characters[index + 1]}`,
+          ),
+      ];
+    }
 
-    normalize(
+    // Splitting punctuation also separates values such as 9am-5pm.
+    return [chunk];
+  });
+}
 
-      value,
-
-    );
-
-
-
-  if (
-
-    !normalized
-
-  ) {
-
-    return [];
-
+function stemKnowledgeToken(token: string): string {
+  if (token.length > 4 && token.endsWith("ies")) {
+    return `${token.slice(0, -3)}y`;
   }
 
+  if (
+    token.length > 5 &&
+    /(?:ches|shes|xes|zes|sses)$/.test(token)
+  ) {
+    return token.slice(0, -2);
+  }
 
+  if (token.length > 4 && token.endsWith("s") && !token.endsWith("ss")) {
+    return token.slice(0, -1);
+  }
 
-  return [
-
-    ...new Set(
-
-      normalized
-
-        .split(
-
-          /\s+/u,
-
-        )
-
-        .map(
-
-          (
-
-            token,
-
-          ) =>
-
-            token.trim(),
-
-        )
-
-        .filter(
-
-          (
-
-            token,
-
-          ) =>
-
-            token.length >=
-
-              3 &&
-
-            !STOP_WORDS.has(
-
-              token,
-
-            ) &&
-
-            !/^\d+$/u.test(
-
-              token,
-
-            ),
-
-        ),
-
-    ),
-
-  ];
-
+  return token;
 }
+
+function extractTerms(value: string): string[] {
+  return [
+    ...new Set(
+      tokenizeKnowledgeText(value)
+        .map(stemKnowledgeToken)
+        .filter(
+          (token) =>
+            token.length >= 2 &&
+            !STOP_WORDS.has(token) &&
+            !/^\d+$/u.test(token),
+        ),
+    ),
+  ];
+}
+
 
 
 
@@ -1344,11 +1346,9 @@ function detectIntent(
 
   if (
 
-    /^(hi|hello|hey|hai|helo)\b/i.test(
-
-      normalized,
-
-    )
+    /^(?:hi|hello|hey|hai|helo)(?:\s+(?:there|team|everyone))?[.!?]*$/i.test(
+  normalized,
+)
 
   ) {
 
@@ -1984,7 +1984,7 @@ function looksLikeBusinessFactQuestion(
 
   const businessFactPatterns = [
 
-    /\b(address|location|branch|branches)\b/i,
+    /\b(address|location|branch|branches|located|situated)\b/i,
 
     /\b(phone|mobile|telephone|whatsapp|email|contact)\b/i,
 
@@ -3300,39 +3300,23 @@ function isGenericFallbackKnowledge(
     /\bdefault\s+(phone|mobile|contact)\b/i,
 
     /\bdefault\s+number\b/i,
-
   ];
 
-
-
   return patterns.some(
-
     (
-
       pattern,
-
     ) =>
-
       pattern.test(
-
         combined,
-
       ),
-
   );
-
 }
 
 
-
 /*
-
  * --------------------------------------------------
-
  * Query analysis
-
  * --------------------------------------------------
-
  */
 
 export function analyzeKnowledgeQuery(
@@ -3401,114 +3385,61 @@ export function analyzeKnowledgeQuery(
 }
 
 /*
-
  * --------------------------------------------------
-
  * Rank retrieved knowledge
-
  * --------------------------------------------------
-
  *
-
  * The ranking order is now:
-
  *
-
  * 1. semantic score
-
  * 2. lexical relevance
-
  * 3. title relevance
-
  * 4. entity relevance
-
  * 5. focus phrase relevance
-
  * 6. exact phrase relevance
-
  * 7. intent relevance
-
  *
-
  * Entity relevance is deliberately stronger than generic
-
  * intent/title matching.
-
  *
-
  * This is what prevents:
-
  *
-
  * "If knowledge base don't have answer give this number"
-
  *
-
  * from beating:
-
  *
-
  * "Alam Impian Details"
-
  *
-
  * for:
-
  *
-
  * "What is the Alam Impian mobile number?"
-
  * --------------------------------------------------
-
  */
-
-
 
 export function rerankKnowledge(
 
   question:
-
     string,
 
-
-
   knowledge:
-
     KnowledgeContextItem[],
 
-
-
   analysisQuestion:
-
     string =
-
       question,
-
 ):
 
   RankedKnowledgeItem[] {
 
-
-
   const retrievalAnalysis =
-
   analyzeKnowledgeQuery(
-
     question,
-
   );
 
-
-
   const analysis =
-
     analyzeKnowledgeQuery(
-
       analysisQuestion,
-
     );
-
-
 
     const retrievalEntityTerms =
       extractEntityTerms(
@@ -3533,78 +3464,46 @@ export function rerankKnowledge(
         ),
       ];
 
-
-
   return knowledge
 
     .filter(
-
       (
-
         item,
-
       ) =>
-
         item.content
-
           .trim()
-
           .length >
-
         0,
-
     )
-
     .map(
-
       (
-
         item,
-
       ) => {
 
-
-
         const contentTerms =
-
           extractTerms(
-
             item.content,
-
           );
 
-
-
         const titleTerms =
-
           extractTerms(
-
             item.title,
-
           );
 
 
 
         const contentOverlap =
-
           calculateOverlap(
-
             retrievalAnalysis.terms,
-
             contentTerms,
-
           );
 
 
 
         const titleOverlap =
-
           calculateOverlap(
-
             retrievalAnalysis.terms,
-
             titleTerms,
-
           );
 
         const entityTitleOverlap =
@@ -3685,364 +3584,197 @@ export function rerankKnowledge(
 
 
         const entityMatch =
-
           entityTerms.length >
-
           0 &&
-
           (
-
             entityTitleOverlap.ratio >=
-
               0.5 ||
-
             entityContentOverlap.ratio >=
-
               0.75 ||
-
             entityPhraseMatch
-
           );
 
-
-
         const fallbackLike =
-
           isGenericFallbackKnowledge(
-
             item,
-
           );
 
 
 
         /*
-
          * Start from the vector score.
-
          */
 
         let rerankScore =
+        item.score;
 
-          item.score;
+      if (
+        item.retrievalMethod === "lexical"
+      ) {
+        // A lexical match is not a vector similarity score.
+        // This is only a ranking prior; eligibility is checked separately.
+        rerankScore += 0.45;
+      }
 
+      if (
+        typeof item.rrfScore === "number"
+      ) {
+        rerankScore += Math.min(
+          item.rrfScore * 2,
+          0.08,
+        );
+      }
 
 
         /*
-
          * Lexical content agreement.
-
          */
-
         rerankScore +=
-
           contentOverlap.ratio *
-
           0.15;
 
 
 
         /*
-
          * Title agreement.
-
          */
 
         rerankScore +=
 
           titleOverlap.ratio *
-
           0.10;
 
-        /*
-
+          /*
          * Entity content match.
-
          */
 
         if (
-
           entityContentOverlap.ratio >
 
           0
 
         ) {
 
-
-
           rerankScore +=
-
             entityContentOverlap.ratio *
-
             ENTITY_CONTENT_BOOST;
-
         }
 
-
-
         /*
-
          * Exact entity phrase.
-
          */
 
         if (
-
           entityPhraseMatch
-
         ) {
-
-
-
           rerankScore +=
-
             ENTITY_EXACT_PHRASE_BOOST;
-
         }
 
-
-
         /*
-
          * Focus phrase agreement.
-
          */
+        if ( focusPhraseMatch ) {
+          rerankScore += 0.12;
 
         if (
-
-          focusPhraseMatch
-
-        ) {
-
-
-
-          rerankScore +=
-
-            0.12;
-
-
-
-          if (
-
-            matchedFocusPhrases.length >=
-
-            2
-
+            matchedFocusPhrases.length >= 2
           ) {
-
-
-
-            rerankScore +=
-
-              0.05;
-
+            rerankScore += 0.05;
           }
-
         }
 
-
-
         /*
-
          * Exact question match.
-
          */
-
         if (
-
           exactPhraseMatch
-
         ) {
-
-
-
-          rerankScore +=
-
-            0.12;
-
+          rerankScore += 0.12;
         }
 
-
-
         /*
-
          * Intent evidence.
-
          */
-
         if (
-
           intentMatch
-
         ) {
-
-
-
-          rerankScore +=
-
-            0.08;
-
+         rerankScore += 0.08;
         }
 
-
-
         /*
-
          * Generic fallback penalty.
-
          *
-
          * Only penalize it when the query actually
-
          * identifies an entity.
-
          *
-
          * This means the fallback remains usable when
-
          * there is no specific entity knowledge.
-
          */
-
         if (
-
           fallbackLike &&
-
           entityTerms.length >
-
           0 &&
-
           !entityMatch
-
         ) {
-
-
-
           rerankScore -=
-
             GENERIC_FALLBACK_PENALTY;
-
         }
-
-
-
         /*
-
          * Keep score within 0..1.
-
          */
-
         rerankScore =
-
           Math.max(
-
             0,
-
             Math.min(
-
               1,
-
               rerankScore,
-
             ),
-
           );
-
-
 
         return {
-
           ...item,
-
-
-
           rerankScore,
-
-
-
-          matchedTerms:
-
-            contentOverlap.matched,
-
-
-
+          matchedTerms: contentOverlap.matched,
           matchedFocusPhrases,
-
-
-
-          titleMatch:
-
-            titleOverlap.ratio >
-
-            0,
-
-
-
+          titleMatch: titleOverlap.ratio > 0,
           intentMatch,
-
-
-
           focusPhraseMatch,
-
-
-
           exactPhraseMatch,
-
-
-
           entityMatch,
-
-
-
           entityTermMatches,
-
-
-
           fallbackLike,
-
         };
-
       },
-
     )
 
-    .sort(
+.sort((a, b) => {
+  // Prefer genuine neural scores when both candidates have them.
+  // Scores are used for ordering only, not eligibility.
+  const aHasNeuralScore =
+    typeof a.rerankerScore === "number" &&
+    Number.isFinite(a.rerankerScore);
 
-      (
+  const bHasNeuralScore =
+    typeof b.rerankerScore === "number" &&
+    Number.isFinite(b.rerankerScore);
 
-        a,
+  if (
+    aHasNeuralScore &&
+    bHasNeuralScore &&
+    a.rerankerScore !== b.rerankerScore
+  ) {
+    return (
+  (b.rerankerScore as number) -
+  (a.rerankerScore as number)
+);
+  }
 
-        b,
-
-      ) => {
-
-
-
-        /*
-
-         * Primary sort:
-
-         * rerank score.
-
-         */
-
-        if (
-
-          b.rerankScore !==
-
-          a.rerankScore
-
-        ) {
-
-          return (
-
-            b.rerankScore -
-
-            a.rerankScore
-
-          );
-
-        }
+  // Fall back to the existing heuristic when scores are
+  // missing or tied.
+  if (b.rerankScore !== a.rerankScore) {
+    return b.rerankScore - a.rerankScore;
+  }
 
 
 
@@ -4182,15 +3914,19 @@ function hasStrongEntityCandidate(
 ):
   boolean {
 
-  return ranked.some(
-    (
-      item,
-    ) =>
-      item.entityMatch &&
-      item.rerankScore >=
-        0.68 &&
-      item.score >=
-        0.55,
+   return ranked.some(
+    (item) =>
+      (
+        item.entityMatch &&
+        item.rerankScore >= 0.68 &&
+        item.score >= 0.55
+      ) ||
+      (
+        item.retrievalMethod === "lexical" &&
+        item.entityMatch &&
+        (item.lexicalRank ?? Infinity) <= 3 &&
+        item.rerankScore >= 0.68
+      ),
   );
 }
 
@@ -4818,7 +4554,7 @@ export function selectKnowledgeForAnswer(
 
     attributeCoverage:
        KnowledgeAttributeCoverage;
-  } 
+  }
   {
 
 
@@ -4877,6 +4613,19 @@ export function selectKnowledgeForAnswer(
    * ------------------------------------------------
    */
 
+
+  const eligibilityRejectionReasons =
+    new Map<RankedKnowledgeItem, string>();
+
+  const rejectCandidate = (
+    item: RankedKnowledgeItem,
+    reason: string,
+  ): false => {
+    eligibilityRejectionReasons.set(item, reason);
+    return false;
+  };
+
+
   const eligible =
     ranked.filter(
       (
@@ -4884,316 +4633,203 @@ export function selectKnowledgeForAnswer(
       ) => {
 
         /*
-
          * ----------------------------------------
-
          * Empty / invalid source
-
          * ----------------------------------------
-
          */
 
-
-
         if (
-
           !item.content
-
             .trim()
-
             .length
-
         ) {
-
-
-
-          return false;
-
-        }
-
-
-
-        /*
-
-         * ----------------------------------------
-
-         * Entity-specific source protection
-
-         * ----------------------------------------
-
-         */
-
-
-
-        if (
-
-          entityCandidateExists &&
-
-          item.fallbackLike &&
-
-          !item.entityMatch
-
-        ) {
-
-
-
-          return false;
-
-        }
-
-
-
-        /*
-
-         * ----------------------------------------
-
-         * High-risk business facts
-
-         * ----------------------------------------
-
-         */
-
-
-
-        if (
-
-          analysis.highRisk
-
-        ) {
-
-
-
-          /*
-
-           * Exact approved question/content match.
-
-           */
-
-
-
-          if (
-
-            item.exactPhraseMatch &&
-
-
-
-            item.score >=
-
-              EXACT_PHRASE_VECTOR_THRESHOLD &&
-
-
-
-            item.rerankScore >=
-
-              EXACT_PHRASE_RERANK_THRESHOLD
-
-          ) {
-
-
-
-            return true;
-
-          }
-
-
-
-          /*
-
-           * Strong high-risk match.
-
-           */
-
-
-
-          if (
-
-            item.score >=
-
-              HIGH_RISK_VECTOR_THRESHOLD &&
-
-
-
-            item.rerankScore >=
-
-              HIGH_RISK_RERANK_THRESHOLD &&
-
-
-
-            item.intentMatch &&
-
-
-
-            (
-
-              analysis.focusPhrases.length ===
-
-                0 ||
-
-
-
-              item.focusPhraseMatch
-
-            )
-
-          ) {
-
-
-
-            return true;
-
-          }
-
-
-
-          /*
-
-           * Entity-specific high-risk rescue.
-
-           */
-
-
-
-          if (
-
-            item.entityMatch &&
-
-
-
-            item.score >=
-
-              0.64 &&
-
-
-
-            item.rerankScore >=
-
-              0.76 &&
-
-
-
-            item.intentMatch
-
-          ) {
-
-
-
-            return true;
-
-          }
-
-
-
-          /*
-
-           * Supported high-risk rescue.
-
-           */
-
-
-
-          return (
-
-            item.score >=
-
-              0.70 &&
-
-
-
-            item.rerankScore >=
-
-              0.84 &&
-
-
-
-            hasSupportingEvidence(
-
-              item,
-
-            ) &&
-
-
-
-            item.intentMatch
-
-          );
-
-        }
-
-
-
-        /*
-
-         * ----------------------------------------
-
-         * Normal business questions
-
-         * ----------------------------------------
-
-         */
-
-
-
-        /*
-
-         * Entity-specific normal match.
-
-         */
-
-
-
-        if (
-
-          item.entityMatch &&
-
-
-
-          item.score >=
-
-            0.55 &&
-
-
-
-          item.rerankScore >=
-
-            0.72 &&
-
-
-
-          hasSupportingEvidence(
-
+          return rejectCandidate(
             item,
+            "empty_content",
+          );
+        }
 
-          )
+        /*
+         * ----------------------------------------
+         * Entity-specific source protection
+         * ----------------------------------------
+         */
 
+        if (
+            entityCandidateExists &&
+            item.fallbackLike &&
+            !item.entityMatch
+          ) {
+            return rejectCandidate(
+              item,
+              "entity_specific_source_preferred",
+            );
+          }
+
+                /*
+         * ----------------------------------------
+         * Lexical-only candidate eligibility
+         * ----------------------------------------
+         */
+
+        if (
+          item.retrievalMethod === "lexical"
+        ) {
+          const lexicalRank =
+            item.lexicalRank ??
+            Number.MAX_SAFE_INTEGER;
+
+          const hasDirectLexicalEvidence =
+            lexicalRank <= 5 &&
+            hasSupportingEvidence(item) &&
+            (
+              item.entityMatch ||
+              item.titleMatch ||
+              item.intentMatch ||
+              item.focusPhraseMatch ||
+              item.exactPhraseMatch
+            );
+
+          if (analysis.highRisk) {
+            if (
+              lexicalRank <= 2 &&
+              item.exactPhraseMatch &&
+              item.intentMatch &&
+              hasSupportingEvidence(item)
+            ) {
+              return true;
+            }
+
+            return rejectCandidate(
+              item,
+              "high_risk_lexical_match_requires_exact_evidence",
+            );
+          }
+
+          if (
+            hasDirectLexicalEvidence &&
+            item.rerankScore >= 0.55
+          ) {
+            return true;
+          }
+
+          return rejectCandidate(
+            item,
+            "lexical_evidence_not_strong_enough",
+          );
+        }
+
+        /*
+         * ----------------------------------------
+         * High-risk business facts
+         * ----------------------------------------
+         */
+
+        if (
+          analysis.highRisk
         ) {
 
+          /*
+           * Exact approved question/content match.
+           */
 
+          if (
+            item.exactPhraseMatch &&
+            item.score >=
+              EXACT_PHRASE_VECTOR_THRESHOLD &&
+            item.rerankScore >=
+              EXACT_PHRASE_RERANK_THRESHOLD
+          ) {
+            return true;
+          }
+
+          /*
+           * Strong high-risk match.
+           */
+
+          if (
+            item.score >=
+              HIGH_RISK_VECTOR_THRESHOLD &&
+            item.rerankScore >=
+              HIGH_RISK_RERANK_THRESHOLD &&
+            item.intentMatch &&
+            (
+              analysis.focusPhrases.length ===
+                0 ||
+              item.focusPhraseMatch
+            )
+          ) {
+            return true;
+          }
+
+          /*
+           * Entity-specific high-risk rescue.
+           */
+
+          if (
+            item.entityMatch &&
+            item.score >=
+              0.64 &&
+            item.rerankScore >=
+              0.76 &&
+            item.intentMatch
+          ) {
+            return true;
+          }
+
+          /*
+           * Supported high-risk rescue.
+           */
+
+          const highRiskFallbackEligible =
+            item.score >= 0.70 &&
+            item.rerankScore >= 0.84 &&
+            hasSupportingEvidence(item) &&
+            item.intentMatch;
+
+          if (!highRiskFallbackEligible) {
+            return rejectCandidate(
+              item,
+              "high_risk_eligibility_rules_not_satisfied",
+            );
+          }
 
           return true;
-
         }
 
-
-
         /*
-
-         * Facilities / amenity rescue.
-
-         *
-
-         * Facility FAQs are ordinary business knowledge,
-
-         * not appointment availability. Keep a slightly
-
-         * lower threshold because short FAQ entries can
-
-         * have modest vector similarity while still
-
-         * containing direct facility evidence.
-
+         * ----------------------------------------
+         * Normal business questions
+         * ----------------------------------------
          */
 
+        /*
+         * Entity-specific normal match.
+         */
 
+        if (
+          item.entityMatch &&
+          item.score >=
+            0.55 &&
+          item.rerankScore >=
+            0.72 &&
+
+          hasSupportingEvidence(
+            item,
+          )
+        ) {
+          return true;
+        }
+
+        /*
+         * Facilities / amenity rescue.
+         *
+         * Facility FAQs are ordinary business knowledge,
+         * not appointment availability. Keep a slightly
+         * lower threshold because short FAQ entries can
+         * have modest vector similarity while still
+         * containing direct facility evidence.
+         */
 
         if (
             analysis.intents.includes(
@@ -5307,70 +4943,39 @@ export function selectKnowledgeForAnswer(
 
         }
 
-
-
         /*
-
          * Supported weaker rescue.
-
          */
 
-
-
         if (
-
           item.score >=
-
             SUPPORTED_RESCUE_VECTOR_THRESHOLD &&
 
-
-
           item.rerankScore >=
-
             SUPPORTED_RESCUE_RERANK_THRESHOLD &&
 
-
-
           hasSupportingEvidence(
-
             item,
-
           )
-
         ) {
-
-
-
           return true;
-
         }
 
-
-
-        return false;
-
+         return rejectCandidate(
+          item,
+          "normal_eligibility_rules_not_satisfied",
+        );
       },
-
     );
 
-
-
   /*
-
    * ------------------------------------------------
-
    * Source diversity
-
    * ------------------------------------------------
-
    *
-
    * Do not allow one document/source to consume
-
    * all six knowledge slots.
-
    * ------------------------------------------------
-
    */
 
   const sourceCounts =
@@ -5747,17 +5352,95 @@ console.log(
   },
 );
 
-      return {
-        analysis,
-        ranked,
-        selected,
 
-        answerable:
-          selected.length >
-          0,
+  const eligibleSet = new Set(eligible);
+  const selectedSet = new Set(selected);
 
-        intentCoverage,
+  console.log(
+    "AI KNOWLEDGE SELECTION DIAGNOSTICS",
+    {
+      intent: analysis.intent,
+      intents: analysis.intents,
+      highRisk: analysis.highRisk,
+      focusPhrases: analysis.focusPhrases,
 
-        attributeCoverage,
-      };
-}
+      candidateCount: ranked.length,
+      eligibleCount: eligible.length,
+      selectedCount: selected.length,
+
+      candidates: ranked.slice(0, 10).map(
+        (item, index) => ({
+          rank: index + 1,
+          title: item.title,
+          sourceType: item.sourceType,
+
+                    retrievalMethod:
+            item.retrievalMethod ?? "unknown",
+
+          rrfScore:
+            typeof item.rrfScore === "number"
+              ? Number(item.rrfScore.toFixed(6))
+              : null,
+
+          vectorRank:
+            item.vectorRank ?? null,
+
+          lexicalRank:
+            item.lexicalRank ?? null,
+
+          lexicalScore:
+            typeof item.lexicalScore === "number"
+              ? Number(item.lexicalScore.toFixed(4))
+              : null,
+
+          score: Number(item.score.toFixed(4)),
+          rerankScore: Number(
+            item.rerankScore.toFixed(4),
+          ),
+
+          rerankerScore:
+            typeof item.rerankerScore === "number" &&
+            Number.isFinite(item.rerankerScore)
+              ? Number(item.rerankerScore.toFixed(6))
+              : null,
+
+          rerankerRank:
+            item.rerankerRank ?? null,
+
+          entityMatch: item.entityMatch,
+          fallbackLike: item.fallbackLike,
+          intentMatch: item.intentMatch,
+          focusPhraseMatch: item.focusPhraseMatch,
+          exactPhraseMatch: item.exactPhraseMatch,
+
+          matchedTerms: item.matchedTerms.slice(0, 8),
+
+          decision: selectedSet.has(item)
+            ? "selected"
+            : eligibleSet.has(item)
+              ? "eligible_not_selected"
+              : "rejected",
+
+          rejectionReason:
+            eligibilityRejectionReasons.get(item) ??
+            null,
+        }),
+      ),
+    },
+  );
+
+        return {
+
+          analysis,
+          ranked,
+          selected,
+
+          answerable:
+            selected.length >
+            0,
+
+          intentCoverage,
+
+          attributeCoverage,
+        };
+  }

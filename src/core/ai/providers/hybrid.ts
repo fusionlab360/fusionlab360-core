@@ -38,7 +38,10 @@ export class HybridAIProvider
       return this.cloudflare.chat(
         request,
       );
+
     }
+
+
 
 
     /*
@@ -98,5 +101,23 @@ export class HybridAIProvider
     return this.cloudflare.chat(
       request,
     );
+
   }
+
+  async chatFallback(
+  request: AIChatRequest,
+): Promise<AIChatResponse> {
+  // Structured and unspecified tasks normally use Cloudflare,
+  // so Gemini is their alternative provider.
+  if (
+    request.task === "structured" ||
+    request.task === undefined
+  ) {
+    return this.gemini.chat(request);
+  }
+
+  // Response and reasoning tasks normally use Gemini,
+  // so Cloudflare is their alternative provider.
+  return this.cloudflare.chat(request);
+}
 }

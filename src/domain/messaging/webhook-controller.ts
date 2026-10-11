@@ -1468,10 +1468,8 @@ export async function ghlInboundMessageController(
     KnowledgeRetriever = {
 
       async search(
-
-        query:
-          string,
-
+        query: string,
+        originalQuery?: string,
       ) {
 
         const result =
@@ -1481,6 +1479,11 @@ export async function ghlInboundMessageController(
             context.tenant.id,
             query,
             20,
+            c.env.DB,
+            originalQuery &&
+            originalQuery !== query
+              ? [originalQuery]
+              : [],
           );
 
 
@@ -1501,6 +1504,27 @@ export async function ghlInboundMessageController(
 
             score:
               match.score,
+
+            retrievalMethod:
+              match.retrievalMethod,
+
+            rrfScore:
+              match.rrfScore,
+
+            vectorRank:
+              match.vectorRank,
+
+            lexicalRank:
+              match.lexicalRank,
+
+            lexicalScore:
+              match.lexicalScore,
+
+            rerankerScore:
+              match.rerankerScore,
+
+            rerankerRank:
+              match.rerankerRank,
 
           }),
 

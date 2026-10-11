@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   IntegrationContext,
 } from "../../context/integration";
 
@@ -40,6 +40,7 @@ import {
 
 import {
   generateAIReply,
+  rewriteKnowledgeQuery,
   type KnowledgeContextItem,
 } from "./ai-chat-service";
 
@@ -73,6 +74,10 @@ import {
 import {
   IntegrationEventDeadLetterRepository,
 } from "../../persistence/repositories/integration-event-dead-letter-repository";
+
+import {
+  isTenantFeatureEnabled,
+} from "../features/tenant-feature-service";
 
 /*
  * ----------------------------------------------------------
@@ -422,13 +427,10 @@ function hasNewerHumanOutboundMessage(
  */
 
 export interface KnowledgeRetriever {
-
   search(
-    query:
-      string,
-  ): Promise<
-    KnowledgeContextItem[]
-  >;
+    query: string,
+    originalQuery?: string,
+  ): Promise<KnowledgeContextItem[]>;
 }
 
 /*
@@ -499,14 +501,17 @@ export async function processGHLInboundMessage(
       db,
     );
 
-  const eventService =
-  new IntegrationEventService(
-    eventRepository,
-
-    new IntegrationEventDeadLetterRepository(
-      db,
-    ),
+  const deadLetterRepository =
+  new IntegrationEventDeadLetterRepository(
+    db,
   );
+
+  const eventService =
+    new IntegrationEventService(
+      eventRepository,
+
+      deadLetterRepository,
+    );
 
   const eventResult =
     await eventService.accept({
@@ -565,7 +570,7 @@ export async function processGHLInboundMessage(
     return;
   }
 
- 
+
  let processingSucceeded =
   true;
 
@@ -784,6 +789,28 @@ try {
     return;
   }
 
+  let tenantAIChatEnabled = false;
+
+    try {
+      tenantAIChatEnabled =
+        await isTenantFeatureEnabled(
+          db,
+          context.tenant.id,
+          "ai_chat",
+        );
+    } catch (error: unknown) {
+      console.error(
+        "Failed to load tenant AI Chat setting.",
+        {
+          tenantId: context.tenant.id,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        },
+      );
+    }
+
   const decision =
     await sessionService.handleInbound({
 
@@ -843,22 +870,48 @@ try {
    * hijacking the normal AI conversation.
    */
 
-  const bookingSessionRepository =
-    bookingEnabled
-      ? new AIBookingSessionRepository(
-          db,
-        )
-      : null;
 
-  const activeBookingSession =
-    bookingEnabled &&
-    bookingSessionRepository
-      ? await bookingSessionRepository.find(
-          context.tenant.id,
-          message.provider,
-          message.conversationId,
-        )
-      : null;
+    let tenantBookingEnabled = false;
+
+    if (bookingEnabled) {
+      try {
+        tenantBookingEnabled =
+          await isTenantFeatureEnabled(
+            db,
+            context.tenant.id,
+            "ai_booking",
+          );
+      } catch (error: unknown) {
+        console.error(
+          "Failed to load tenant AI Booking setting.",
+          {
+            tenantId: context.tenant.id,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error),
+          },
+        );
+      }
+    }
+
+    const bookingSessionRepository =
+      tenantBookingEnabled
+        ? new AIBookingSessionRepository(
+            db,
+          )
+        : null;
+
+    const activeBookingSession =
+      tenantBookingEnabled &&
+      bookingSessionRepository
+        ? await bookingSessionRepository.find(
+            context.tenant.id,
+            message.provider,
+            message.conversationId,
+          )
+        : null;
+
 
   const bookingSessionActive =
     Boolean(
@@ -934,31 +987,20 @@ try {
   );
 
 
-  if (
-    !bookingEnabled
-  ) {
-
-    console.log(
-      "AI BOOKING INTEGRATION DISABLED",
-      {
-        tenantId:
-          context.tenant.id,
-
-        provider:
-          message.provider,
-
-        conversationId:
-          message.conversationId,
-
-        messageId:
-          message.providerMessageId,
-
-        reason:
-          "AI_BOOKING_ENABLED is not true.",
-      },
-    );
-
-  }
+  if (!tenantBookingEnabled) {
+      console.log(
+        "AI BOOKING INTEGRATION DISABLED",
+        {
+          tenantId: context.tenant.id,
+          provider: message.provider,
+          conversationId: message.conversationId,
+          messageId: message.providerMessageId,
+          reason: !bookingEnabled
+            ? "AI_BOOKING_ENABLED is not true."
+            : "Tenant ai_booking feature is disabled or its setting could not be verified.",
+        },
+      );
+    }
 
   /*
    * Only log booking session state when booking
@@ -966,9 +1008,8 @@ try {
    */
 
   if (
-    bookingEnabled
+    tenantBookingEnabled
   ) {
-
     console.log(
       "AI BOOKING SESSION STATE",
       {
@@ -1003,6 +1044,7 @@ try {
   ) {
 
     if (
+      tenantAIChatEnabled &&
       decision.response?.trim()
     ) {
 
@@ -1029,6 +1071,27 @@ try {
 
     return;
   }
+
+  /*
+  * Never let a booking session override an established
+  * human-controlled conversation.
+  */
+
+  if (
+    decision.action === "ignore" &&
+    decision.state === "human_handoff"
+  ) {
+    console.info(
+      "Automated processing stopped because the conversation is under human control.",
+      {
+        tenantId: context.tenant.id,
+        conversationId: message.conversationId,
+        messageId: message.providerMessageId,
+      },
+    );
+
+    return;
+}
 
   /*
    * --------------------------------------------------------
@@ -1104,12 +1167,28 @@ try {
    * --------------------------------------------------------
    */
 
+  console.log("AI POST-THINKING HISTORY FETCH START", {
+  tenantId: context.tenant.id,
+  conversationId: message.conversationId,
+  messageId: message.providerMessageId,
+  });
+
+  const historyFetchStartedAt = Date.now();
+
   const latestHistory =
     await messaging.getRecentMessages(
       context,
       message.conversationId,
       20,
     );
+
+  console.log("AI POST-THINKING HISTORY FETCH COMPLETE", {
+    tenantId: context.tenant.id,
+    conversationId: message.conversationId,
+    messageId: message.providerMessageId,
+    durationMs: Date.now() - historyFetchStartedAt,
+    messageCount: latestHistory.length,
+  });
 
   /*
    * --------------------------------------------------------
@@ -1158,24 +1237,25 @@ try {
    * --------------------------------------------------------
    * 9. AI BOOKING ENGINE
    * --------------------------------------------------------
-   *
-   * CRITICAL:
-   *
-   * processAIBooking() is ONLY called when:
-   *
-   *     bookingEnabled === true
-   *
-   * When false, execution jumps directly to RAG.
-   */
+   /*
+ * CRITICAL:
+ *
+ * processAIBooking() is called only when:
+ *
+ * - The platform-level booking flag is enabled.
+ * - The authenticated tenant's ai_booking feature is enabled.
+ *
+ * When either condition is false, booking is skipped.
+ * Ordinary RAG/AI remains controlled by the separate
+ * ai_chat feature gate and existing session safeguards.
+ */
 
   if (
-    bookingEnabled
-  ) {
-
-    try {
-
-      const bookingResult =
-        await processAIBooking({
+      tenantBookingEnabled
+    ) {
+      try {
+        const bookingResult =
+          await processAIBooking({
           db,
 
           context,
@@ -1202,7 +1282,7 @@ try {
             ),
         });
 
-      
+
 
       console.log(
         "AI BOOKING ENGINE RESULT",
@@ -1517,6 +1597,32 @@ try {
 
   }
 
+
+  /*
+   * --------------------------------------------------------
+   * Tenant AI Chat feature gate
+   * --------------------------------------------------------
+   *
+   * The booking engine has already had an opportunity to
+   * handle the message. This gate controls ordinary AI chat.
+   */
+
+
+
+  if (!tenantAIChatEnabled) {
+    console.info(
+      "Normal AI response skipped because AI Chat is disabled or its setting could not be verified.",
+      {
+        tenantId: context.tenant.id,
+        conversationId: message.conversationId,
+        messageId: message.providerMessageId,
+      },
+    );
+
+    return;
+  }
+
+
   /*
    * --------------------------------------------------------
    * 10. Retrieve approved knowledge
@@ -1524,10 +1630,13 @@ try {
    */
 
   let knowledge:
-    KnowledgeContextItem[] =
+  KnowledgeContextItem[] =
     [];
 
-  try {
+let retrievalQueryForAnswer =
+  "";
+
+try {
 
     /*
      * --------------------------------------------------------
@@ -1578,6 +1687,48 @@ try {
         message.occurredAt,
       );
 
+    console.log("AI QUERY REWRITE START", {
+      tenantId: context.tenant.id,
+      conversationId: message.conversationId,
+      messageId: message.providerMessageId,
+    });
+
+    const queryRewriteStartedAt = Date.now();
+
+    const queryRewrite =
+      await rewriteKnowledgeQuery(
+        ai,
+        message.text,
+        knowledgeQuery.retrievalQuery,
+      );
+
+    console.log("AI QUERY REWRITE COMPLETE", {
+      tenantId: context.tenant.id,
+      conversationId: message.conversationId,
+      messageId: message.providerMessageId,
+      durationMs: Date.now() - queryRewriteStartedAt,
+      rewritten: queryRewrite.rewritten,
+    });
+
+    const retrievalQuery =
+      queryRewrite.query ||
+      knowledgeQuery.retrievalQuery;
+
+      retrievalQueryForAnswer = retrievalQuery;
+
+    console.log(
+      "AI KNOWLEDGE QUERY REWRITE",
+      {
+        tenantId: context.tenant.id,
+        conversationId: message.conversationId,
+        rewritten: queryRewrite.rewritten,
+        reason: queryRewrite.reason,
+        inputLength:
+          knowledgeQuery.retrievalQuery.length,
+        outputLength: retrievalQuery.length,
+      },
+    );
+
     console.log(
       "AI CONTEXTUAL KNOWLEDGE QUERY",
       {
@@ -1601,14 +1752,23 @@ try {
 
         contextSource:
           knowledgeQuery.contextSource,
+
       },
     );
+    console.log("AI RETRIEVAL CALL INPUT", {
+      tenantId: context.tenant.id,
+      retrievalQueryLength: retrievalQueryForAnswer.length,
+      originalQueryLength: knowledgeQuery.originalQuery.length,
+      contextualQueryLength: knowledgeQuery.retrievalQuery.length,
+    });
+
+
 
     knowledge =
       await knowledgeRetriever.search(
-        knowledgeQuery.retrievalQuery,
+        retrievalQueryForAnswer,
+        knowledgeQuery.originalQuery,
       );
-
     console.log(
       "AI KNOWLEDGE RETRIEVAL",
       {
@@ -1620,6 +1780,35 @@ try {
 
         resultCount:
           knowledge.length,
+
+        retrievalMethods: [
+          ...new Set(
+            knowledge.map(
+              (item) =>
+                item.retrievalMethod ?? "unknown",
+            ),
+          ),
+        ],
+
+        topCandidates:
+          knowledge.slice(0, 10).map(
+            (item, index) => ({
+              rank: index + 1,
+              title: item.title,
+              sourceType: item.sourceType,
+
+              retrievalMethod:
+                item.retrievalMethod ?? "unknown",
+
+              vectorScore: item.score,
+              rrfScore: item.rrfScore ?? null,
+              vectorRank: item.vectorRank ?? null,
+              lexicalRank: item.lexicalRank ?? null,
+              lexicalScore: item.lexicalScore ?? null,
+              rerankerScore: item.rerankerScore ?? null,
+              rerankerRank: item.rerankerRank ?? null,
+            }),
+          ),
 
         topScore:
           knowledge.length > 0
@@ -1664,20 +1853,78 @@ try {
    */
 
   const tenantAIInstructions =
-    await loadTenantAIInstructions(
-      db,
-      profile.tenantId,
+  await loadTenantAIInstructions(
+    db,
+    profile.tenantId,
+  );
+
+const isHumanTakeover =
+  async (): Promise<boolean> => {
+    const latestHistory =
+      await messaging.getRecentMessages(
+        context,
+        message.conversationId,
+        20,
+      );
+
+    const takeoverDetected =
+      hasNewerHumanOutboundMessage(
+        latestHistory,
+        message.providerMessageId,
+        message.occurredAt,
+      );
+
+    if (
+      !takeoverDetected
+    ) {
+      return false;
+    }
+
+    const latestHumanOutbound =
+      findLatestHumanOutboundMessage(
+        latestHistory,
+      );
+
+    await sessionService.markHumanTakeover(
+      context.tenant.id,
+      message.provider,
+      message.conversationId,
+      latestHumanOutbound?.timestamp ??
+        message.occurredAt,
     );
 
-  const reply =
-    await generateAIReply(
-      ai,
-      history,
-      message,
-      profile,
-      knowledge,
-      tenantAIInstructions,
+    console.warn(
+      "AI generation cancelled because a human agent took over.",
+      {
+        tenantId:
+          context.tenant.id,
+
+        conversationId:
+          message.conversationId,
+
+        messageId:
+          message.providerMessageId,
+
+        humanMessageId:
+          latestHumanOutbound?.id ??
+          null,
+      },
     );
+
+    return true;
+  };
+
+const reply =
+  await generateAIReply(
+    ai,
+    history,
+    message,
+    profile,
+    knowledge,
+    tenantAIInstructions,
+    retrievalQueryForAnswer,
+    isHumanTakeover,
+  );
 
   /*
    * --------------------------------------------------------
