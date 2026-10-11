@@ -4806,45 +4806,67 @@ export function resolveCoreAIAnswerability(
     };
   }
 
-  if (
-    hasRequestedAttributes &&
-    knowledgeAttributeCoverageStatus ===
-      "none"
-  ) {
+  /*
+ * Some requested intents are covered, but others
+ * are not. Preserve the supported portion.
+ */
+if (
+  knowledgeCoverageStatus ===
+  "partial"
+) {
+  return {
+    decision:
+      "answer_partial",
 
-    return {
-      decision:
-        "handoff",
+    confidence:
+      "medium",
 
-      confidence:
-        "low",
+    reason:
+      "partial_knowledge_coverage",
+  };
+}
 
-      reason:
-        "no_requested_attribute_coverage",
-    };
-  }
+/*
+ * All requested intents may be covered, but none
+ * of the requested attributes is confirmed.
+ */
+    if (
+      hasRequestedAttributes &&
+      knowledgeAttributeCoverageStatus ===
+        "none"
+    ) {
+      return {
+        decision:
+          "handoff",
 
-  if (
-    knowledgeCoverageStatus ===
-      "partial" ||
-    (
+        confidence:
+          "low",
+
+        reason:
+          "no_requested_attribute_coverage",
+      };
+    }
+
+    /*
+    * Some requested attributes are confirmed,
+    * but not all of them.
+    */
+    if (
       hasRequestedAttributes &&
       knowledgeAttributeCoverageStatus ===
         "partial"
-    )
-  ) {
+    ) {
+      return {
+        decision:
+          "answer_partial",
 
-    return {
-      decision:
-        "answer_partial",
+        confidence:
+          "medium",
 
-      confidence:
-        "medium",
-
-      reason:
-        "partial_knowledge_coverage",
-    };
-  }
+        reason:
+          "partial_knowledge_coverage",
+      };
+    }
 
   return {
     decision:
@@ -6317,6 +6339,7 @@ addAITraceStage(
       new Set<string>();
 
     let generationFallbackUsed = false;
+    let structuredEvidenceContractRejected = false;
 
     const generate = async (
       correction?: string,
@@ -6326,6 +6349,7 @@ addAITraceStage(
       forceFallback = false,
     ) => {
             generationAttempts += 1;
+            structuredEvidenceContractRejected = false;
 
       const system =
             correction
@@ -6398,11 +6422,13 @@ addAITraceStage(
           },
         );
 
+        structuredEvidenceContractRejected = true;
+
         response = {
           ...response,
           text: "",
-          truncated: true,
         };
+
       } else if (evidenceResult.status === "none") {
         response = {
           ...response,
@@ -6618,18 +6644,20 @@ addAITraceStage(
 
 if (
   providerReportedTruncation ||
+  structuredEvidenceContractRejected ||
   looksLikeIncompleteResponse(
     normalized,
   )
 ) {
 
   console.warn(
-    "AI RESPONSE INCOMPLETE - RETRYING",
+    "AI RESPONSE INCOMPLETE OR STRUCTURED ANSWER REJECTED - RETRYING",
     {
       ...logBase,
 
       response:
         normalized,
+        structuredEvidenceContractRejected,
     },
   );
 
@@ -6718,18 +6746,21 @@ const retry =
 
 if (
   providerReportedTruncation ||
+  structuredEvidenceContractRejected ||
   looksLikeIncompleteResponse(
     normalized,
   )
 ) {
 
   console.warn(
-    "AI RESPONSE REJECTED - STILL INCOMPLETE",
+    "AI RESPONSE INCOMPLETE OR STRUCTURED ANSWER REJECTED - RETRYING",
     {
       ...logBase,
 
       response:
         normalized,
+
+      structuredEvidenceContractRejected,
     },
   );
 

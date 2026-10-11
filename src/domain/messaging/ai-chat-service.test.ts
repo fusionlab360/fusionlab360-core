@@ -942,3 +942,53 @@ test(
     assert.equal(providerCalls, 0);
   },
 );
+
+
+test(
+  "truncated primary response recovers through a valid fallback response",
+  async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+
+    const ai: AIProvider = {
+      async chat(request) {
+        primaryCalls += 1;
+        assert.equal(request.task, "structured");
+
+        return {
+          ...makeResponse("", "cloudflare"),
+          truncated: true,
+          finishReason: "length",
+        };
+      },
+
+      async chatFallback(request) {
+        fallbackCalls += 1;
+        assert.equal(request.task, "structured");
+
+        return makeResponse(correctedResponse, "gemini");
+      },
+    };
+
+    const fixture = makeReplyFixture(
+      "truncated-primary-valid-fallback",
+    );
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+    );
+
+    assert.equal(primaryCalls, 1);
+    assert.equal(fallbackCalls, 1);
+    assert.match(reply, /Parking is available/i);
+    assert.doesNotMatch(
+      reply,
+      /pass your request to our team/i,
+    );
+    assert.doesNotMatch(reply, /"status"\s*:/i);
+  },
+);

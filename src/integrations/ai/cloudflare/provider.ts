@@ -513,10 +513,24 @@ export function createCloudflareAIProvider(
        * --------------------------------------------
        */
 
-      const text =
-        extractText(
-          rawResponse,
-        );
+      let text: string;
+
+        try {
+          text = extractText(rawResponse);
+        } catch (error) {
+          /*
+          * If the model exhausted its output budget before
+          * producing usable text, return a truncated response
+          * so the caller can execute its controlled retry.
+          *
+          * Do not suppress unrelated parsing errors when the
+          * provider did not report truncation.
+          */
+          if (!truncated) {
+            throw error;
+          }
+          text = "";
+        }
 
 
       /*

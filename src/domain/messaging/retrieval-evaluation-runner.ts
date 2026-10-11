@@ -1,11 +1,16 @@
 import {
   selectKnowledgeForAnswer,
   type KnowledgeContextItem,
+  type KnowledgeSelectionCandidateDiagnostic,
 } from "./knowledge-intelligence";
+
+
 import {
   RETRIEVAL_EVALUATION_CASES,
   type RetrievalEvaluationBenchmarkCase,
 } from "./retrieval-evaluation-cases";
+
+
 
 export interface EvaluationKnowledgeRetriever {
   search(
@@ -67,6 +72,8 @@ export interface RetrievalEvaluationCaseResult {
 
   unmappedRetrievedItems: number;
   unmappedSelectedItems: number;
+  candidateDiagnostics:
+  KnowledgeSelectionCandidateDiagnostic[];
 }
 
 export interface RetrievalOnlyEvaluationSummary {
@@ -360,6 +367,7 @@ export async function runRetrievalEvaluation(
 
       unmappedRetrievedItems: rankedSources.unmappedCount,
       unmappedSelectedItems: selectedSources.unmappedCount,
+      candidateDiagnostics: selection.candidateDiagnostics,
     });
   }
 

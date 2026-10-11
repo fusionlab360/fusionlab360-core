@@ -147,6 +147,37 @@ export interface RankedKnowledgeItem
   lexicalScore?: number;
 }
 
+export interface KnowledgeSelectionCandidateDiagnostic {
+  rank: number;
+  title: string;
+  sourceType: string;
+  sourceKey: string | null;
+  chunkId: string | null;
+  knowledgeSourceId: string | null;
+  providerDocumentId: string | null;
+  chunkIndex: number | null;
+  retrievalMethod: string;
+  rrfScore: number | null;
+  vectorRank: number | null;
+  lexicalRank: number | null;
+  lexicalScore: number | null;
+  score: number;
+  rerankScore: number;
+  rerankerScore: number | null;
+  rerankerRank: number | null;
+  entityMatch: boolean;
+  fallbackLike: boolean;
+  intentMatch: boolean;
+  focusPhraseMatch: boolean;
+  exactPhraseMatch: boolean;
+  matchedTerms: string[];
+  decision:
+    | "selected"
+    | "eligible_not_selected"
+    | "rejected";
+  rejectionReason: string | null;
+}
+
 
 /*
  * --------------------------------------------------
@@ -4539,6 +4570,9 @@ export function selectKnowledgeForAnswer(
 
     attributeCoverage:
        KnowledgeAttributeCoverage;
+
+    candidateDiagnostics:
+      KnowledgeSelectionCandidateDiagnostic[];
   }
   {
 
@@ -5341,6 +5375,70 @@ console.log(
   const eligibleSet = new Set(eligible);
   const selectedSet = new Set(selected);
 
+  const candidateDiagnostics:
+  KnowledgeSelectionCandidateDiagnostic[] =
+  ranked.map((item, index) => ({
+    rank: index + 1,
+    title: item.title?.trim() || "(untitled)",
+    sourceType: item.sourceType || "unknown",
+
+    sourceKey:
+      item.providerDocumentId?.trim() ||
+      item.knowledgeSourceId?.trim() ||
+      null,
+
+    chunkId: item.id?.trim() || null,
+    knowledgeSourceId:
+      item.knowledgeSourceId?.trim() || null,
+    providerDocumentId:
+      item.providerDocumentId?.trim() || null,
+
+    chunkIndex: item.chunkIndex ?? null,
+    retrievalMethod: item.retrievalMethod ?? "unknown",
+
+    rrfScore:
+      typeof item.rrfScore === "number" &&
+      Number.isFinite(item.rrfScore)
+        ? Number(item.rrfScore.toFixed(6))
+        : null,
+
+    vectorRank: item.vectorRank ?? null,
+    lexicalRank: item.lexicalRank ?? null,
+
+    lexicalScore:
+      typeof item.lexicalScore === "number" &&
+      Number.isFinite(item.lexicalScore)
+        ? Number(item.lexicalScore.toFixed(4))
+        : null,
+
+    score: Number(item.score.toFixed(4)),
+    rerankScore: Number(item.rerankScore.toFixed(4)),
+
+    rerankerScore:
+      typeof item.rerankerScore === "number" &&
+      Number.isFinite(item.rerankerScore)
+        ? Number(item.rerankerScore.toFixed(6))
+        : null,
+
+    rerankerRank: item.rerankerRank ?? null,
+
+    entityMatch: item.entityMatch,
+    fallbackLike: item.fallbackLike,
+    intentMatch: item.intentMatch,
+    focusPhraseMatch: item.focusPhraseMatch,
+    exactPhraseMatch: item.exactPhraseMatch,
+    matchedTerms: item.matchedTerms.slice(0, 8),
+
+    decision: selectedSet.has(item)
+      ? "selected"
+      : eligibleSet.has(item)
+        ? "eligible_not_selected"
+        : "rejected",
+
+    rejectionReason:
+      eligibilityRejectionReasons.get(item) ?? null,
+  }));
+
   console.log(
     "AI KNOWLEDGE SELECTION DIAGNOSTICS",
     {
@@ -5432,17 +5530,13 @@ console.log(
   );
 
         return {
-
           analysis,
           ranked,
           selected,
+          candidateDiagnostics,
 
-          answerable:
-            selected.length >
-            0,
-
+          answerable: selected.length > 0,
           intentCoverage,
-
           attributeCoverage,
         };
   }

@@ -74,6 +74,17 @@ test(
     );
     assert.equal(observed.unmappedRetrievedItems, 0);
 
+    assert.equal(observed.candidateDiagnostics.length, 1);
+
+    const diagnostic = observed.candidateDiagnostics[0];
+
+    assert.ok(diagnostic);
+    assert.equal(diagnostic.decision, "selected");
+    assert.equal(diagnostic.rejectionReason, null);
+    assert.equal(diagnostic.providerDocumentId, "document-service-001");
+    assert.equal(diagnostic.chunkId, "chunk-service-001");
+    assert.equal(diagnostic.score, 0.95);
+
     assert.ok(result.summary);
     assert.equal(result.summary.verifiedCasesEvaluated, 1);
     assert.equal(result.summary.recallAtK, 1);
@@ -178,5 +189,48 @@ test(
       result.summary.requiredEvidenceCompleteRate,
       0,
     );
+  },
+);
+
+
+test(
+  "evaluation runner preserves rejection reasons for ineligible evidence",
+  async () => {
+    const unrelatedDocument: KnowledgeContextItem = {
+      ...serviceDocument,
+      id: "chunk-unrelated-001",
+      knowledgeSourceId: "source-unrelated-001",
+      providerDocumentId: "document-unrelated-001",
+      title: "Parking Information",
+      content: "Parking is available behind the building.",
+      score: 0.12,
+      retrievalMethod: "vector",
+      rerankerScore: -2,
+      rerankerRank: 1,
+    };
+
+    const result = await runRetrievalEvaluation({
+      retriever: {
+        search: async () => [unrelatedDocument],
+      },
+      sourceKeyById: {},
+      cases: [verifiedServiceCase],
+      topK: 5,
+    });
+
+    const observed = result.cases[0];
+
+    assert.ok(observed);
+    assert.equal(observed.candidateDiagnostics.length, 1);
+
+    const diagnostic = observed.candidateDiagnostics[0];
+
+    assert.ok(diagnostic);
+    assert.equal(diagnostic.decision, "rejected");
+    assert.ok(diagnostic.rejectionReason);
+    assert.equal(diagnostic.providerDocumentId, "document-unrelated-001");
+    assert.equal(diagnostic.chunkId, "chunk-unrelated-001");
+    assert.equal(diagnostic.score, 0.12);
+    assert.equal(diagnostic.rerankerScore, -2);
   },
 );
