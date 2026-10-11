@@ -1114,7 +1114,6 @@ function isImplicitAttributeFollowUp(
       text,
     )
   ) {
-
     return false;
   }
 
@@ -1128,8 +1127,25 @@ function isImplicitAttributeFollowUp(
       text,
     )
   ) {
-
     return false;
+  }
+
+    /*
+   * Requests for a location/map link may depend on a
+   * branch or business established earlier in chat.
+   * Inspect conversation context before treating the
+   * request as a standalone question.
+   */
+  const requestsLocationLink =
+    /\b(?:get|have|send|share|give|provide)\b/i.test(
+      text,
+    ) &&
+    /\b(?:google\s+)?(?:maps?|location)\s+link\b/i.test(
+      text,
+    );
+
+  if (requestsLocationLink) {
+    return true;
   }
 
 
