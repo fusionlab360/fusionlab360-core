@@ -352,6 +352,53 @@ function extractTopicSubjectTerms(
   );
 }
 
+type BusinessContextKind =
+  | "clinic"
+  | "hotel";
+
+function detectBusinessContextKind(
+  text: string,
+): BusinessContextKind | null {
+  if (
+    /\b(?:clinic|clinics|poliklinik|medical\s+cent(?:er|re))\b/i.test(
+      text,
+    )
+  ) {
+    return "clinic";
+  }
+
+  if (
+    /\b(?:hotel|hotels|resort|resorts|accommodation|accommodations)\b/i.test(
+      text,
+    )
+  ) {
+    return "hotel";
+  }
+
+  return null;
+}
+
+function hasBusinessTypeConflict(
+  currentQuery: string,
+  topicAnchor: string | null,
+): boolean {
+  if (!topicAnchor) {
+    return false;
+  }
+
+  const currentKind =
+    detectBusinessContextKind(currentQuery);
+
+  const previousKind =
+    detectBusinessContextKind(topicAnchor);
+
+  return (
+    currentKind !== null &&
+    previousKind !== null &&
+    currentKind !== previousKind
+  );
+}
+
 function hasNewTopicSubject(
   currentQuery:
     string,
@@ -1136,15 +1183,24 @@ function isImplicitAttributeFollowUp(
    * Inspect conversation context before treating the
    * request as a standalone question.
    */
-  const requestsLocationLink =
-    /\b(?:get|have|send|share|give|provide)\b/i.test(
-      text,
-    ) &&
-    /\b(?:google\s+)?(?:maps?|location)\s+link\b/i.test(
+    const requestsLocationLink =
+    /\b(?:get|have|send|share|give|provide)\b/i.test(text) &&
+    /\b(?:google\s+(?:maps?|location)(?:\s+(?:link|url|details))?|(?:maps?|location)\s+(?:link|url|details))\b/i.test(
       text,
     );
 
-  if (requestsLocationLink) {
+  const requestsBusinessHours =
+    /\b(?:the|this|that|your|our)\s+(?:clinic|branch|hotel|office|restaurant|store|property)\b/i.test(
+      text,
+    ) &&
+    /\b(?:open|opening|hours?|close|closing|operating)\b/i.test(
+      text,
+    );
+
+  if (
+    requestsLocationLink ||
+    requestsBusinessHours
+  ) {
     return true;
   }
 
@@ -1714,6 +1770,11 @@ const previousCustomerMessages =
         );
       },
     )
+        .sort(
+      (a, b) =>
+        Date.parse(a.timestamp ?? "") -
+        Date.parse(b.timestamp ?? ""),
+    )
     .map(
       (
         item,
@@ -1807,11 +1868,17 @@ const topicSubjectAnchor =
   topicAnchor;
 
 const topicSwitch =
-  explicitFollowUp &&
-  !!topicSubjectAnchor &&
-  hasNewTopicSubject(
+  hasBusinessTypeConflict(
     originalQuery,
     topicSubjectAnchor,
+  ) ||
+  (
+    explicitFollowUp &&
+    !!topicSubjectAnchor &&
+    hasNewTopicSubject(
+      originalQuery,
+      topicSubjectAnchor,
+    )
   );
 
 /*

@@ -88,3 +88,60 @@ test(
     assert.equal(result.retrievalQuery, query);
   },
 );
+
+test(
+  "resolves Google location without the word link",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "Can you give me google location",
+      [previousBranchQuestion],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(
+      result.retrievalQuery,
+      /Kota Kemuning/i,
+    );
+  },
+);
+
+test(
+  "uses branch context for an opening-hours follow-up",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "Is the clinic open on Sunday?",
+      [previousBranchQuestion],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(
+      result.retrievalQuery,
+      /Kota Kemuning/i,
+    );
+  },
+);
+
+test(
+  "does not carry hotel context into a clinic-hours question",
+  () => {
+    const hotelQuestion: KnowledgeQueryHistoryItem = {
+      role: "customer",
+      text: "Which hotel has accommodation near the airport?",
+      timestamp: "2026-10-11T15:00:00.000Z",
+    };
+
+    const result = resolveKnowledgeQuery(
+      "Is the clinic open on Sunday?",
+      [hotelQuestion],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, false);
+    assert.equal(
+      result.retrievalQuery,
+      "Is the clinic open on Sunday?",
+    );
+  },
+);
