@@ -1797,6 +1797,23 @@ try {
               title: item.title,
               sourceType: item.sourceType,
 
+              sourceKey:
+              item.providerDocumentId?.trim() ||
+              item.knowledgeSourceId?.trim() ||
+              null,
+
+            knowledgeSourceId:
+              item.knowledgeSourceId || null,
+
+            providerDocumentId:
+              item.providerDocumentId || null,
+
+            chunkId:
+              item.id || null,
+
+            chunkIndex:
+              item.chunkIndex ?? null,
+
               retrievalMethod:
                 item.retrievalMethod ?? "unknown",
 

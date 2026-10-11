@@ -33,6 +33,11 @@ export interface KnowledgeContextItem {
   content: string;
   score: number;
 
+  id?: string;
+  knowledgeSourceId?: string;
+  providerDocumentId?: string;
+  chunkIndex?: number;
+
   retrievalMethod?: "vector" | "lexical" | "hybrid";
   rrfScore?: number;
   vectorRank?: number;
@@ -1317,99 +1322,79 @@ function detectLanguage(
 
 
 function detectIntent(
-
   text:
-
     string,
-
 ):
-
   KnowledgeIntent {
 
-
-
   const normalized =
-
     normalize(
-
       text,
-
     );
 
-
-
   /*
-
    * Greeting
-
    */
 
   if (
-
     /^(?:hi|hello|hey|hai|helo)(?:\s+(?:there|team|everyone))?[.!?]*$/i.test(
   normalized,
 )
-
   ) {
-
     return "greeting";
-
   }
 
-
-
   /*
-
    * Discount
-
    */
-
   if (
-
     /\b(discount|discounts|diskaun)\b/i.test(
-
       normalized,
-
     )
-
   ) {
-
     return "discount";
-
   }
 
 
-
-  /*
-
-   * Promotion
-
+    /*
+   * Service catalogue questions must be classified before
+   * the promotion rules because "offer" is also a common
+   * verb in questions about services.
+   *
+   * Explicit promotion terms retain promotion precedence.
    */
-
-  if (
-
-    /\b(promotion|promotions|promo|promosi|offer|offers|special offer|deal|deals|voucher|coupon)\b/i.test(
-
+  const hasExplicitPromotionMention =
+    /\b(promotion|promotions|promo|promosi|discount|discounts|diskaun|deal|deals|voucher|vouchers|coupon|coupons)\b|\bspecial\s+offers?\b/i.test(
       normalized,
+    );
 
-    )
-
-  ) {
-
-    return "promotion";
-
-  }
-
-
-
-  /*
-
-   * Price
-
-   */
+  const asksForServiceCatalogue =
+    /\b(which|what)\s+(services?|treatments?)\b/i.test(
+      normalized,
+    );
 
   if (
+    asksForServiceCatalogue &&
+    !hasExplicitPromotionMention
+  ) {
+    return "services";
+  }
 
+  /*
+   * Promotion
+   */
+  if (
+    /\b(promotion|promotions|promo|promosi|offer|offers|special offer|deal|deals|voucher|coupon)\b/i.test(
+      normalized,
+    )
+  ) {
+    return "promotion";
+  }
+
+  /*
+   * Price
+   */
+  if (
     /\b(price|prices|cost|costs|fee|fees|rate|rates|pricing|harga|kos|yuran|bayaran|charge|charges)\b/i.test(
   normalized,
 ) ||
@@ -5368,13 +5353,30 @@ console.log(
       eligibleCount: eligible.length,
       selectedCount: selected.length,
 
+      selectedSourceKeys: selected
+        .map(
+          (item) =>
+            item.providerDocumentId?.trim() ||
+            item.knowledgeSourceId?.trim(),
+        )
+        .filter((key): key is string => Boolean(key)),
+
       candidates: ranked.slice(0, 10).map(
         (item, index) => ({
           rank: index + 1,
           title: item.title,
           sourceType: item.sourceType,
 
-                    retrievalMethod:
+          sourceKey:
+            item.providerDocumentId?.trim() ||
+            item.knowledgeSourceId?.trim() ||
+            null,
+          chunkId: item.id?.trim() || null,
+          knowledgeSourceId: item.knowledgeSourceId?.trim() || null,
+          providerDocumentId: item.providerDocumentId?.trim() || null,
+          chunkIndex: item.chunkIndex ?? null,
+
+          retrievalMethod:
             item.retrievalMethod ?? "unknown",
 
           rrfScore:

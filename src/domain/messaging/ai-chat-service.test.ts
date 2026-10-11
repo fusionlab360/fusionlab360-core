@@ -15,8 +15,10 @@ import type { AIAgentProfile } from "../../persistence/models/ai-agent-profile";
 import {
   generateAIReply,
   resolveCoreAIAnswerability,
+  rewriteKnowledgeQuery,
   type KnowledgeContextItem,
 } from "./ai-chat-service";
+
 
 
 const knowledgeContent = "Parking is available.";
@@ -814,5 +816,129 @@ test(
     assert.equal(fallbackCalls, 0);
     assert.match(reply, /9 AM/i);
     assert.match(reply, /5 PM/i);
+  },
+);
+
+
+function makeQueryRewriteProvider(
+  responseText: string,
+): Parameters<typeof rewriteKnowledgeQuery>[0] {
+  return {
+    chat: async () => ({
+      text: responseText,
+    }),
+  } as unknown as Parameters<
+    typeof rewriteKnowledgeQuery
+  >[0];
+}
+
+test(
+  "query rewriting returns a standalone business search query",
+  async () => {
+    const result = await rewriteKnowledgeQuery(
+      makeQueryRewriteProvider(
+        "What is the address of the Alam Impian branch?",
+      ),
+      "Hi, want to know Alam Impian address",
+      "What is the address of Alam Impian branch?",
+    );
+
+    assert.equal(result.rewritten, true);
+    assert.equal(result.reason, "rewritten");
+    assert.equal(
+      result.query,
+      "What is the address of the Alam Impian branch?",
+    );
+  },
+);
+
+test(
+  "query rewriting returns the contextual fallback on empty output",
+  async () => {
+    const contextualQuery =
+      "What is the address of the Alam Impian branch?";
+
+    const result = await rewriteKnowledgeQuery(
+      makeQueryRewriteProvider(""),
+      "What about its address?",
+      contextualQuery,
+    );
+
+    assert.equal(result.rewritten, false);
+    assert.equal(result.reason, "empty_response");
+    assert.equal(result.query, contextualQuery);
+  },
+);
+
+test(
+  "query rewriting rejects newly introduced numbers",
+  async () => {
+    const contextualQuery =
+      "What is the phone number 12345678?";
+
+    const result = await rewriteKnowledgeQuery(
+      makeQueryRewriteProvider(
+        "What is the phone number 98765432?",
+      ),
+      contextualQuery,
+      contextualQuery,
+    );
+
+    assert.equal(result.rewritten, false);
+    assert.equal(result.reason, "numeric_guard");
+    assert.equal(result.query, contextualQuery);
+  },
+);
+
+test(
+  "query rewriting returns the contextual fallback on provider failure",
+  async () => {
+    const contextualQuery =
+      "What is the address of the Alam Impian branch?";
+
+    const ai = {
+      chat: async () => {
+        throw new Error("Simulated provider failure");
+      },
+    } as unknown as Parameters<
+      typeof rewriteKnowledgeQuery
+    >[0];
+
+    const result = await rewriteKnowledgeQuery(
+      ai,
+      "What about the address?",
+      contextualQuery,
+    );
+
+    assert.equal(result.rewritten, false);
+    assert.equal(result.reason, "provider_error");
+    assert.equal(result.query, contextualQuery);
+  },
+);
+
+test(
+  "query rewriting handles empty input without calling the provider",
+  async () => {
+    let providerCalls = 0;
+
+    const ai = {
+      chat: async () => {
+        providerCalls += 1;
+        return { text: "Unexpected response" };
+      },
+    } as unknown as Parameters<
+      typeof rewriteKnowledgeQuery
+    >[0];
+
+    const result = await rewriteKnowledgeQuery(
+      ai,
+      "",
+      "",
+    );
+
+    assert.equal(result.rewritten, false);
+    assert.equal(result.reason, "empty_query");
+    assert.equal(result.query, "");
+    assert.equal(providerCalls, 0);
   },
 );

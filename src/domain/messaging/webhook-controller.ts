@@ -62,8 +62,8 @@ import {
 } from "../knowledge/asset-webhook-service";
 
 import {
-  searchKnowledgeForTenant,
-} from "../knowledge/retrieval-service";
+  createTenantKnowledgeRetriever,
+} from "./tenant-knowledge-retriever";
 
 import {
   createIntegrationRuntime,
@@ -1464,77 +1464,17 @@ export async function ghlInboundMessageController(
    * --------------------------------------------------
    */
 
-  const knowledgeRetriever:
-    KnowledgeRetriever = {
-
-      async search(
-        query: string,
-        originalQuery?: string,
-      ) {
-
-        const result =
-          await searchKnowledgeForTenant(
-            c.env.AI,
-            c.env.VECTORIZE_V2,
-            context.tenant.id,
-            query,
-            20,
-            c.env.DB,
-            originalQuery &&
-            originalQuery !== query
-              ? [originalQuery]
-              : [],
-          );
+  const knowledgeRetriever: KnowledgeRetriever =
+    createTenantKnowledgeRetriever({
+      ai: c.env.AI,
+      vectorize: c.env.VECTORIZE_V2,
+      tenantId: context.tenant.id,
+      db: c.env.DB,
+      topK: 20,
+    });
 
 
-        return result.matches.map(
-
-          (
-            match,
-          ) => ({
-
-            title:
-              match.title,
-
-            sourceType:
-              match.sourceType,
-
-            content:
-              match.content,
-
-            score:
-              match.score,
-
-            retrievalMethod:
-              match.retrievalMethod,
-
-            rrfScore:
-              match.rrfScore,
-
-            vectorRank:
-              match.vectorRank,
-
-            lexicalRank:
-              match.lexicalRank,
-
-            lexicalScore:
-              match.lexicalScore,
-
-            rerankerScore:
-              match.rerankerScore,
-
-            rerankerRank:
-              match.rerankerRank,
-
-          }),
-
-        );
-
-      },
-
-    };
-
-
+    
   /*
    * --------------------------------------------------
    * 23. Process inbound message asynchronously

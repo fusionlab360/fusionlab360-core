@@ -50,6 +50,11 @@ export interface KnowledgeContextItem {
   content: string;
   score: number;
 
+  id?: string;
+  knowledgeSourceId?: string;
+  providerDocumentId?: string;
+  chunkIndex?: number;
+
   rerankScore?: number;
   matchedTerms?: string[];
   titleMatch?: boolean;
@@ -5847,6 +5852,11 @@ const highRisk =
 
             sourceType: item.sourceType,
 
+            sourceKey:
+              item.providerDocumentId?.trim() ||
+              item.knowledgeSourceId?.trim() ||
+              null,
+
             retrievalMethod:
               item.retrievalMethod ?? "unknown",
 
@@ -5926,18 +5936,18 @@ const coreAIAnswerability =
   aiTrace.mode =
   policy.mode;
 
-aiTrace.intent =
-  analysis.intent;
+  aiTrace.intent =
+    analysis.intent;
 
-aiTrace.intents =
-  analysis.intents;
+  aiTrace.intents =
+    analysis.intents;
 
-aiTrace.answerability = {
-  decision:
-    coreAIAnswerability.decision,
+  aiTrace.answerability = {
+    decision:
+  coreAIAnswerability.decision,
 
   confidence:
-    coreAIAnswerability.confidence,
+   coreAIAnswerability.confidence,
 
   reason:
     coreAIAnswerability.reason,
@@ -6036,8 +6046,6 @@ addAITraceStage(
       coreAIAnswerability:
         coreAIAnswerability,
 
-
-
       highRisk:
         highRisk?.name ??
         null,
@@ -6047,6 +6055,18 @@ addAITraceStage(
           .ranked[0]
           ?.title ??
         null,
+
+      selectedSourceKeys:
+        groundedKnowledge
+          .map(
+            (item) =>
+              item.providerDocumentId?.trim() ||
+              item.knowledgeSourceId?.trim() ||
+              null,
+          )
+          .filter(
+            (key): key is string => Boolean(key),
+          ),
 
       selectedSources:
         groundedKnowledge.map(

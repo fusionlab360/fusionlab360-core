@@ -2,6 +2,7 @@
 import { test } from "node:test";
 
 import {
+  analyzeKnowledgeQuery,
   selectKnowledgeForAnswer,
   type KnowledgeContextItem,
 } from "./knowledge-intelligence";
@@ -31,6 +32,7 @@ function hasServiceAttribute(
       item.attribute === "service",
   );
 }
+
 
 test(
   "generic service question with greeting accepts approved service evidence",
@@ -152,4 +154,87 @@ test(
   },
 );
 
+test(
+  "source identity survives knowledge ranking and selection",
+  () => {
+    const identifiedDocument: KnowledgeContextItem = {
+      ...serviceDocument,
+      id: "chunk-test-001",
+      knowledgeSourceId: "source-test-001",
+      providerDocumentId: "document-test-001",
+      chunkIndex: 3,
+    };
+
+    const result = selectKnowledgeForAnswer(
+      "What services do you provide?",
+      [identifiedDocument],
+    );
+
+    const rankedItem = result.ranked.find(
+      (item) => item.title === identifiedDocument.title,
+    );
+
+    assert.ok(rankedItem, "Expected the source to remain in ranked results");
+    assert.equal(rankedItem.id, "chunk-test-001");
+    assert.equal(rankedItem.knowledgeSourceId, "source-test-001");
+    assert.equal(rankedItem.providerDocumentId, "document-test-001");
+    assert.equal(rankedItem.chunkIndex, 3);
+
+    const selectedItem = result.selected.find(
+      (item) => item.title === identifiedDocument.title,
+    );
+
+    assert.ok(selectedItem, "Expected the approved service evidence to be selected");
+    assert.equal(selectedItem.id, "chunk-test-001");
+    assert.equal(selectedItem.knowledgeSourceId, "source-test-001");
+    assert.equal(selectedItem.providerDocumentId, "document-test-001");
+    assert.equal(selectedItem.chunkIndex, 3);
+  },
+);
+
+test(
+  "branch-specific service questions are not misclassified as promotions",
+  () => {
+    const analysis = analyzeKnowledgeQuery(
+      "Which services does the Alam Impian branch offer?",
+    );
+
+    assert.equal(
+      analysis.intent,
+      "services",
+      `Expected services intent. Actual: ${JSON.stringify(analysis)}`,
+    );
+
+    assert.ok(
+      analysis.intents.includes("services"),
+      "Expected services in detected intents",
+    );
+  },
+);
+
+test(
+  "explicit promotion questions retain promotion intent",
+  () => {
+    const analysis = analyzeKnowledgeQuery(
+      "What promotions are available for wound care?",
+    );
+
+    assert.equal(
+      analysis.intent,
+      "promotion",
+      `Expected promotion intent. Actual: ${JSON.stringify(analysis)}`,
+    );
+  },
+);
+
+test(
+  "ordinary service offer questions resolve to services",
+  () => {
+    const analysis = analyzeKnowledgeQuery(
+      "What services do you offer?",
+    );
+
+    assert.equal(analysis.intent, "services");
+  },
+);
 

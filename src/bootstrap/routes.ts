@@ -32,6 +32,10 @@ import knowledgeRoutes
 
 import featureRoutes from "../domain/features/routes";
 
+import {
+  evaluateRetrievalController,
+} from "../domain/messaging/retrieval-evaluation-controller";
+
 
 /*
  * --------------------------------------------------
@@ -245,6 +249,17 @@ app.use(
 
 /*
  * --------------------------------------------------
+ * Authenticated retrieval evaluation
+ * --------------------------------------------------
+ */
+
+app.post(
+  "/knowledge/evaluate",
+  evaluateRetrievalController,
+);
+
+/*
+ * --------------------------------------------------
  * Knowledge
  * --------------------------------------------------
  */
@@ -253,6 +268,8 @@ app.route(
   "/knowledge",
   knowledgeRoutes,
 );
+
+
 
 
 app.use("/features", authMiddleware);
