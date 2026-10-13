@@ -1620,6 +1620,75 @@ test(
 );
 
 test(
+
+  "selected branch evidence reaches the model context and final trace even when short-query policy says conversation",
+  async () => {
+    const fixture = makeReplyFixture(
+      "selected-branch-context",
+      [],
+      "Kota Kemuning",
+    );
+    const branchEvidence: KnowledgeContextItem = {
+      id: "branch-chunk-1",
+      knowledgeSourceId: "branch-source-1",
+      providerDocumentId: "branch-document-1",
+      title: "Kota Kemuning Branch Information",
+      sourceType: "rich_text",
+      content:
+        "Kota Kemuning branch address: 12 Jalan Anggerik, Kota Kemuning.",
+      score: 0.6163,
+      rerankerScore: 0.9266,
+      retrievalMethod: "hybrid",
+    };
+    const unrelatedEvidence: KnowledgeContextItem = {
+      ...branchEvidence,
+      id: "unrelated-chunk-1",
+      knowledgeSourceId: "unrelated-source-1",
+      providerDocumentId: "unrelated-document-1",
+      title: "Shah Alam Branch Information",
+      content: "Shah Alam branch address: 9 Jalan Utama, Shah Alam.",
+      score: 0.2,
+      rerankerScore: 0.1,
+    };
+    let capturedSystemPrompt = "";
+    let trace: { retrieval?: { selectedCount?: number } } | undefined;
+    const originalConsoleLog = console.log;
+    console.log = ((...args: unknown[]) => {
+      if (args[0] === "AI TRACE") {
+        trace = args[1] as { retrieval?: { selectedCount?: number } };
+      }
+    }) as typeof console.log;
+
+    const ai: AIProvider = {
+      async chat(request) {
+        capturedSystemPrompt = request.messages[0]?.content ?? "";
+        return makeResponse(
+          "The Kota Kemuning branch is at 12 Jalan Anggerik, Kota Kemuning.",
+          "cloudflare",
+        );
+      },
+    };
+
+    try {
+      await generateAIReply(
+        ai,
+        fixture.history,
+        fixture.message,
+        fixture.profile,
+        [branchEvidence, unrelatedEvidence],
+      );
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    assert.match(capturedSystemPrompt, /12 Jalan Anggerik/);
+    assert.doesNotMatch(capturedSystemPrompt, /9 Jalan Utama/);
+    assert.equal(trace?.retrieval?.selectedCount, 1);
+  },
+);
+
+test(
+
   "answers normally without repeating handoff after the customer declines",
   async () => {
     const conversationId = "conversation-declined-handoff-success";

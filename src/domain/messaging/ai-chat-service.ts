@@ -5899,20 +5899,12 @@ const highRisk =
     knowledgeQuery.analysisQuery || message.text,
   );
 
-  /*
-   * "Can you repeat that?" is conversation, but
-   * the model still gets selected knowledge so
-   * the repeated answer stays accurate.
-   */
-
+  // Selection is the canonical approved evidence set. Do not discard it
+  // based on the response style policy: the policy and selector can classify
+  // the same short entity query differently, and the approved evidence must
+  // still reach answer assembly and the trace.
   const groundedKnowledge =
-    policy.mode ===
-      "conversation" &&
-    !repeatRequest
-
-      ? []
-
-      : knowledgeSelection.selected;
+    knowledgeSelection.selected;
 
   const builtKnowledgeContext =
   buildKnowledgeContext(groundedKnowledge);
