@@ -63,6 +63,12 @@ export interface KnowledgeQueryResolution {
   contextSource:
     string |
     null;
+
+  clarificationQuestion?: string;
+
+  clarificationResolved?: boolean;
+
+  analysisQuery?: string;
 }
 
 /* ==================================================
@@ -80,6 +86,142 @@ const MAX_CONTEXT_MESSAGES =
 
 const CONTEXT_WINDOW_MS =
   12 * 60 * 60 * 1000;
+
+const BRANCH_CONTACT_CLARIFICATION =
+  "Do you mean the general contact number, or the number for a specific branch? If it’s for a branch, please tell me which one.";
+
+const GENERIC_LOCATION_TERMS = new Set([
+  "branch",
+  "branches",
+  "location",
+  "map",
+  "maps",
+  "google",
+  "link",
+  "clinic",
+  "hotel",
+  "office",
+  "store",
+  "restaurant",
+  "where",
+  "get",
+  "tell",
+  "give",
+  "find",
+  "show",
+  "provide",
+  "please",
+  "know",
+  "address",
+  "can",
+  "could",
+  "what",
+  "is",
+  "your",
+  "near",
+  "nearby",
+  "earlier",
+  "previous",
+  "same",
+  "other",
+  "one",
+]);
+
+const BRANCH_REFERENCE_PATTERN =
+  /\b(?:the\s+)?(?:earlier|previous|same|that|above)\s+(?:branch|location|one)\b|\bthat\s+same\s+(?:branch|location|one)\b/i;
+
+const MULTIPLE_BRANCH_CLARIFICATION =
+  "Which branch do you mean? Please name its location.";
+
+function isGenericContactQuestion(text: string): boolean {
+  return (
+    isCompleteQuestion(text) &&
+    !isFollowUpPattern(text) &&
+    !isEllipticalFollowUp(text) &&
+    /\b(?:contact|phone|mobile|whatsapp)\b.*\b(?:number|details?)\b|\b(?:number|details?)\b.*\b(?:contact|phone|mobile|whatsapp)\b/i.test(text)
+  );
+}
+
+function isDependentContactFollowUp(text: string): boolean {
+  return (
+    /\b(?:contact|phone|mobile|whatsapp|telephone)\b.*\b(?:number|details?)\b|\b(?:number|details?)\b.*\b(?:contact|phone|mobile|whatsapp|telephone)\b/i.test(text) &&
+    isFollowUpPattern(text)
+  );
+}
+
+function locationEntityTerms(text: string): string[] {
+  if (!/\b(?:branch|address|location|google\s+maps?|map)\b/i.test(text)) {
+    return [];
+  }
+
+  return extractTopicSubjectTerms(text)
+    .map((term) => term.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(
+      (term) =>
+        term.length > 0 &&
+        !GENERIC_LOCATION_TERMS.has(term) &&
+        !FOLLOW_UP_ATTRIBUTE_TERMS.has(term),
+    );
+}
+
+function getNamedLocationCandidates(
+  messages: KnowledgeQueryHistoryItem[],
+  beforeIndex: number,
+): string[] {
+  const candidates = new Map<string, string>();
+
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    if (!item || item.role !== "customer") {
+      continue;
+    }
+
+    if (
+      isGenericContactQuestion(item.text) ||
+      isDependentContactFollowUp(item.text) ||
+      isShortFragment(item.text)
+    ) {
+      continue;
+    }
+
+    const terms = locationEntityTerms(item.text);
+    if (terms.length === 0) {
+      break;
+    }
+
+    const candidate = terms.join(" ");
+    candidates.set(normalize(candidate), candidate);
+  }
+
+  return [...candidates.values()];
+}
+
+function resolveExplicitLocationReply(
+  reply: string,
+  knownCandidates: string[],
+): string | null {
+  const replyTerms = extractMeaningfulTerms(reply).filter(
+    (term) => !GENERIC_LOCATION_TERMS.has(term),
+  );
+  if (replyTerms.length === 0) {
+    return null;
+  }
+
+  const normalizedReply = normalize(replyTerms.join(" "));
+  const matchedCandidate = knownCandidates.find((candidate) => {
+    const candidateTerms = extractMeaningfulTerms(candidate);
+    return normalize(candidateTerms.join(" ")) === normalizedReply;
+  });
+  if (matchedCandidate) {
+    return matchedCandidate;
+  }
+
+  if (BRANCH_REFERENCE_PATTERN.test(reply)) {
+    return null;
+  }
+
+  return replyTerms.join(" ");
+}
 
 /*
  * A short message can still be a complete question.
@@ -595,6 +737,8 @@ function isFollowUpPattern(
     /\band\s+how\b/i,
 
     /\bwhat\s+about\s+it\b/i,
+
+    /\b(?:its|their|the\s+same)\s+(?:contact|phone|mobile|whatsapp|telephone)\s+(?:number|details?)\b/i,
 
     /\bhow\s+much\s+is\s+it\b/i,
 
@@ -1660,36 +1804,10 @@ if (
       null,
   };
 }
-  /*
-   * Only use context for short or conversationally
-   * dependent customer messages.
-   */
   const implicitAttributeFollowUp =
   isImplicitAttributeFollowUp(
     originalQuery,
   );
-
-
-    if (
-      !isContextDependentQuery(
-        originalQuery,
-      ) &&
-      !implicitAttributeFollowUp
-    ) {
-
-      return {
-        originalQuery,
-
-        retrievalQuery:
-          originalQuery,
-
-        contextUsed:
-          false,
-
-        contextSource:
-          null,
-      };
-    }
 
   /*
    * Only previous customer messages are allowed
@@ -1791,6 +1909,121 @@ const previousCustomerMessages =
         0,
     );
 
+  const recentHistory = history
+    .filter((item) => {
+      if (!item.timestamp || !item.text.trim()) {
+        return false;
+      }
+
+      const itemTime = Date.parse(item.timestamp);
+      const age = currentTime - itemTime;
+
+      return Number.isFinite(itemTime) && age >= 0 && age < CONTEXT_WINDOW_MS;
+    })
+    .sort(
+      (a, b) => Date.parse(a.timestamp ?? "") - Date.parse(b.timestamp ?? ""),
+    );
+
+  const lastHistoryItem = recentHistory.at(-1);
+  const clarificationPromptWasLastTurn =
+    lastHistoryItem?.role === "ai" &&
+    [BRANCH_CONTACT_CLARIFICATION, MULTIPLE_BRANCH_CLARIFICATION].some(
+      (prompt) => normalize(lastHistoryItem.text) === normalize(prompt),
+    );
+
+  if (
+    clarificationPromptWasLastTurn &&
+    isShortFragment(originalQuery) &&
+    !isPureConversation(originalQuery)
+  ) {
+    let priorContactRequestIndex = -1;
+    for (let index = recentHistory.length - 2; index >= 0; index -= 1) {
+      const item = recentHistory[index];
+      if (item?.role === "customer" && isGenericContactQuestion(item.text)) {
+        priorContactRequestIndex = index;
+        break;
+      }
+    }
+    const priorContactRequest = recentHistory[priorContactRequestIndex];
+
+    if (priorContactRequest) {
+      const branchCandidates = getNamedLocationCandidates(
+        recentHistory,
+        priorContactRequestIndex,
+      );
+      const isReferentialReply = BRANCH_REFERENCE_PATTERN.test(originalQuery);
+      const branch = isReferentialReply
+        ? branchCandidates.length === 1
+          ? branchCandidates[0]
+          : null
+        : resolveExplicitLocationReply(originalQuery, branchCandidates);
+
+      if (!branch || (isReferentialReply && branchCandidates.length !== 1)) {
+        return {
+          originalQuery,
+          retrievalQuery: originalQuery,
+          contextUsed: false,
+          contextSource: null,
+          clarificationQuestion: MULTIPLE_BRANCH_CLARIFICATION,
+        };
+      }
+
+      const analysisQuery = [branch, priorContactRequest.text]
+        .join(" ")
+        .slice(0, MAX_COMBINED_QUERY_CHARS);
+
+      return {
+        originalQuery,
+        retrievalQuery: analysisQuery,
+        contextUsed: true,
+        contextSource: "resolved_branch_clarification",
+        clarificationResolved: true,
+        analysisQuery,
+      };
+    }
+  }
+
+  const priorTopicAnchor = selectTopicAnchor(previousCustomerMessages);
+  const priorTopicRoot = selectTopicRootAnchor(
+    previousCustomerMessages,
+    priorTopicAnchor,
+  );
+  const priorLocationEntityTerms = priorTopicRoot
+    ? locationEntityTerms(priorTopicRoot)
+    : [];
+
+  if (
+    isGenericContactQuestion(originalQuery) &&
+    priorLocationEntityTerms.length > 0 &&
+    !extractMeaningfulTerms(originalQuery).some((term) =>
+      priorLocationEntityTerms.includes(term),
+    )
+  ) {
+    return {
+      originalQuery,
+      retrievalQuery: originalQuery,
+      contextUsed: false,
+      contextSource: null,
+      clarificationQuestion: BRANCH_CONTACT_CLARIFICATION,
+    };
+  }
+
+  /*
+   * Only use context for short or conversationally
+   * dependent customer messages.
+   */
+  if (
+    !isContextDependentQuery(originalQuery) &&
+    !implicitAttributeFollowUp
+  ) {
+    return {
+      originalQuery,
+      retrievalQuery: originalQuery,
+      contextUsed: false,
+      contextSource: null,
+    };
+  }
+
   if (
     previousCustomerMessages.length ===
     0
@@ -1874,6 +2107,7 @@ const topicSwitch =
   ) ||
   (
     explicitFollowUp &&
+    !isDependentContactFollowUp(originalQuery) &&
     !!topicSubjectAnchor &&
     hasNewTopicSubject(
       originalQuery,

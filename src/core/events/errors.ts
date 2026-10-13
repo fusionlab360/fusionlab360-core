@@ -6,6 +6,7 @@ export type IntegrationEventErrorCode =
   | "PROVIDER_UNSUPPORTED"
   | "TENANT_CONTEXT_INVALID"
   | "PERSISTENCE_FAILURE"
+  | "OUTBOUND_DELIVERY_UNKNOWN"
   | "UNKNOWN";
 
 

@@ -1007,6 +1007,8 @@ export function isAIMetaQuestion(
 
     /\bwhat\s+ai\s+is\s+this\b/i,
 
+    /\b(?:am i|are we)\s+(?:talking|speaking|chatting)\s+(?:to|with)\s+(?:an?\s+)?(?:ai|bot|robot|virtual assistant)\b/i,
+
   ];
 
 

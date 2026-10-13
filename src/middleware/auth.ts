@@ -91,6 +91,9 @@ export const authMiddleware =
 
             GHL_OAUTH_CLIENT_SECRET:
               c.env.GHL_OAUTH_CLIENT_SECRET,
+
+            GHL_OAUTH_REDIRECT_URI:
+              c.env.GHL_OAUTH_REDIRECT_URI,
           },
         );
 

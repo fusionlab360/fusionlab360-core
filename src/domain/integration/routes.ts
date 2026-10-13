@@ -15,6 +15,9 @@ import {
   resolveGHLCompanyOAuthToken,
   type GHLCompanyOAuthRuntimeEnvironment,
 } from "../../integrations/messaging/gohighlevel/company-oauth-runtime";
+import {
+  getGHLProviderErrorDiagnostics,
+} from "../../integrations/messaging/gohighlevel/oauth";
 
 
 const integrationRoutes =
@@ -131,6 +134,9 @@ integrationRoutes.post(
 
         GHL_OAUTH_CLIENT_SECRET:
           c.env.GHL_OAUTH_CLIENT_SECRET,
+
+        GHL_OAUTH_REDIRECT_URI:
+          c.env.GHL_OAUTH_REDIRECT_URI,
       };
 
 
@@ -177,10 +183,7 @@ integrationRoutes.post(
 
       console.error(
         "GHL Company OAuth refresh test failed.",
-
-        error instanceof Error
-          ? error.message
-          : error,
+        getGHLProviderErrorDiagnostics(error),
       );
 
 
@@ -196,9 +199,7 @@ integrationRoutes.post(
             "company",
 
           message:
-            error instanceof Error
-              ? error.message
-              : "GHL Company OAuth refresh test failed.",
+            "GHL Company OAuth refresh test failed.",
         },
 
         500,

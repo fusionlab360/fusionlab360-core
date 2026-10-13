@@ -10,6 +10,7 @@ import {
   isGHLInvalidGrantError,
   reconnectGHLCompanyAccessToken,
   refreshGHLCompanyAccessToken,
+  getGHLProviderErrorDiagnostics,
 } from "./oauth";
 
 
@@ -19,6 +20,9 @@ export interface GHLCompanyOAuthRuntimeEnvironment {
     string;
 
   GHL_OAUTH_CLIENT_SECRET:
+    string;
+
+  GHL_OAUTH_REDIRECT_URI?:
     string;
 }
 
@@ -619,13 +623,7 @@ export async function resolveGHLCompanyOAuthToken(
             companyId:
               normalizedCompanyId,
 
-            error:
-              recoveryError instanceof
-              Error
-
-                ? recoveryError.message
-
-                : recoveryError,
+            ...getGHLProviderErrorDiagnostics(recoveryError),
           },
         );
 

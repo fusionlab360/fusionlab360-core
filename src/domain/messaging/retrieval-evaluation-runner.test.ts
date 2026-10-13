@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { KnowledgeContextItem } from "./knowledge-intelligence";
+import {
+  selectKnowledgeForAnswer,
+  type KnowledgeContextItem,
+} from "./knowledge-intelligence";
 import {
   runRetrievalEvaluation,
 } from "./retrieval-evaluation-runner";
@@ -60,6 +63,7 @@ test(
     const observed = result.cases[0];
 
     assert.ok(observed);
+    assert.equal(observed.highRisk, false);
     assert.deepEqual(
       observed.retrievedSourceKeys,
       ["services:general"],
@@ -94,6 +98,45 @@ test(
     assert.equal(
       result.summary.requiredEvidenceCompleteRate,
       1,
+    );
+  },
+);
+
+test(
+  "evaluation runner reports existing high-risk classification without changing selection",
+  async () => {
+    const highRiskCase: RetrievalEvaluationBenchmarkCase = {
+      ...verifiedServiceCase,
+      id: "runner-high-risk-001",
+      question: "What is the price of wound care?",
+    };
+    const expectedSelection = selectKnowledgeForAnswer(
+      highRiskCase.question,
+      [serviceDocument],
+      highRiskCase.question,
+    );
+
+    const result = await runRetrievalEvaluation({
+      retriever: {
+        search: async () => [serviceDocument],
+      },
+      sourceKeyById: {
+        "document-service-001": "services:general",
+      },
+      cases: [highRiskCase],
+    });
+
+    const observed = result.cases[0];
+
+    assert.ok(observed);
+    assert.equal(observed.highRisk, true);
+    assert.deepEqual(
+      observed.candidateDiagnostics,
+      expectedSelection.candidateDiagnostics,
+    );
+    assert.deepEqual(
+      observed.selectedSourceKeys,
+      expectedSelection.selected.map(() => "services:general"),
     );
   },
 );

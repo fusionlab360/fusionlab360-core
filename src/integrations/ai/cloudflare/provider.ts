@@ -26,6 +26,13 @@ interface CloudflareAIRawResponse {
   output?:
     unknown;
 
+  status?:
+    unknown;
+
+  incomplete_details?: {
+    reason?: unknown;
+  } | null;
+
   choices?:
     unknown;
 
@@ -435,11 +442,20 @@ export function createCloudflareAIProvider(
             )
           : undefined;
 
-      const finishReason =
+      const choiceFinishReason =
         typeof firstChoice?.finish_reason ===
         "string"
           ? firstChoice.finish_reason
           : undefined;
+
+      const responsesFinishReason =
+        result.status === "incomplete" &&
+        typeof result.incomplete_details?.reason === "string"
+          ? result.incomplete_details.reason
+          : undefined;
+
+      const finishReason =
+        choiceFinishReason ?? responsesFinishReason;
 
       const normalizedFinishReason =
         finishReason?.toLowerCase();

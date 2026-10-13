@@ -73,10 +73,10 @@ export class HybridAIProvider
           "Gemini AI failed. Falling back to Cloudflare AI.",
 
           {
-            error:
+            errorName:
               error instanceof Error
-                ? error.message
-                : String(error),
+                ? error.name
+                : typeof error,
 
             task:
               request.task,

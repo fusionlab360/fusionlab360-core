@@ -3,6 +3,7 @@ import type {
   MessagingChannel,
   MessagingSenderType,
 } from "../../../core/messaging";
+import { KnownNonDeliveryError } from "../../../core/messaging";
 
 
 import type {
@@ -89,11 +90,8 @@ function resolveGHLMessageType(
 
     default:
 
-      throw new Error(
-        `Unsupported GHL messaging channel: ${
-          channel ??
-          "undefined"
-        }`,
+      throw new KnownNonDeliveryError(
+        "Unsupported GHL messaging channel.",
       );
   }
 }
@@ -568,7 +566,7 @@ export const goHighLevelMessagingProvider:
         ?.trim()
     ) {
 
-      throw new Error(
+      throw new KnownNonDeliveryError(
         "GoHighLevel Custom message requires channelProviderId.",
       );
     }

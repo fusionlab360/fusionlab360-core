@@ -220,10 +220,11 @@ export function createGeminiAIProvider(
             method:
               "POST",
 
-            // Bound reasoning requests so HybridAIProvider can
-            // catch the timeout and fall back to Cloudflare AI.
+            // Bound reasoning and structured fallback requests so
+            // HybridAIProvider can recover through another provider.
             signal:
-              request.task === "reasoning"
+              request.task === "reasoning" ||
+              request.task === "structured"
                 ? AbortSignal.timeout(6_000)
                 : undefined,
 

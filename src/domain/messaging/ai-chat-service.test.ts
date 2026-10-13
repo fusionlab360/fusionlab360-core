@@ -19,6 +19,10 @@ import {
   type KnowledgeContextItem,
 } from "./ai-chat-service";
 
+import type { MessagingMessage } from "../../core/messaging";
+import { resolveKnowledgeQuery } from "./knowledge-query-context";
+import { selectKnowledgeForAnswer } from "./knowledge-intelligence";
+
 
 
 const knowledgeContent = "Parking is available.";
@@ -93,6 +97,13 @@ test(
     let fallbackCalls = 0;
     const requestTasks: string[] = [];
     let fallbackSystemPrompt = "";
+    const groundingDiagnostics: string[] = [];
+    const originalConsoleLog = console.log;
+    console.log = ((...args: unknown[]) => {
+      if (String(args[0]).includes("GROUNDING") || String(args[0]) === "AI TRACE") {
+        groundingDiagnostics.push(JSON.stringify(args));
+      }
+    }) as typeof console.log;
 
     const ai: AIProvider = {
       async chat(request) {
@@ -151,13 +162,18 @@ test(
       businessName: "Test Business",
     } as unknown as AIAgentProfile;
 
-    const reply = await generateAIReply(
-      ai,
-      [],
-      message,
-      profile,
-      knowledge,
-    );
+    let reply: string;
+    try {
+      reply = await generateAIReply(
+        ai,
+        [],
+        message,
+        profile,
+        knowledge,
+      );
+    } finally {
+      console.log = originalConsoleLog;
+    }
 
     assert.equal(primaryCalls, 1);
     assert.equal(fallbackCalls, 1);
@@ -180,6 +196,7 @@ test(
     // not the original unsupported claim.
     assert.equal(reply, "Parking is available.");
     assert.doesNotMatch(reply, /\bfree\b/i);
+    assert.doesNotMatch(groundingDiagnostics.join(" "), /\bfree\b/i);
   },
 );
 
@@ -257,16 +274,21 @@ test(
 );
 
 
-function makeReplyFixture(messageId: string) {
+
+function makeReplyFixture(
+  messageId: string,
+  history: MessagingMessage[] = [],
+  messageText = "Is parking available?",
+) {
   const conversationId = `conversation-${messageId}`;
 
   return {
-    history: [],
+    history,
     message: {
       providerMessageId: messageId,
       conversationId,
       occurredAt: "2026-10-10T00:00:00.000Z",
-      text: "Is parking available?",
+      text: messageText,
     } as unknown as CanonicalInboundMessage,
     profile: {
       tenantId: "test-tenant",
@@ -293,6 +315,25 @@ function makeReplyFixture(messageId: string) {
       },
     ],
   };
+}
+
+function makeHistoryMessage(
+  id: string,
+  conversationId: string,
+  senderType: "customer" | "ai" | "human",
+  text: string,
+  timestamp: string,
+): MessagingMessage {
+  return {
+    id,
+    conversationId,
+    contactId: "test-contact",
+    direction:
+      senderType === "customer" ? "inbound" : "outbound",
+    senderType,
+    text,
+    timestamp,
+  } as unknown as MessagingMessage;
 }
 
 test(
@@ -477,6 +518,76 @@ test(
   },
 );
 
+test(
+  "an already active human takeover prevents model generation",
+  async () => {
+    let providerCalls = 0;
+    const ai: AIProvider = {
+      async chat() {
+        providerCalls += 1;
+        return makeResponse(correctedResponse, "cloudflare");
+      },
+      async chatFallback() {
+        providerCalls += 1;
+        return makeResponse(correctedResponse, "gemini");
+      },
+    };
+    const fixture = makeReplyFixture("human-takeover-before-generation");
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+      "",
+      "",
+      async () => true,
+    );
+
+    assert.equal(reply, "");
+    assert.equal(providerCalls, 0);
+  },
+);
+
+test(
+  "human takeover detected after provider failure suppresses fallback delivery",
+  async () => {
+    let takeover = false;
+    let takeoverChecks = 0;
+    let fallbackCalls = 0;
+    const ai: AIProvider = {
+      async chat() {
+        takeover = true;
+        throw new Error("Simulated provider failure");
+      },
+      async chatFallback() {
+        fallbackCalls += 1;
+        throw new Error("Simulated fallback provider failure");
+      },
+    };
+    const fixture = makeReplyFixture("human-takeover-during-provider-failure");
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+      "",
+      "",
+      async () => {
+        takeoverChecks += 1;
+        return takeover;
+      },
+    );
+
+    assert.equal(reply, "");
+    assert.equal(takeoverChecks, 2);
+    assert.equal(fallbackCalls, 1);
+  },
+);
+
 
 test(
   "rejects malformed structured output when both attempts fail verification",
@@ -646,6 +757,91 @@ test("answerability hands off when approved knowledge is missing", () => {
 
   assert.equal(result.decision, "handoff");
   assert.equal(result.reason, "no_approved_knowledge");
+});
+
+test("a clarified branch contact request still uses existing no-knowledge safeguards when evidence is absent", () => {
+  const resolved = resolveKnowledgeQuery(
+    "Kota Kemuning",
+    [
+      {
+        role: "customer",
+        text: "What is your contact number?",
+        timestamp: "2026-10-11T15:00:30.000Z",
+      },
+      {
+        role: "ai",
+        text: "Do you mean the general contact number, or the number for a specific branch? If it’s for a branch, please tell me which one.",
+        timestamp: "2026-10-11T15:00:45.000Z",
+      },
+    ],
+    "2026-10-11T15:01:00.000Z",
+  );
+
+  assert.equal(resolved.clarificationResolved, true);
+
+  const answerability = resolveCoreAIAnswerability(
+    true,
+    false,
+    "none",
+    "none",
+    true,
+  );
+
+  assert.equal(answerability.decision, "handoff");
+  assert.equal(answerability.reason, "no_approved_knowledge");
+});
+
+test("resolved branch and contact attribute reach existing candidate selection diagnostics", () => {
+  const resolved = resolveKnowledgeQuery(
+    "the earlier branch",
+    [
+      {
+        role: "customer",
+        text: "Can I get Kota Kemuning address?",
+        timestamp: "2026-10-11T15:00:00.000Z",
+      },
+      {
+        role: "customer",
+        text: "What is your contact number?",
+        timestamp: "2026-10-11T15:00:30.000Z",
+      },
+      {
+        role: "ai",
+        text: "Do you mean the general contact number, or the number for a specific branch? If it’s for a branch, please tell me which one.",
+        timestamp: "2026-10-11T15:00:45.000Z",
+      },
+    ],
+    "2026-10-11T15:01:00.000Z",
+  );
+
+  assert.equal(resolved.clarificationResolved, true);
+  const weakCandidate: KnowledgeContextItem = {
+    title: "Kota Kemuning branch contact details",
+    sourceType: "rich_text",
+    content: "Kota Kemuning branch contact number is 03-1234 5678.",
+    score: 0.2,
+    retrievalMethod: "hybrid",
+  };
+  const selection = selectKnowledgeForAnswer(
+    resolved.retrievalQuery,
+    [weakCandidate],
+    resolved.analysisQuery,
+  );
+
+  assert.ok(selection.analysis.terms.includes("kota"));
+  assert.ok(selection.analysis.terms.includes("contact"));
+  assert.ok(selection.analysis.intents.includes("contact"));
+  assert.ok(
+    selection.attributeCoverage.requested.some(
+      (requirement) => requirement.intent === "contact",
+    ),
+  );
+  assert.ok(selection.candidateDiagnostics.length > 0);
+  assert.equal(selection.candidateDiagnostics[0]?.decision, "rejected");
+  assert.equal(
+    selection.candidateDiagnostics[0]?.rejectionReason,
+    "normal_eligibility_rules_not_satisfied",
+  );
 });
 
 test("answerability hands off when requested intent has no coverage", () => {
@@ -852,6 +1048,31 @@ test(
   },
 );
 
+test("query rewrite wraps the real LLM request in privacy-safe lifecycle checkpoints", async () => {
+  const privateQuery = "PRIVATE_CUSTOMER_QUERY customer@example.test";
+  const entries: unknown[][] = [];
+  const originalConsoleInfo = console.info;
+  console.info = (...args: unknown[]) => entries.push(args);
+
+  try {
+    await rewriteKnowledgeQuery(
+      makeQueryRewriteProvider("A safe rewritten query"),
+      privateQuery,
+      privateQuery,
+      "ghl-in-query-test",
+    );
+  } finally {
+    console.info = originalConsoleInfo;
+  }
+
+  assert.deepEqual(entries.map((entry) => (entry[1] as { operation: string; phase: string }).operation + ":" + (entry[1] as { phase: string }).phase), [
+    "llm_request:start",
+    "llm_request:complete",
+  ]);
+  assert.equal(JSON.stringify(entries).includes(privateQuery), false);
+  assert.equal(JSON.stringify(entries).includes("A safe rewritten query"), false);
+});
+
 test(
   "query rewriting returns the contextual fallback on empty output",
   async () => {
@@ -949,11 +1170,18 @@ test(
   async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
+    const requestedTokenLimits: number[] = [];
+    const loggedEvents: string[] = [];
+    const originalConsoleLog = console.log;
+    console.log = ((event: unknown) => {
+      loggedEvents.push(String(event));
+    }) as typeof console.log;
 
     const ai: AIProvider = {
       async chat(request) {
         primaryCalls += 1;
         assert.equal(request.task, "structured");
+        requestedTokenLimits.push(request.maxTokens ?? 0);
 
         return {
           ...makeResponse("", "cloudflare"),
@@ -965,6 +1193,7 @@ test(
       async chatFallback(request) {
         fallbackCalls += 1;
         assert.equal(request.task, "structured");
+        requestedTokenLimits.push(request.maxTokens ?? 0);
 
         return makeResponse(correctedResponse, "gemini");
       },
@@ -972,6 +1201,89 @@ test(
 
     const fixture = makeReplyFixture(
       "truncated-primary-valid-fallback",
+    );
+
+    let reply: string;
+    try {
+      reply = await generateAIReply(
+        ai,
+        fixture.history,
+        fixture.message,
+        fixture.profile,
+        fixture.knowledge,
+      );
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    assert.equal(primaryCalls, 1);
+    assert.equal(fallbackCalls, 1);
+    assert.deepEqual(requestedTokenLimits, [768, 1024]);
+    assert.ok(loggedEvents.includes("AI GENERATION INCOMPLETE"));
+    assert.ok(!loggedEvents.includes("AI GENERATION SUCCESS"));
+    assert.match(reply, /Parking is available/i);
+    assert.doesNotMatch(
+      reply,
+      /pass your request to our team/i,
+    );
+    assert.doesNotMatch(reply, /"status"\s*:/i);
+},
+);
+
+test(
+  "waits for delayed structured generation before returning the answer",
+  async () => {
+    const fixture = makeReplyFixture("delayed-structured-generation");
+    let releaseGeneration!: (response: AIChatResponse) => void;
+    let generationReturned = false;
+    const ai: AIProvider = {
+      chat: () => new Promise<AIChatResponse>((resolve) => {
+        releaseGeneration = resolve;
+      }),
+    };
+
+    const answerPromise = generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+    ).then((answer) => {
+      generationReturned = true;
+      return answer;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(generationReturned, false);
+
+    releaseGeneration(makeResponse(correctedResponse, "cloudflare"));
+
+    assert.equal(await answerPromise, "Parking is available.");
+    assert.equal(generationReturned, true);
+  },
+);
+
+
+test(
+  "AI identity question gets a specific answer without calling the model",
+  async () => {
+    let providerCalls = 0;
+
+    const ai: AIProvider = {
+      async chat() {
+        providerCalls += 1;
+        return makeResponse(correctedResponse, "cloudflare");
+      },
+      async chatFallback() {
+        providerCalls += 1;
+        return makeResponse(correctedResponse, "gemini");
+      },
+    };
+
+    const fixture = makeReplyFixture(
+      "identity-question",
+      [],
+      "Hello, am I talking to AI?",
     );
 
     const reply = await generateAIReply(
@@ -982,13 +1294,387 @@ test(
       fixture.knowledge,
     );
 
-    assert.equal(primaryCalls, 1);
-    assert.equal(fallbackCalls, 1);
-    assert.match(reply, /Parking is available/i);
+    assert.equal(providerCalls, 0);
+    assert.match(reply, /virtual assistant/i);
+    assert.match(reply, /Test Business/i);
+  },
+);
+
+test(
+  "existing conversations suppress a recognized opening greeting and keep the answer",
+  async () => {
+    const fixture = makeReplyFixture(
+      "greeting-existing",
+      [
+        makeHistoryMessage(
+          "prior-assistant-reply",
+          "conversation-greeting-existing",
+          "ai",
+          "I can help with your questions.",
+          "2026-10-09T23:59:00.000Z",
+        ),
+      ],
+      "Thanks!",
+    );
+    const ai: AIProvider = {
+      async chat() {
+        return makeResponse("Hello! You're welcome.", "cloudflare");
+      },
+      async chatFallback() {
+        throw new Error("Fallback should not be called");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      [],
+    );
+
+    assert.equal(reply, "You're welcome.");
+    assert.doesNotMatch(reply, /^(?:hi|hello|hey)\b/i);
+  },
+);
+
+test(
+  "new conversations preserve a legitimate opening greeting",
+  async () => {
+    const fixture = makeReplyFixture(
+      "greeting-new",
+      [],
+      "Thanks!",
+    );
+    const ai: AIProvider = {
+      async chat() {
+        return makeResponse("Hello! You're welcome.", "cloudflare");
+      },
+      async chatFallback() {
+        throw new Error("Fallback should not be called");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      [],
+    );
+
+    assert.equal(reply, "Hello! You're welcome.");
+  },
+);
+
+test(
+  "provider failure fallback does not add a redundant opening greeting",
+  async () => {
+    const fixture = makeReplyFixture(
+      "greeting-provider-failure",
+      [
+        makeHistoryMessage(
+          "prior-assistant-reply-fallback",
+          "conversation-greeting-provider-failure",
+          "ai",
+          "I can help with your questions.",
+          "2026-10-09T23:59:00.000Z",
+        ),
+      ],
+      "Thanks!",
+    );
+    const ai: AIProvider = {
+      async chat() {
+        throw new Error("Simulated provider failure");
+      },
+      async chatFallback() {
+        throw new Error("Simulated fallback failure");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      [],
+    );
+
+    assert.match(reply, /having a little trouble/i);
+    assert.doesNotMatch(reply, /^(?:hi|hello|hey)\b/i);
+  },
+);
+
+test(
+  "recognized handoff offers are not rewritten by greeting suppression",
+  async () => {
+    const fixture = makeReplyFixture(
+      "greeting-handoff",
+      [
+        makeHistoryMessage(
+          "prior-assistant-reply-handoff",
+          "conversation-greeting-handoff",
+          "ai",
+          "I can help with your questions.",
+          "2026-10-09T23:59:00.000Z",
+        ),
+      ],
+      "Thanks!",
+    );
+    const handoffOffer = "Hello! I can pass your request to our team for confirmation. Would you like me to?";
+    const ai: AIProvider = {
+      async chat() {
+        return makeResponse(handoffOffer, "cloudflare");
+      },
+      async chatFallback() {
+        throw new Error("Fallback should not be called");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      [],
+    );
+
+    assert.equal(reply, handoffOffer);
+  },
+);
+
+test(
+  "conversation history preserves AI identity and customer feedback",
+  async () => {
+    const conversationId = "conversation-history-context";
+
+    const history = [
+      makeHistoryMessage(
+        "history-greeting",
+        conversationId,
+        "ai",
+        "Hello! How can I help today?",
+        "2026-10-09T23:55:00.000Z",
+      ),
+      makeHistoryMessage(
+        "history-1",
+        conversationId,
+        "customer",
+        "Are you an AI?",
+        "2026-10-09T23:56:00.000Z",
+      ),
+      makeHistoryMessage(
+        "history-2",
+        conversationId,
+        "ai",
+        "I'm Test Business's virtual assistant.",
+        "2026-10-09T23:57:00.000Z",
+      ),
+      makeHistoryMessage(
+        "history-3",
+        conversationId,
+        "customer",
+        "You keep repeating yourself.",
+        "2026-10-09T23:58:00.000Z",
+      ),
+      makeHistoryMessage(
+        "history-4",
+        conversationId,
+        "ai",
+        "Sorry about that. I'll keep my replies focused.",
+        "2026-10-09T23:59:00.000Z",
+      ),
+      makeHistoryMessage(
+        "history-human",
+        conversationId,
+        "human",
+        "Our clinic team can help if you need anything else.",
+        "2026-10-09T23:59:30.000Z",
+      ),
+    ].reverse();
+
+    const fixture = makeReplyFixture(
+      "history-context",
+      history,
+      "Is parking available?",
+    );
+
+    let capturedRequestText = "";
+
+    const capture = (
+      request: { messages: Array<{ content: string }> },
+    ) => {
+      capturedRequestText = request.messages
+        .map((item) => item.content)
+        .join("\n");
+    };
+
+    const ai: AIProvider = {
+      async chat(request) {
+        capture(request);
+        return makeResponse(correctedResponse, "cloudflare");
+      },
+      async chatFallback(request) {
+        capture(request);
+        return makeResponse(correctedResponse, "gemini");
+            },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+    );
+
+    assert.equal(reply, "Parking is available.");
+
+    const priorGreeting = capturedRequestText.indexOf(
+      "Hello! How can I help today?",
+    );
+    const identityQuestion = capturedRequestText.indexOf(
+      "Are you an AI?",
+    );
+    const identityAnswer = capturedRequestText.indexOf(
+      "I'm Test Business's virtual assistant.",
+    );
+    const customerFeedback = capturedRequestText.indexOf(
+      "You keep repeating yourself.",
+    );
+    const acknowledgement = capturedRequestText.indexOf(
+      "Sorry about that. I'll keep my replies focused.",
+    );
+    const staffMessage = capturedRequestText.indexOf(
+      "(sent by our staff) Our clinic team can help if you need anything else.",
+    );
+
+    assert.ok(priorGreeting >= 0, "the prior greeting must reach the model");
+    assert.ok(identityQuestion > priorGreeting, "history must be ordered chronologically");
+    assert.ok(identityAnswer > identityQuestion, "identity answer must follow the question");
+    assert.ok(customerFeedback > identityAnswer, "customer feedback must be retained");
+    assert.ok(acknowledgement > customerFeedback, "the acknowledgement must be retained");
+    assert.ok(staffMessage > acknowledgement, "the human-authored message must remain clearly labeled and ordered");
+    assert.match(capturedRequestText, /Do not greet again/i);
+  },
+);
+
+test(
+  "declined handoff is not repeated after the customer asks a new question",
+  async () => {
+    const conversationId = "conversation-declined-handoff";
+
+    const history = [
+      makeHistoryMessage(
+        "handoff-offer",
+        conversationId,
+        "ai",
+        "I can pass your request to our team for confirmation. Would you like me to?",
+        "2026-10-09T23:56:00.000Z",
+      ),
+      makeHistoryMessage(
+        "handoff-decline",
+        conversationId,
+        "customer",
+        "No, thanks.",
+        "2026-10-09T23:57:00.000Z",
+      ),
+      makeHistoryMessage(
+        "handoff-ack",
+        conversationId,
+        "ai",
+        "Understood. I'll keep helping with your questions.",
+        "2026-10-09T23:58:00.000Z",
+      ),
+    ];
+
+    const fixture = makeReplyFixture(
+      "declined-handoff",
+      history,
+      "Is parking available?",
+    );
+
+    const ai: AIProvider = {
+      async chat() {
+        throw new Error("Simulated provider failure");
+      },
+      async chatFallback() {
+        throw new Error("Simulated fallback failure");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+    );
+
+    assert.match(reply, /can't confirm/i);
     assert.doesNotMatch(
       reply,
-      /pass your request to our team/i,
+      /pass your request to our team|would you like me to/i,
     );
-    assert.doesNotMatch(reply, /"status"\s*:/i);
+  },
+);
+
+test(
+  "answers normally without repeating handoff after the customer declines",
+  async () => {
+    const conversationId = "conversation-declined-handoff-success";
+
+    const history = [
+      makeHistoryMessage(
+        "handoff-offer-success",
+        conversationId,
+        "ai",
+        "I can pass your request to our team for confirmation. Would you like me to?",
+        "2026-10-09T23:56:00.000Z",
+      ),
+      makeHistoryMessage(
+        "handoff-decline-success",
+        conversationId,
+        "customer",
+        "No, thanks.",
+        "2026-10-09T23:57:00.000Z",
+      ),
+      makeHistoryMessage(
+        "handoff-ack-success",
+        conversationId,
+        "ai",
+        "Understood. I'll keep helping with your questions.",
+        "2026-10-09T23:58:00.000Z",
+      ),
+    ];
+
+    const fixture = makeReplyFixture(
+      "declined-handoff-success",
+      history,
+      "Is parking available?",
+    );
+
+    const ai: AIProvider = {
+      async chat() {
+        return makeResponse(correctedResponse, "cloudflare");
+      },
+      async chatFallback() {
+        return makeResponse(correctedResponse, "gemini");
+      },
+    };
+
+    const reply = await generateAIReply(
+      ai,
+      fixture.history,
+      fixture.message,
+      fixture.profile,
+      fixture.knowledge,
+    );
+
+    assert.equal(reply, "Parking is available.");
+    assert.doesNotMatch(
+      reply,
+      /pass your request to our team|would you like me to/i,
+    );
   },
 );

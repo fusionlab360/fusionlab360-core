@@ -364,19 +364,6 @@ export async function processGHLKnowledgeAssetWebhook(
    * ------------------------------------------------
    */
 
-  console.log(
-
-    "GHL KNOWLEDGE ASSET RAW PAYLOAD",
-
-    JSON.stringify(
-      payload,
-      null,
-      2,
-    ),
-
-  );
-
-
   const eventRepository =
     new IntegrationEventRepository(
 

@@ -72,12 +72,21 @@ import {
 } from "../booking/ai-booking-service";
 
 import {
-  IntegrationEventDeadLetterRepository,
-} from "../../persistence/repositories/integration-event-dead-letter-repository";
-
-import {
   isTenantFeatureEnabled,
 } from "../features/tenant-feature-service";
+import {
+  classifyInboundProcessingError,
+  createInboundCorrelationId,
+  logInboundCheckpoint,
+  logInboundExecutionPath,
+  traceInboundOperation,
+} from "./inbound-diagnostics";
+import type { InboundExecutionPath } from "./inbound-diagnostics";
+export { classifyInboundProcessingError } from "./inbound-diagnostics";
+export type { InboundProcessingErrorClassification } from "./inbound-diagnostics";
+
+export const runInboundProcessingOperation = traceInboundOperation;
+const getErrorClassification = classifyInboundProcessingError;
 
 /*
  * ----------------------------------------------------------
@@ -433,6 +442,13 @@ export interface KnowledgeRetriever {
   ): Promise<KnowledgeContextItem[]>;
 }
 
+export class InboundEventLeaseActiveError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super("Inbound event is currently leased.");
+    this.name = "InboundEventLeaseActiveError";
+  }
+}
+
 /*
  * ----------------------------------------------------------
  * Process normalized inbound message
@@ -488,6 +504,15 @@ export async function processGHLInboundMessage(
   bookingEnabled:
     boolean = false,
 
+  outboundMessagingDecorator?: (
+    provider: MessagingProvider,
+    eventId: string,
+    leaseToken: string,
+    renewLease: () => Promise<boolean>,
+  ) => MessagingProvider,
+
+  executionPath: InboundExecutionPath = "synchronous_webhook",
+
 ): Promise<void> {
 
   /*
@@ -501,20 +526,18 @@ export async function processGHLInboundMessage(
       db,
     );
 
-  const deadLetterRepository =
-  new IntegrationEventDeadLetterRepository(
-    db,
-  );
-
   const eventService =
     new IntegrationEventService(
       eventRepository,
-
-      deadLetterRepository,
     );
 
+  const correlationId = await createInboundCorrelationId(
+    message.providerMessageId,
+  );
+  logInboundExecutionPath(executionPath, correlationId);
+
   const eventResult =
-    await eventService.accept({
+    await runInboundProcessingOperation("event_accept", correlationId, () => eventService.accept({
       eventId:
         message.providerMessageId,
 
@@ -538,17 +561,16 @@ export async function processGHLInboundMessage(
 
       payload:
         message,
-    });
+    }));
 
-    const claimedForProcessing =
-  await eventService.claimForProcessing(
+  const eventId = eventResult.event.eventId;
+  const claim =
+  await runInboundProcessingOperation("event_claim", correlationId, () => eventService.claimForProcessing(
     context.tenant.id,
-    message.providerMessageId,
-  );
+    eventId,
+  ));
 
-  if (
-    !claimedForProcessing
-  ) {
+  if (claim.state !== "claimed") {
 
     console.log(
       "GHL inbound event is already processed or currently being processed.",
@@ -562,13 +584,73 @@ export async function processGHLInboundMessage(
         messageId:
           message.providerMessageId,
 
-        duplicate:
-          eventResult.duplicate,
+        duplicate: eventResult.duplicate,
+        state: claim.state,
       },
     );
 
+    if (claim.state === "active") {
+      const expiresAt = claim.leaseExpiresAt
+        ? Date.parse(claim.leaseExpiresAt)
+        : Date.now() + 5_000;
+      throw new InboundEventLeaseActiveError(
+        Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)),
+      );
+    }
+
+    if (claim.state === "retryable") {
+      throw new Error("Inbound event claim could not be acquired.");
+    }
+
     return;
   }
+
+  const leaseToken = claim.leaseToken;
+  if (outboundMessagingDecorator) {
+    messaging = outboundMessagingDecorator(
+      messaging,
+      eventId,
+      leaseToken,
+      () => eventService.renewProcessingLease(
+        context.tenant.id,
+        eventId,
+        leaseToken,
+      ),
+    );
+  }
+  const deliveryProvider = messaging;
+  messaging = {
+    getRecentMessages: (providerContext, conversationId, limit) =>
+      deliveryProvider.getRecentMessages(providerContext, conversationId, limit),
+    sendText: async (providerContext, input) => {
+      const preparedInput = await runInboundProcessingOperation(
+        "reply_preparation",
+        correlationId,
+        async () => input,
+      );
+      return runInboundProcessingOperation(
+        "outbound_delivery",
+        correlationId,
+        () => deliveryProvider.sendText(providerContext, preparedInput),
+      );
+    },
+  };
+  let leaseLost = false;
+  const leaseHeartbeat = setInterval(() => {
+    void eventService.renewProcessingLease(
+      context.tenant.id,
+      eventId,
+      leaseToken,
+    ).then((renewed) => {
+      if (!renewed) leaseLost = true;
+    }).catch((error: unknown) => {
+      leaseLost = true;
+      console.error(
+        "GHL inbound processing lease renewal failed.",
+        getErrorClassification(error),
+      );
+    });
+  }, 30_000);
 
 
  let processingSucceeded =
@@ -583,11 +665,11 @@ try {
    */
 
   let history =
-    await messaging.getRecentMessages(
+    await runInboundProcessingOperation("conversation_history", correlationId, () => messaging.getRecentMessages(
       context,
       message.conversationId,
       20,
-    );
+    ));
 
   /*
    * --------------------------------------------------------
@@ -636,11 +718,6 @@ try {
             senderType:
               item.senderType,
 
-            text:
-              item.text?.slice(
-                0,
-                100,
-              ),
           }),
         ),
     },
@@ -804,9 +881,7 @@ try {
         {
           tenantId: context.tenant.id,
           error:
-            error instanceof Error
-              ? error.message
-              : String(error),
+            getErrorClassification(error),
         },
       );
     }
@@ -887,9 +962,7 @@ try {
           {
             tenantId: context.tenant.id,
             error:
-              error instanceof Error
-                ? error.message
-                : String(error),
+              getErrorClassification(error),
           },
         );
       }
@@ -1157,8 +1230,10 @@ try {
     },
   );
 
-  await sleep(
-    thinkingDelay,
+  await runInboundProcessingOperation(
+    "ai_thinking_delay",
+    correlationId,
+    () => sleep(thinkingDelay),
   );
 
   /*
@@ -1174,12 +1249,15 @@ try {
   });
 
   const historyFetchStartedAt = Date.now();
-
   const latestHistory =
-    await messaging.getRecentMessages(
-      context,
-      message.conversationId,
-      20,
+    await runInboundProcessingOperation(
+      "post_thinking_history_fetch",
+      correlationId,
+      () => messaging.getRecentMessages(
+        context,
+        message.conversationId,
+        20,
+      ),
     );
 
   console.log("AI POST-THINKING HISTORY FETCH COMPLETE", {
@@ -1196,12 +1274,21 @@ try {
    * --------------------------------------------------------
    */
 
+  const newerMessageCheckStartedAt = performance.now();
   const newerInboundMessage =
     hasNewerInboundMessage(
       latestHistory,
       message.providerMessageId,
       message.occurredAt,
     );
+  logInboundCheckpoint(
+    "newer_message_check",
+    "complete",
+    correlationId,
+    newerMessageCheckStartedAt,
+    undefined,
+    newerInboundMessage ? "newer_message" : "no_newer_message",
+  );
 
   if (
     newerInboundMessage
@@ -1233,6 +1320,47 @@ try {
   history =
     latestHistory;
 
+  const retrievalHistory: KnowledgeQueryHistoryItem[] = history
+    .filter(
+      (item) =>
+        item.id !== message.providerMessageId &&
+        item.text?.trim().length > 0,
+    )
+    .map((item) => ({
+      role:
+        item.senderType === "customer"
+          ? "customer"
+          : item.senderType === "human"
+            ? "human"
+            : "ai",
+      text: item.text,
+      timestamp: item.timestamp,
+    }));
+
+  const knowledgeQuery = resolveKnowledgeQuery(
+    message.text,
+    retrievalHistory,
+    message.occurredAt,
+  );
+
+  if (
+    tenantAIChatEnabled &&
+    knowledgeQuery.clarificationQuestion
+  ) {
+    await messaging.sendText(context, {
+      conversationId: message.conversationId,
+      contactId: message.contactId,
+      text: knowledgeQuery.clarificationQuestion,
+      channel: message.channel,
+      channelProviderId: message.channelProviderId,
+    });
+
+    return;
+  }
+
+  const clarificationResolved =
+    knowledgeQuery.clarificationResolved === true;
+
   /*
    * --------------------------------------------------------
    * 9. AI BOOKING ENGINE
@@ -1251,9 +1379,13 @@ try {
  */
 
   if (
-      tenantBookingEnabled
+      tenantBookingEnabled &&
+      !clarificationResolved
     ) {
       try {
+        if (leaseLost) {
+          throw new Error("Inbound event processing lease was lost.");
+        }
         const bookingResult =
           await processAIBooking({
           db,
@@ -1550,9 +1682,7 @@ try {
             message.providerMessageId,
 
           error:
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
         },
       );
 
@@ -1562,7 +1692,8 @@ try {
        */
 
       if (
-        bookingSessionActive
+        bookingSessionActive &&
+        !clarificationResolved
       ) {
 
         await messaging.sendText(
@@ -1650,43 +1781,6 @@ try {
      * --------------------------------------------------------
      */
 
-    const retrievalHistory:
-      KnowledgeQueryHistoryItem[] =
-      history
-        .filter(
-          (
-            item,
-          ) =>
-            item.id !==
-              message.providerMessageId &&
-
-            item.text?.trim().length > 0,
-        )
-        .map(
-          (
-            item,
-          ) => ({
-            role:
-              item.senderType ===
-              "customer"
-                ? "customer"
-                : item.senderType ===
-                    "human"
-                  ? "human"
-                  : "ai",
-
-            text:
-              item.text,
-          }),
-        );
-
-    const knowledgeQuery =
-      resolveKnowledgeQuery(
-        message.text,
-        retrievalHistory,
-        message.occurredAt,
-      );
-
     console.log("AI QUERY REWRITE START", {
       tenantId: context.tenant.id,
       conversationId: message.conversationId,
@@ -1695,12 +1789,22 @@ try {
 
     const queryRewriteStartedAt = Date.now();
 
-    const queryRewrite =
-      await rewriteKnowledgeQuery(
-        ai,
-        message.text,
-        knowledgeQuery.retrievalQuery,
-      );
+    const queryRewrite = await runInboundProcessingOperation(
+      "knowledge_query_rewrite",
+      correlationId,
+      () => knowledgeQuery.contextUsed
+        ? Promise.resolve({
+            query: knowledgeQuery.retrievalQuery,
+            rewritten: false,
+            reason: "context_preserved" as const,
+          })
+        : rewriteKnowledgeQuery(
+            ai,
+            message.text,
+            knowledgeQuery.retrievalQuery,
+            correlationId,
+          ),
+    );
 
     console.log("AI QUERY REWRITE COMPLETE", {
       tenantId: context.tenant.id,
@@ -1741,11 +1845,11 @@ try {
         messageId:
           message.providerMessageId,
 
-        originalQuery:
-          knowledgeQuery.originalQuery,
+        originalQueryLength:
+          knowledgeQuery.originalQuery.length,
 
-        retrievalQuery:
-          knowledgeQuery.retrievalQuery,
+        retrievalQueryLength:
+          knowledgeQuery.retrievalQuery.length,
 
         contextUsed:
           knowledgeQuery.contextUsed,
@@ -1765,10 +1869,12 @@ try {
 
 
     knowledge =
-      await knowledgeRetriever.search(
+      await runInboundProcessingOperation("knowledge_retrieval", correlationId, () => knowledgeRetriever.search(
         retrievalQueryForAnswer,
-        knowledgeQuery.originalQuery,
-      );
+        knowledgeQuery.clarificationResolved
+          ? knowledgeQuery.retrievalQuery
+          : knowledgeQuery.originalQuery,
+      ));
     console.log(
       "AI KNOWLEDGE RETRIEVAL",
       {
@@ -1794,7 +1900,7 @@ try {
           knowledge.slice(0, 10).map(
             (item, index) => ({
               rank: index + 1,
-              title: item.title,
+              titlePresent: Boolean(item.title),
               sourceType: item.sourceType,
 
               sourceKey:
@@ -1851,9 +1957,7 @@ try {
     console.error(
       "Knowledge retrieval failed during inbound AI processing.",
 
-      error instanceof Error
-        ? error.message
-        : error,
+      getErrorClassification(error),
     );
 
     /*
@@ -1870,10 +1974,10 @@ try {
    */
 
   const tenantAIInstructions =
-  await loadTenantAIInstructions(
+  await runInboundProcessingOperation("ai_instructions", correlationId, () => loadTenantAIInstructions(
     db,
     profile.tenantId,
-  );
+  ));
 
 const isHumanTakeover =
   async (): Promise<boolean> => {
@@ -1932,7 +2036,7 @@ const isHumanTakeover =
   };
 
 const reply =
-  await generateAIReply(
+  await runInboundProcessingOperation("ai_generation", correlationId, () => generateAIReply(
     ai,
     history,
     message,
@@ -1941,7 +2045,9 @@ const reply =
     tenantAIInstructions,
     retrievalQueryForAnswer,
     isHumanTakeover,
-  );
+    knowledgeQuery.analysisQuery,
+    correlationId,
+  ));
 
   /*
    * --------------------------------------------------------
@@ -1949,15 +2055,8 @@ const reply =
    * --------------------------------------------------------
    */
 
-  if (
-    !reply?.trim()
-  ) {
-
-    return;
-  }
-
-  const normalizedReply =
-    reply.trim();
+  const normalizedReply = reply?.trim();
+  if (!normalizedReply) return;
 
   /*
    * --------------------------------------------------------
@@ -2214,9 +2313,7 @@ console.log(
           message.providerMessageId,
 
         error:
-          error instanceof Error
-            ? error.message
-            : error,
+          getErrorClassification(error),
       },
     );
 
@@ -2271,8 +2368,6 @@ console.log(
 
         sessionStartedAt,
 
-        reply:
-          normalizedReply,
       },
     );
   }
@@ -2290,8 +2385,9 @@ catch (
 
     await eventService.markFailed(
       context.tenant.id,
-      message.providerMessageId,
+      eventId,
       error,
+      leaseToken,
     );
 
   } catch (
@@ -2309,9 +2405,7 @@ catch (
           message.providerMessageId,
 
         error:
-          persistenceError instanceof Error
-            ? persistenceError.message
-            : persistenceError,
+          getErrorClassification(persistenceError),
       },
     );
   }
@@ -2332,13 +2426,13 @@ catch (
         message.providerMessageId,
 
       error:
-        error instanceof Error
-          ? error.message
-          : error,
+        getErrorClassification(error),
     },
   );
+  throw error;
 
 } finally {
+  clearInterval(leaseHeartbeat);
 
   if (
     processingSucceeded
@@ -2346,10 +2440,22 @@ catch (
 
     try {
 
-      await eventService.markProcessed(
-        context.tenant.id,
-        message.providerMessageId,
+      await runInboundProcessingOperation(
+        "event_completion",
+        correlationId,
+        async () => {
+          const marked = await eventService.markProcessed(
+            context.tenant.id,
+            eventId,
+            leaseToken,
+          );
+          if (!marked) {
+            throw new Error("Inbound event lease was lost before completion.");
+          }
+          return marked;
+        },
       );
+
 
     } catch (
       error:
@@ -2366,11 +2472,10 @@ catch (
             message.providerMessageId,
 
           error:
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
         },
       );
+      throw error;
     }
   }
 }

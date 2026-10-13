@@ -426,8 +426,8 @@ export async function ghlFetch<T>(
         status:
           response.status,
 
-        response:
-          body,
+        responseBodyPresent:
+          body !== null,
       },
     );
 
@@ -636,8 +636,8 @@ export async function ghlFetchAuthenticated<T>(
         status:
           response.status,
 
-        response:
-          body,
+        responseBodyPresent:
+          body !== null,
 
         tenantId:
           context.tenant.id,

@@ -25,6 +25,71 @@ const request = {
 };
 
 test(
+  "normalizes the GPT-OSS Chat Completions response shape",
+  async () => {
+    const provider = createCloudflareAIProvider(
+      createMockAI({
+        id: "chatcmpl-test",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "{\"status\":\"none\",\"answer\":\"\",\"claims\":[]}",
+            },
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+      }),
+    );
+
+    const response = await provider.chat({ ...request, task: "structured" });
+
+    assert.match(response.text, /\"status\":\"none\"/);
+    assert.equal(response.finishReason, "stop");
+    assert.equal(response.truncated, false);
+  },
+);
+
+test(
+  "recognizes an incomplete GPT-OSS Responses API output",
+  async () => {
+    const provider = createCloudflareAIProvider(
+      createMockAI({
+        id: "resp_test",
+        object: "response",
+        status: "incomplete",
+        incomplete_details: {
+          reason: "max_output_tokens",
+        },
+        output_text: "partial",
+        output: [
+          {
+            id: "msg_test",
+            type: "message",
+            role: "assistant",
+            status: "incomplete",
+            content: [
+              {
+                type: "output_text",
+                text: "partial",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const response = await provider.chat(request);
+
+    assert.equal(response.text, "partial");
+    assert.equal(response.finishReason, "max_output_tokens");
+    assert.equal(response.truncated, true);
+  },
+);
+
+test(
   "returns a truncated response when the provider exhausts its output budget",
   async () => {
     const provider = createCloudflareAIProvider(

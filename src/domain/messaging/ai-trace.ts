@@ -126,8 +126,8 @@ export interface AIExecutionTrace {
       valid:
         boolean;
 
-      unsupportedFacts:
-        string[];
+      unsupportedFactCount:
+        number;
 
       reason?:
         string;

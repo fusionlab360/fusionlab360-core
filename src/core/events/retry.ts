@@ -45,6 +45,8 @@ export function getIntegrationEventRetryPolicy(
 
     case "TENANT_CONTEXT_INVALID":
 
+    case "OUTBOUND_DELIVERY_UNKNOWN":
+
       return {
 
         retryable:

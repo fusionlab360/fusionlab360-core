@@ -30,6 +30,18 @@ export interface IntegrationEventRecord {
   payload:
     string;
 
+  externalEventId?:
+    string | null;
+
+  idempotencyKey?:
+    string | null;
+
+  processingLeaseToken?:
+    string | null;
+
+  processingLeaseExpiresAt?:
+    string | null;
+
   processingStatus?:
     | "received"
     | "processing"

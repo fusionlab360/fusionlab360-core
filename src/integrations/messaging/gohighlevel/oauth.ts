@@ -88,10 +88,6 @@ const GHL_API_VERSION =
   "v3";
 
 
-const GHL_REDIRECT_URI =
-  "https://api.fusionlab360.com/oauth/gohighlevel/callback";
-
-
 /*
  * --------------------------------------------------
  * Environment helper
@@ -121,37 +117,60 @@ function getRequiredBinding(
 }
 
 
+function getGHLRedirectUri(
+  value: string | undefined,
+): string {
+  const redirectUri = getRequiredBinding(
+    value,
+    "GHL_OAUTH_REDIRECT_URI",
+  );
+
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    throw new Error("GHL_OAUTH_REDIRECT_URI must be a valid HTTPS URL.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("GHL_OAUTH_REDIRECT_URI must be a valid HTTPS URL.");
+  }
+
+  return parsed.toString();
+}
+
+
 /*
  * --------------------------------------------------
  * Structured OAuth errors
  * --------------------------------------------------
  */
 
-export class GHLInvalidGrantError
+export class GHLProviderOAuthError
   extends Error {
 
   readonly status:
     number;
 
   readonly code:
-    "invalid_grant";
+    "invalid_grant" | "provider_error";
 
 
   constructor(
     status:
       number,
 
-    message:
-      string,
+    code:
+      "invalid_grant" | "provider_error" = "provider_error",
   ) {
 
     super(
-      message,
+      `HighLevel OAuth request failed (${status}) [${code}].`,
     );
 
 
     this.name =
-      "GHLInvalidGrantError";
+      "GHLProviderOAuthError";
 
 
     this.status =
@@ -159,8 +178,36 @@ export class GHLInvalidGrantError
 
 
     this.code =
-      "invalid_grant";
+      code;
   }
+}
+
+
+export class GHLInvalidGrantError
+  extends GHLProviderOAuthError {
+
+  readonly code = "invalid_grant" as const;
+
+  constructor(status: number) {
+    super(status, "invalid_grant");
+    this.name = "GHLInvalidGrantError";
+  }
+}
+
+
+export function getGHLProviderErrorDiagnostics(
+  error: unknown,
+): { classification: string; status?: number } {
+  if (error instanceof GHLProviderOAuthError) {
+    return {
+      classification: error.code,
+      status: error.status,
+    };
+  }
+
+  return {
+    classification: error instanceof Error ? "oauth_processing_error" : "unknown_error",
+  };
 }
 
 
@@ -245,21 +292,6 @@ async function parseOAuthTokenResponse(
     !response.ok
   ) {
 
-    const serialized =
-      typeof payload ===
-      "string"
-
-        ? payload
-
-        : JSON.stringify(
-            payload,
-          );
-
-
-    const message =
-      `HighLevel OAuth token request failed (${response.status}): ${serialized}`;
-
-
     if (
       typeof payload ===
         "object" &&
@@ -280,17 +312,11 @@ async function parseOAuthTokenResponse(
         "invalid_grant"
     ) {
 
-      throw new GHLInvalidGrantError(
-        response.status,
-
-        message,
-      );
+      throw new GHLInvalidGrantError(response.status);
     }
 
 
-    throw new Error(
-      message,
-    );
+    throw new GHLProviderOAuthError(response.status);
   }
 
 
@@ -629,6 +655,9 @@ export async function exchangeGHLAuthorizationCode(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   code:
@@ -644,6 +673,9 @@ export async function exchangeGHLAuthorizationCode(
       string;
 
     GHL_OAUTH_CLIENT_SECRET?:
+      string;
+
+    GHL_OAUTH_REDIRECT_URI?:
       string;
   },
 
@@ -664,6 +696,9 @@ export async function exchangeGHLAuthorizationCode(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   code:
@@ -682,6 +717,9 @@ export async function exchangeGHLAuthorizationCode(
       string;
 
     GHL_OAUTH_CLIENT_SECRET?:
+      string;
+
+    GHL_OAUTH_REDIRECT_URI?:
       string;
   },
 
@@ -709,6 +747,10 @@ Promise<
       env.GHL_OAUTH_CLIENT_SECRET,
       "GHL_OAUTH_CLIENT_SECRET",
     );
+
+  const redirectUri = getGHLRedirectUri(
+    env.GHL_OAUTH_REDIRECT_URI,
+  );
 
 
   const normalizedCode =
@@ -761,7 +803,7 @@ Promise<
 
   body.set(
     "redirect_uri",
-    GHL_REDIRECT_URI,
+    redirectUri,
   );
 
 
@@ -826,6 +868,9 @@ export async function requestGHLReconnectAuthorizationCode(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   target:
@@ -847,6 +892,10 @@ export async function requestGHLReconnectAuthorizationCode(
 ): Promise<
   GHLReconnectResponse
 > {
+
+  getGHLRedirectUri(
+    env.GHL_OAUTH_REDIRECT_URI,
+  );
 
   const clientId =
     getRequiredBinding(
@@ -982,20 +1031,7 @@ export async function requestGHLReconnectAuthorizationCode(
     !response.ok
   ) {
 
-    const serialized =
-      typeof payload ===
-      "string"
-
-        ? payload
-
-        : JSON.stringify(
-            payload,
-          );
-
-
-    throw new Error(
-      `HighLevel OAuth reconnect request failed (${response.status}): ${serialized}`,
-    );
+    throw new GHLProviderOAuthError(response.status);
   }
 
 
@@ -1069,6 +1105,9 @@ export async function reconnectGHLCompanyAccessToken(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   companyId:
@@ -1113,6 +1152,9 @@ export async function reconnectGHLLocationAccessToken(
       string;
 
     GHL_OAUTH_CLIENT_SECRET?:
+      string;
+
+    GHL_OAUTH_REDIRECT_URI?:
       string;
   },
 
@@ -1173,6 +1215,9 @@ export async function refreshGHLCompanyAccessToken(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   refreshToken:
@@ -1193,6 +1238,10 @@ export async function refreshGHLCompanyAccessToken(
       env.GHL_OAUTH_CLIENT_SECRET,
       "GHL_OAUTH_CLIENT_SECRET",
     );
+
+  const redirectUri = getGHLRedirectUri(
+    env.GHL_OAUTH_REDIRECT_URI,
+  );
 
 
   const normalizedRefreshToken =
@@ -1245,7 +1294,7 @@ export async function refreshGHLCompanyAccessToken(
 
   body.set(
     "redirect_uri",
-    GHL_REDIRECT_URI,
+    redirectUri,
   );
 
 
@@ -1418,6 +1467,9 @@ export async function refreshGHLLocationAccessToken(
 
     GHL_OAUTH_CLIENT_SECRET?:
       string;
+
+    GHL_OAUTH_REDIRECT_URI?:
+      string;
   },
 
   refreshToken:
@@ -1438,6 +1490,10 @@ export async function refreshGHLLocationAccessToken(
       env.GHL_OAUTH_CLIENT_SECRET,
       "GHL_OAUTH_CLIENT_SECRET",
     );
+
+  const redirectUri = getGHLRedirectUri(
+    env.GHL_OAUTH_REDIRECT_URI,
+  );
 
 
   const normalizedRefreshToken =
@@ -1490,7 +1546,7 @@ export async function refreshGHLLocationAccessToken(
 
   body.set(
     "redirect_uri",
-    GHL_REDIRECT_URI,
+    redirectUri,
   );
 
 

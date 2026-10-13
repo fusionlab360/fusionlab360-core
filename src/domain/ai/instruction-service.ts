@@ -231,11 +231,6 @@ export async function loadTenantAIInstructions(
       instructionDocuments.length,
     instructionLength:
       instructions.length,
-    instructionPreview:
-      instructions.slice(
-        0,
-        300,
-      ),
   },
 );
 

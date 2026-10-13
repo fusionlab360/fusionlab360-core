@@ -1,4 +1,4 @@
-import { createEventId } from "./id";
+import { createEventId, createTenantScopedEventId } from "./id";
 
 import type {
   IntegrationEvent,
@@ -7,10 +7,9 @@ import type {
 import type {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
-
-import {
-  IntegrationEventDeadLetterRepository,
-} from "../../persistence/repositories/integration-event-dead-letter-repository";
+import type {
+  IntegrationEventClaimResult,
+} from "../../persistence/repositories/integration-event-repository";
 
 import {
   getIntegrationEventRetryPolicy,
@@ -40,9 +39,6 @@ export class IntegrationEventService {
   constructor(
   private readonly repository:
     IntegrationEventRepository,
-
-  private readonly deadLetterRepository?:
-    IntegrationEventDeadLetterRepository,
 ) {}
 
 
@@ -53,7 +49,7 @@ async claimForProcessing(
   eventId:
     string,
 ):
-  Promise<boolean> {
+  Promise<IntegrationEventClaimResult> {
 
   const now =
     new Date().toISOString();
@@ -69,12 +65,32 @@ async claimForProcessing(
       "UNKNOWN",
     );
 
-  return this.repository.claimForProcessing(
+  const leaseToken = crypto.randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+
+  const claim = await this.repository.claimForProcessing(
     tenantId,
     eventId,
     now,
     staleBefore,
+    leaseToken,
+    leaseExpiresAt,
     policy.maxAttempts,
+  );
+
+  return claim;
+}
+
+async renewProcessingLease(
+  tenantId: string,
+  eventId: string,
+  leaseToken: string,
+): Promise<boolean> {
+  return this.repository.renewProcessingLease(
+    tenantId,
+    eventId,
+    leaseToken,
+    new Date(Date.now() + 2 * 60 * 1000).toISOString(),
   );
 }
 
@@ -84,13 +100,16 @@ async markProcessed(
 
   eventId:
     string,
+  leaseToken:
+    string,
 ):
-  Promise<void> {
+  Promise<boolean> {
 
-  await this.repository.markProcessed(
+  return this.repository.markProcessed(
     tenantId,
     eventId,
     new Date().toISOString(),
+    leaseToken,
   );
 }
 
@@ -103,6 +122,9 @@ async markFailed(
 
   error:
     unknown,
+
+  leaseToken:
+    string,
 ):
   Promise<void> {
 
@@ -130,9 +152,7 @@ async markFailed(
             "error",
 
           message:
-            error instanceof Error
-              ? error.message
-              : String(error),
+            "Inbound event processing failed.",
 
           retryable:
             true,
@@ -170,39 +190,8 @@ async markFailed(
     status,
     code,
     normalizedError.message,
+    leaseToken,
   );
-
-  if (
-    shouldDeadLetter &&
-    this.deadLetterRepository
-  ) {
-
-    await this.deadLetterRepository.create({
-      eventId,
-
-      tenantId,
-
-      errorCode:
-        code,
-
-      errorMessage:
-        normalizedError.message,
-
-      retryable:
-        normalizedError.retryable,
-
-      attempts,
-
-      payload:
-        existing.payload,
-
-      createdAt:
-        new Date().toISOString(),
-
-      updatedAt:
-        new Date().toISOString(),
-    });
-  }
 }
 
   async accept<TPayload>(
@@ -211,6 +200,26 @@ async markFailed(
   ): Promise<
     AcceptEventResult
   > {
+
+    const scopedEventId = await createTenantScopedEventId(
+      event.tenantId,
+      event.provider,
+      event.eventId,
+    );
+
+    const legacyEventId = await this.repository.findByExternalIdentity(
+      event.tenantId,
+      event.provider,
+      event.eventId,
+    );
+
+    if (legacyEventId) {
+      return {
+        accepted: false,
+        duplicate: true,
+        event: { ...event, eventId: legacyEventId },
+      };
+    }
 
     // ----------------------------------------------------------
     // Atomically persist the event if this eventId
@@ -231,7 +240,13 @@ async markFailed(
         .createIfAbsent({
 
           eventId:
+            scopedEventId,
+
+          externalEventId:
             event.eventId,
+
+          idempotencyKey:
+            scopedEventId,
 
           tenantId:
             event.tenantId,
@@ -264,6 +279,18 @@ async markFailed(
 
         });
 
+    const storedEventId = inserted
+      ? scopedEventId
+      : await this.repository.findByExternalIdentity(
+          event.tenantId,
+          event.provider,
+          event.eventId,
+        );
+
+    if (!storedEventId) {
+      throw new Error("Integration event could not be durably identified.");
+    }
+
 
     // ----------------------------------------------------------
     // Duplicate event
@@ -279,7 +306,7 @@ async markFailed(
         duplicate:
           true,
 
-        event,
+          event: { ...event, eventId: storedEventId },
 
       };
 
@@ -298,7 +325,7 @@ async markFailed(
       duplicate:
         false,
 
-      event,
+        event: { ...event, eventId: storedEventId },
 
     };
 

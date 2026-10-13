@@ -41,12 +41,27 @@ function createHarness(
   let currentSession = initialSession;
 
   const updates: Array<{
+    tenantId: string;
+    provider: string;
+    conversationId: string;
     state: AIConversationSessionState;
     sessionStartedAt: string;
   }> = [];
+  const findCalls: Array<{
+    tenantId: string;
+    provider: string;
+    conversationId: string;
+  }> = [];
 
   const repository = {
-    find: async () => currentSession,
+    find: async (
+      tenantId: string,
+      provider: string,
+      conversationId: string,
+    ) => {
+      findCalls.push({ tenantId, provider, conversationId });
+      return currentSession;
+    },
 
     upsert: async (
       tenantId: string,
@@ -56,6 +71,9 @@ function createHarness(
       sessionStartedAt: string,
     ) => {
       updates.push({
+        tenantId,
+        provider,
+        conversationId,
         state,
         sessionStartedAt,
       });
@@ -76,6 +94,7 @@ function createHarness(
   return {
     service: new AISessionService(repository),
     updates,
+    findCalls,
     getCurrentSession: () => currentSession,
   };
 }
@@ -91,7 +110,12 @@ function createInput(
     messageText,
     occurredAt,
     previousActivityAt: OLD_TIME,
-    profile: {} as never,
+    profile: {
+      agentName: "NUVI",
+      businessName: "Test Clinic",
+      businessType: "clinic",
+      handoffTemplate: "I will connect you with {{businessName}}.",
+    } as never,
   };
 }
 
@@ -154,4 +178,125 @@ test("invalid session timestamps fail closed", async () => {
   assert.equal(result.action, "ignore");
   assert.equal(result.state, "ai_active");
   assert.equal(harness.updates.length, 0);
+});
+
+test("accepting a pending handoff transitions to human control and returns the configured response", async () => {
+  const harness = createHarness(
+    createSession("handoff_pending", CURRENT_TIME),
+  );
+
+  const result = await harness.service.handleInbound(
+    createInput(CURRENT_TIME, "Yes."),
+  );
+
+  assert.equal(result.action, "handoff");
+  assert.equal(result.state, "human_handoff");
+  assert.equal(result.response, "I will connect you with Test Clinic.");
+  assert.equal(harness.getCurrentSession()?.state, "human_handoff");
+  assert.deepEqual(harness.updates.map((update) => update.state), ["human_handoff"]);
+  assert.deepEqual(harness.updates[0], {
+    tenantId: TENANT_ID,
+    provider: PROVIDER,
+    conversationId: CONVERSATION_ID,
+    state: "human_handoff",
+    sessionStartedAt: OLD_TIME,
+  });
+});
+
+test("declining a pending handoff returns to AI and supported follow-up continues normally", async () => {
+  const harness = createHarness(
+    createSession("handoff_pending", CURRENT_TIME),
+  );
+
+  const decline = await harness.service.handleInbound(
+    createInput(CURRENT_TIME, "No, thanks."),
+  );
+  const followUp = await harness.service.handleInbound(
+    createInput("2026-10-11T12:01:00.000Z", "Is parking available?"),
+  );
+
+  assert.deepEqual(
+    [decline.action, decline.state],
+    ["ai", "ai_active"],
+  );
+  assert.deepEqual(
+    [followUp.action, followUp.state],
+    ["ai", "ai_active"],
+  );
+  assert.deepEqual(
+    harness.updates.map((update) => update.state),
+    ["ai_active", "ai_active"],
+  );
+});
+
+test("an explicit later human request reopens a declined handoff", async () => {
+  const harness = createHarness(
+    createSession("handoff_pending", CURRENT_TIME),
+  );
+
+  await harness.service.handleInbound(
+    createInput(CURRENT_TIME, "No, thanks."),
+  );
+  const request = await harness.service.handleInbound(
+    createInput("2026-10-11T12:01:00.000Z", "I want to speak to a person."),
+  );
+
+  assert.equal(request.action, "handoff");
+  assert.equal(request.state, "human_handoff");
+  assert.equal(request.response, "I will connect you with Test Clinic.");
+  assert.equal(harness.getCurrentSession()?.state, "human_handoff");
+});
+
+test("an unrelated yes in an active AI session does not trigger handoff", async () => {
+  const harness = createHarness(
+    createSession("ai_active", CURRENT_TIME),
+  );
+
+  const result = await harness.service.handleInbound(
+    createInput(CURRENT_TIME, "Yes."),
+  );
+
+  assert.equal(result.action, "ai");
+  assert.equal(result.state, "ai_active");
+  assert.equal(harness.getCurrentSession()?.state, "ai_active");
+  assert.deepEqual(harness.updates.map((update) => update.state), ["ai_active"]);
+});
+
+test("customer acceptance cannot move an already human-controlled session", async () => {
+  const harness = createHarness(
+    createSession("human_handoff", CURRENT_TIME),
+  );
+
+  const result = await harness.service.handleInbound(
+    createInput(CURRENT_TIME, "Yes."),
+  );
+
+  assert.equal(result.action, "ignore");
+  assert.equal(result.state, "human_handoff");
+  assert.equal(harness.getCurrentSession()?.state, "human_handoff");
+  assert.equal(harness.updates.length, 0);
+});
+
+test("session lookup remains scoped by tenant, provider, and conversation", async () => {
+  const harness = createHarness(
+    createSession("ai_active", CURRENT_TIME),
+  );
+
+  await harness.service.handleInbound(createInput(CURRENT_TIME, "Is parking available?"));
+
+  assert.deepEqual(harness.findCalls, [
+    {
+      tenantId: TENANT_ID,
+      provider: PROVIDER,
+      conversationId: CONVERSATION_ID,
+    },
+  ]);
+  assert.ok(
+    harness.updates.every(
+      (update) =>
+        update.tenantId === TENANT_ID &&
+        update.provider === PROVIDER &&
+        update.conversationId === CONVERSATION_ID,
+    ),
+  );
 });

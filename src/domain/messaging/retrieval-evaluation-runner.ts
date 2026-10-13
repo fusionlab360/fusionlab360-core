@@ -54,6 +54,7 @@ export interface RetrievalEvaluationCaseResult {
   question: string;
   reviewStatus: "draft" | "verified";
   expectedAnswerable: boolean;
+  highRisk: boolean;
 
   retrievedSourceKeys: string[];
   selectedSourceKeys: string[];
@@ -342,6 +343,7 @@ export async function runRetrievalEvaluation(
       question: testCase.question,
       reviewStatus: testCase.reviewStatus,
       expectedAnswerable: testCase.expectedAnswerable,
+      highRisk: selection.analysis.highRisk,
 
       retrievedSourceKeys: rankedSources.keys,
       selectedSourceKeys: selectedSources.keys,

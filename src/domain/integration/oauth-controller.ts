@@ -11,6 +11,7 @@ import type {
 
 import {
   exchangeGHLAuthorizationCode,
+  getGHLProviderErrorDiagnostics,
 } from "../../integrations/messaging/gohighlevel/oauth";
 
 
@@ -56,20 +57,13 @@ export async function ghlOAuthCallbackController(
     error
   ) {
 
-    const description =
-      c.req.query(
-        "error_description",
-      );
-
-
     return c.json(
       {
         success:
           false,
 
         message:
-          description ??
-          `HighLevel authorization failed: ${error}`,
+          "HighLevel authorization was not completed.",
       },
 
       400,
@@ -123,6 +117,9 @@ export async function ghlOAuthCallbackController(
 
       GHL_OAUTH_CLIENT_SECRET:
         c.env.GHL_OAUTH_CLIENT_SECRET,
+
+      GHL_OAUTH_REDIRECT_URI:
+        c.env.GHL_OAUTH_REDIRECT_URI,
     };
 
 
@@ -355,8 +352,7 @@ export async function ghlOAuthCallbackController(
 
     console.error(
       "HighLevel OAuth callback failed.",
-
-      error,
+      getGHLProviderErrorDiagnostics(error),
     );
 
 
@@ -366,9 +362,7 @@ export async function ghlOAuthCallbackController(
           false,
 
         message:
-          error instanceof Error
-            ? error.message
-            : "HighLevel OAuth callback failed.",
+          "HighLevel OAuth callback failed.",
       },
 
       500,

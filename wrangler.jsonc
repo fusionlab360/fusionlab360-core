@@ -8,7 +8,9 @@
 	},
 
 	"vars": {
-    "AI_BOOKING_ENABLED": "true"
+    "AI_BOOKING_ENABLED": "true",
+    "GHL_INBOUND_QUEUE_ENABLED": "true",
+    "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback"
   },
 
 	"ai": {
@@ -23,6 +25,25 @@
 			"database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
 		}
 	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "GHL_INBOUND_QUEUE",
+				"queue": "fusionlab360-ghl-inbound"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "fusionlab360-ghl-inbound",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 10,
+				"dead_letter_queue": "fusionlab360-ghl-dlq",
+				"max_concurrency": 1,
+				"retry_delay": 120
+			}
+		]
+	},
 	"env": {
 		"dev": {
 			"name": "fusionlab360-core-dev",
@@ -33,6 +54,55 @@
 					"database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
 				}
 			]
+		},
+		"staging": {
+			"name": "fusionlab360-core-staging",
+			"vars": {
+				"AI_BOOKING_ENABLED": "true",
+				"GHL_INBOUND_QUEUE_ENABLED": "true",
+				"GHL_OAUTH_REDIRECT_URI": ""
+			},
+			"ai": {
+				"binding": "AI"
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "fusionlab360-staging-db",
+					"database_id": "6fb68d59-14f4-47f3-a433-8f71acc3e424"
+				}
+			],
+			"vectorize": [
+				{
+					"binding": "VECTORIZE",
+					"index_name": "fusionlab360-knowledge-staging",
+					"remote": true
+				},
+				{
+					"binding": "VECTORIZE_V2",
+					"index_name": "fusionlab360-knowledge-v2-staging",
+					"remote": true
+				}
+			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "GHL_INBOUND_QUEUE",
+						"queue": "fusionlab360-staging-ghl-inbound"
+					}
+				],
+				"consumers": [
+					{
+						"queue": "fusionlab360-staging-ghl-inbound",
+						"max_batch_size": 1,
+						"max_batch_timeout": 1,
+						"max_retries": 10,
+						"dead_letter_queue": "fusionlab360-staging-ghl-dlq",
+						"max_concurrency": 1,
+						"retry_delay": 120
+					}
+				]
+			}
 		}
 	},
 	"vectorize": [

@@ -4,6 +4,7 @@ import {
 
 import {
   exchangeGHLCompanyTokenForLocationToken,
+  getGHLProviderErrorDiagnostics,
 } from "./oauth";
 
 import {
@@ -378,10 +379,7 @@ export async function syncGHLKnownLocationCredentials(
           locationId:
             location.locationId,
 
-          error:
-            error instanceof Error
-              ? error.message
-              : error,
+          ...getGHLProviderErrorDiagnostics(error),
         },
       );
 
@@ -394,9 +392,7 @@ export async function syncGHLKnownLocationCredentials(
           false,
 
         error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+          getGHLProviderErrorDiagnostics(error).classification,
       });
     }
   }

@@ -110,3 +110,30 @@ test("unspecified tasks preserve Cloudflare as primary and use Gemini as fallbac
     "gemini:default",
   ]);
 });
+
+test("fallback diagnostics omit provider error bodies", async () => {
+  const calls: string[] = [];
+  const secret = "provider-response-secret";
+  const cloudflare = createMockProvider("cloudflare", calls);
+  const gemini: AIProvider = {
+    async chat() {
+      throw new Error(`Provider response included ${secret}`);
+    },
+  };
+  const originalWarn = console.warn;
+  let warning = "";
+  console.warn = ((...args: unknown[]) => {
+    warning = args.map(String).join(" ");
+  }) as typeof console.warn;
+
+  try {
+    const hybrid = new HybridAIProvider(cloudflare, gemini);
+    await hybrid.chat(createRequest("response"));
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.match(warning, /Gemini AI failed/i);
+  assert.doesNotMatch(warning, new RegExp(secret));
+  assert.deepEqual(calls, ["cloudflare:response"]);
+});

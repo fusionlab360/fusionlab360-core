@@ -170,3 +170,13 @@ export interface MessagingProvider {
       string;
   }>;
 }
+
+/** A deterministic local validation failure before provider submission. */
+export class KnownNonDeliveryError extends Error {
+  readonly code = "KNOWN_NON_DELIVERY";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "KnownNonDeliveryError";
+  }
+}

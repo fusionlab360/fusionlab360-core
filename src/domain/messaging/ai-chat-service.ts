@@ -4,6 +4,7 @@ import type {
   AIChatResponse,
   AIProvider,
 } from "../../core/ai";
+import { traceInboundOperation } from "./inbound-diagnostics";
 
 import type { MessagingMessage } from "../../core/messaging";
 
@@ -14,6 +15,7 @@ import {
   isAIMetaQuestion,
   isAIContinuationQuestion,
   isHandoffOffer,
+  isHumanHandoffRequest,
   THIRD_PARTY_REFERRAL_PHRASES,
 } from "./intent-guard";
 
@@ -222,6 +224,12 @@ const EXTENDED_MAX_RESPONSE_TOKENS =
 
 const FALLBACK_MAX_TOKENS =
   120;
+
+const STRUCTURED_ANSWER_MAX_TOKENS =
+  768;
+
+const STRUCTURED_ANSWER_RETRY_MAX_TOKENS =
+  1024;
 
 const MAX_RESPONSE_CHARS =
   1800;
@@ -696,6 +704,7 @@ const MODEL_PATTERNS = [
 const IDENTITY_PATTERNS = [
   /\bare\s+you\s+(an?\s+)?(ai|chatgpt|openai|gemini|claude)\b/i,
   /\b(what|which)\s+(kind\s+of\s+|type\s+of\s+)?ai\s+are\s+you\b/i,
+  /\b(?:am i|are we)\s+(?:talking|speaking|chatting)\s+(?:to|with)\s+(?:an?\s+)?(?:ai|bot|robot|virtual assistant)\b/i,
   /\b(adakah\s+)?(awak|anda)\s+ai\b/i,
   /你是ai吗|你是不是ai|你是人工智能吗|你是chatgpt吗/u,
 ];
@@ -884,24 +893,18 @@ function buildControlledHandoffOffer(
       customerText,
     );
 
-  if (
-    alreadyOffered
-  ) {
+  if (alreadyOffered) {
+  switch (language) {
+    case "malay":
+      return "Saya masih belum dapat mengesahkan perkara itu berdasarkan maklumat yang ada.";
 
-    switch (
-      language
-    ) {
+    case "chinese":
+      return "目前我仍无法根据现有信息确认这一点。";
 
-      case "malay":
-        return "Saya masih belum dapat sahkan perkara itu. Balas 'ya' jika nak saya sampaikan kepada pasukan kami.";
-
-      case "chinese":
-        return "这一点我暂时还无法确认。如果需要，请回复“好”，我会把您的请求转交给我们的团队。";
-
-      default:
-        return "I still can't confirm that from the information I have. Just say yes and I'll pass it to our team.";
-    }
+    default:
+      return "I still can't confirm that from the information available.";
   }
+}
 
   switch (
     language
@@ -919,19 +922,26 @@ function buildControlledHandoffOffer(
 }
 
 function buildAIProviderFallback(
-  businessName:
-    string,
-  customerText:
-    string,
-):
-  string {
+  businessName: string,
+  customerText: string,
+  suppressHandoffOffer = false,
+): string {
+  const language = detectReplyLanguage(customerText);
 
-  switch (
-    detectReplyLanguage(
-      customerText,
-    )
-  ) {
+  if (suppressHandoffOffer) {
+    switch (language) {
+      case "malay":
+        return "Saya masih belum dapat mengesahkan maklumat itu sekarang.";
 
+      case "chinese":
+        return "我现在暂时无法确认这项信息。";
+
+      default:
+        return "I still can't confirm that from the information available.";
+    }
+  }
+
+  switch (language) {
     case "malay":
       return `Saya sedang menghadapi sedikit masalah untuk menyemak maklumat itu sekarang. Saya boleh sampaikan permintaan anda kepada pasukan ${businessName} untuk pengesahan. Nak saya bantu?`;
 
@@ -1009,6 +1019,85 @@ function isRepeatRequest(
         normalized,
       ),
   );
+
+}
+
+
+const HANDOFF_DECLINE_PATTERNS: RegExp[] = [
+  /^(?:no|no thanks|no thank you|not now|not necessary|never mind|forget it|stop asking|i already said no)$/u,
+  /^no (?:i m okay|i am okay|that s okay|it s okay|thanks|thank you)$/u,
+  /^(?:i don t need|i do not need|i don t want|i do not want) (?:that|this|help|a human|a person)$/u,
+  /^(?:tak|tidak|tak perlu|tidak perlu|tak nak|tidak nak|tak mahu|tidak mahu|tak apa|takpe|tak payah|tidak mengapa|tak mengapa)(?: terima kasih| thanks)?$/u,
+  /^(?:不用|不用了|不需要|暂时不用|不必|不用谢谢|不用了谢谢)$/u,
+];
+
+const HANDOFF_ACCEPTANCE_PATTERNS: RegExp[] = [
+  /^(?:yes|yeah|yep|yes please|please do|sure|go ahead|okay|ok)$/u,
+  /^(?:ya|boleh|ya boleh|silakan|baik|baiklah)$/u,
+  /^(?:好|好的|可以|是)$/u,
+];
+
+function isHandoffDecline(text: string): boolean {
+  const normalized = normalizeIntentText(text).trim();
+
+  return HANDOFF_DECLINE_PATTERNS.some(
+    (pattern) => pattern.test(normalized),
+  );
+}
+
+function isHandoffAcceptance(text: string): boolean {
+  const normalized = normalizeIntentText(text).trim();
+
+  return HANDOFF_ACCEPTANCE_PATTERNS.some(
+    (pattern) => pattern.test(normalized),
+  );
+}
+
+function hasPriorHandoffDecline(
+  history: MessagingMessage[],
+): boolean {
+  const ordered = [...history].sort(
+    (a, b) =>
+      new Date(a.timestamp).getTime() -
+      new Date(b.timestamp).getTime(),
+  );
+
+  let waitingForHandoffAnswer = false;
+  let declined = false;
+
+  for (const item of ordered) {
+    if (
+      item.senderType === "ai" &&
+      isHandoffOffer(item.text)
+    ) {
+      waitingForHandoffAnswer = true;
+      continue;
+    }
+
+    if (item.senderType !== "customer") {
+      continue;
+    }
+
+    // An explicit request for a human reopens the handoff path.
+    if (isHumanHandoffRequest(item.text)) {
+      declined = false;
+      waitingForHandoffAnswer = false;
+      continue;
+    }
+
+    if (waitingForHandoffAnswer) {
+      if (isHandoffDecline(item.text)) {
+        declined = true;
+      } else if (isHandoffAcceptance(item.text)) {
+        declined = false;
+      }
+
+      // The offer has received its next customer response.
+      waitingForHandoffAnswer = false;
+    }
+  }
+
+  return declined;
 }
 
 function looksLikeBusinessFactRequest(
@@ -3216,112 +3305,24 @@ function validateGeneratedResponseGrounding(
  * Conversation history
  * ================================================== */
 
+
 function buildConversationHistory(
-  history:
-    MessagingMessage[],
-):
-  MessagingMessage[] {
-
-  const ordered =
-    history
-      .filter(
-        (
-          item,
-        ) =>
-          item.text.trim().length >
-            0 &&
-          item.senderType !==
-            "system",
-      )
-      .sort(
-        (
-          a,
-          b,
-        ) =>
-          new Date(
-            a.timestamp,
-          ).getTime() -
-          new Date(
-            b.timestamp,
-          ).getTime(),
-      );
-
-  /*
-   * Drop deterministic AI/meta exchanges so they
-   * don't colour business answers.
-   */
-  const filtered:
-    MessagingMessage[] = [];
-
-  let dropNextAIResponse =
-    false;
-
-  for (
-    let i = 0;
-    i <
-    ordered.length;
-    i += 1
-  ) {
-
-    const item =
-      ordered[i];
-
-    if (
-      item.senderType ===
-        "customer" &&
-      (
-        isAIMetaQuestion(
-          item.text,
-        ) ||
-        isAIContinuationQuestion(
-          item.text,
-          ordered.slice(
-            0,
-            i,
-          ),
-        )
-      )
-    ) {
-      dropNextAIResponse =
-        true;
-
-      continue;
-    }
-
-    if (
-      item.senderType ===
-      "customer"
-    ) {
-      dropNextAIResponse =
-        false;
-
-      filtered.push(
-        item,
-      );
-
-      continue;
-    }
-
-    if (
-      item.senderType ===
-        "ai" &&
-      dropNextAIResponse
-    ) {
-      dropNextAIResponse =
-        false;
-
-      continue;
-    }
-
-    filtered.push(
-      item,
-    );
-  }
-
-  return filtered.slice(
-    -MAX_HISTORY_MESSAGES,
-  );
+  history: MessagingMessage[],
+): MessagingMessage[] {
+  return history
+    .filter(
+      (item) =>
+        item.text.trim().length > 0 &&
+        item.senderType !== "system",
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() -
+        new Date(b.timestamp).getTime(),
+    )
+    .slice(-MAX_HISTORY_MESSAGES);
 }
+
 
 function convertHistoryMessageToAIMessage(
   item:
@@ -3395,6 +3396,54 @@ function convertHistoryMessageToAIMessage(
       };
   }
 }
+
+/**
+ * Keep conversational history intact for the model.
+ * Filter AI/meta exchanges only when building knowledge queries.
+ */
+function buildKnowledgeQueryHistory(
+  history: MessagingMessage[],
+): MessagingMessage[] {
+  const filtered: MessagingMessage[] = [];
+  let dropNextAIResponse = false;
+
+  for (let i = 0; i < history.length; i += 1) {
+    const item = history[i];
+
+    if (
+      item.senderType === "customer" &&
+      (
+        isAIMetaQuestion(item.text) ||
+        isAIContinuationQuestion(
+          item.text,
+          history.slice(0, i),
+        )
+      )
+    ) {
+      dropNextAIResponse = true;
+      continue;
+    }
+
+    if (item.senderType === "customer") {
+      dropNextAIResponse = false;
+      filtered.push(item);
+      continue;
+    }
+
+    if (
+      item.senderType === "ai" &&
+      dropNextAIResponse
+    ) {
+      dropNextAIResponse = false;
+      continue;
+    }
+
+    filtered.push(item);
+  }
+
+  return filtered.slice(-MAX_HISTORY_MESSAGES);
+}
+
 
 /* ==================================================
  * Output normalisation
@@ -3550,6 +3599,34 @@ function normalizeAIResponse(
   }
 
   return response.trim();
+}
+
+function suppressRedundantOpeningGreeting(
+  response: string,
+  hasPriorAssistantResponse: boolean,
+): string {
+  if (
+    !hasPriorAssistantResponse ||
+    isHandoffOffer(response)
+  ) {
+    return response;
+  }
+
+  const greeting = /^(?:hi|hello|hey)(?:\s+there)?[,!?.]\s+([\s\S]+)$/i.exec(
+    response.trim(),
+  );
+  const substantiveRemainder = greeting?.[1]?.trim();
+
+  if (
+    !substantiveRemainder ||
+    /^(?:hi|hello|hey)(?:\s+there)?[!?.]?$/i.test(
+      substantiveRemainder,
+    )
+  ) {
+    return response;
+  }
+
+  return substantiveRemainder;
 }
 
 function removeFillerQuestion(
@@ -5102,7 +5179,7 @@ function buildConversationContextBlock(
   ) {
 
     lines.push(
-      "You already offered to pass this to our team in your last message. Do not repeat the same offer in the same words.",
+      "Do not repeat a handoff offer that has already been made or declined in this conversation. Respect a customer's refusal and continue with the current request. Only offer a human handoff again if the customer explicitly asks for human assistance."
     );
   }
 
@@ -5439,8 +5516,29 @@ export async function generateAIReply(
     (() => Promise<boolean>) |
     undefined =
       undefined,
+
+  analysisQueryOverride: string = "",
+  diagnosticCorrelationId?: string,
 ):
   Promise<string> {
+
+  const requestLLM = (
+    run: () => Promise<AIChatResponse>,
+  ): Promise<AIChatResponse> => diagnosticCorrelationId
+    ? traceInboundOperation("llm_request", diagnosticCorrelationId, run)
+    : run();
+
+  const hasPriorAssistantResponse = history.some(
+    (item) =>
+      item.conversationId === message.conversationId &&
+      item.id !== message.providerMessageId &&
+      item.senderType === "ai",
+  );
+  const finalizeReply = (response: string): string =>
+    suppressRedundantOpeningGreeting(
+      response,
+      hasPriorAssistantResponse,
+    );
 
       const aiTrace =
         createAIExecutionTrace(
@@ -5505,7 +5603,7 @@ export async function generateAIReply(
       "ai_meta",
     );
 
-    return scopeDecision.response;
+    return finalizeReply(scopeDecision.response);
   }
 
     /*
@@ -5554,9 +5652,8 @@ export async function generateAIReply(
       history,
     );
 
-  const knowledgeHistory:
-    KnowledgeQueryHistoryItem[] =
-    orderedHistory
+  const knowledgeHistory: KnowledgeQueryHistoryItem[] =
+  buildKnowledgeQueryHistory(orderedHistory)
       .filter(
         (
           item,
@@ -5597,6 +5694,9 @@ const knowledgeQuery = {
   retrievalQuery:
     retrievalQueryOverride.trim() ||
     resolvedKnowledgeQuery.retrievalQuery,
+  analysisQuery:
+    analysisQueryOverride.trim() ||
+    resolvedKnowledgeQuery.analysisQuery,
 };
 
   /*
@@ -5671,11 +5771,18 @@ const aiMessages:
           "ai",
       );
 
+  const lastAIWasHandoffOffer =
+  !!lastAI && isHandoffOffer(lastAI.text);
+
+  const customerRequestsHuman =
+    isHumanHandoffRequest(message.text);
+
+  const handoffWasDeclined =
+    hasPriorHandoffDecline(orderedHistory);
+
   const alreadyOffered =
-    !!lastAI &&
-    isHandoffOffer(
-      lastAI.text,
-    );
+    !customerRequestsHuman &&
+    (lastAIWasHandoffOffer || handoffWasDeclined);
 
   /*
    * --------------------------------------------------
@@ -5683,21 +5790,26 @@ const aiMessages:
    * --------------------------------------------------
    */
 
-  const analysis =
+  const messageAnalysis =
   analyzeKnowledgeQuery(
     message.text,
   );
 
+  const analysis =
+    analyzeKnowledgeQuery(
+      knowledgeQuery.analysisQuery || message.text,
+    );
+
   const directBusinessAction =
     resolveBusinessActionIntent(
       message.text,
-      analysis.intent,
+      messageAnalysis.intent,
     );
 
   const businessActionState =
     reconcileBusinessActionState(
       message.text,
-      analysis.intent,
+      messageAnalysis.intent,
       orderedHistory,
     );
 
@@ -5729,7 +5841,7 @@ const businessActionReadiness =
 
 const highRisk =
   resolveHighRiskKnowledgeGroup(
-    message.text,
+    knowledgeQuery.analysisQuery || message.text,
   );
 
   const acknowledgement =
@@ -5761,7 +5873,7 @@ const highRisk =
     analysis.requiresBusinessEvidence ||
     highRisk !== null ||
     looksLikeBusinessFactRequest(
-      message.text,
+      knowledgeQuery.analysisQuery || message.text,
     ) ||
     contextualFollowUp;
 
@@ -5784,7 +5896,7 @@ const highRisk =
   selectKnowledgeForAnswer(
     knowledgeQuery.retrievalQuery,
     knowledge,
-    message.text,
+    knowledgeQuery.analysisQuery || message.text,
   );
 
   /*
@@ -6133,6 +6245,27 @@ addAITraceStage(
       HandoffReason,
   ): Promise<string> => {
 
+    if (
+      isHumanTakeover &&
+      await isHumanTakeover()
+    ) {
+      addAITraceStage(
+        aiTrace,
+        "delivery",
+        "skipped",
+        {
+          reason: "human_takeover_before_fallback",
+        },
+      );
+
+      completeAIExecutionTrace(
+        aiTrace,
+        "cancelled",
+      );
+
+      return "";
+    }
+
         aiTrace.handoff = {
           triggered:
             true,
@@ -6175,24 +6308,20 @@ addAITraceStage(
       },
     );
 
-    if (
-      reason ===
-      "provider_error"
-    ) {
+    if (reason === "provider_error") {
+  const fallback = buildAIProviderFallback(
+    profile.businessName,
+    message.text,
+    alreadyOffered,
+  );
 
-      const fallback =
-        buildAIProviderFallback(
-          profile.businessName,
-          message.text,
-        );
+  completeAIExecutionTrace(
+    aiTrace,
+    "provider_fallback",
+  );
 
-        completeAIExecutionTrace(
-          aiTrace,
-          "provider_fallback",
-        );
-
-        return fallback;
-    }
+  return finalizeReply(fallback);
+}
 
     /*
      * Knowledge and grounding failures must never
@@ -6215,7 +6344,7 @@ addAITraceStage(
         "handoff",
       );
 
-      return fallback;
+      return finalizeReply(fallback);
   };
 
   /*
@@ -6344,12 +6473,14 @@ addAITraceStage(
     const generate = async (
       correction?: string,
       outputTokenLimit: number = useEvidenceAnswerContract
-        ? Math.max(maxTokens, 360)
+        ? Math.max(maxTokens, STRUCTURED_ANSWER_MAX_TOKENS)
         : maxTokens,
       forceFallback = false,
     ) => {
             generationAttempts += 1;
             structuredEvidenceContractRejected = false;
+
+      const requestedOutputTokenLimit = outputTokenLimit;
 
       const system =
             correction
@@ -6369,7 +6500,7 @@ addAITraceStage(
               task: useEvidenceAnswerContract
               ? ("structured" as const)
               : ("response" as const),
-              maxTokens: outputTokenLimit,
+              maxTokens: requestedOutputTokenLimit,
               temperature,
             };
 
@@ -6378,21 +6509,23 @@ addAITraceStage(
 
           if (forceFallback && ai.chatFallback) {
             generationFallbackUsed = true;
-            response = await ai.chatFallback(request);
+            const chatFallback = ai.chatFallback;
+            response = await requestLLM(() => chatFallback(request));
           } else if (
             request.task === "structured" &&
             ai.chatFallback
           ) {
             try {
-              response = await ai.chat(request);
+              response = await requestLLM(() => ai.chat(request));
             } catch {
               // Recover structured generation when the primary provider
               // throws. Do not expose internal provider errors to customers.
               generationFallbackUsed = true;
-              response = await ai.chatFallback(request);
+              const chatFallback = ai.chatFallback;
+              response = await requestLLM(() => chatFallback(request));
             }
           } else {
-            response = await ai.chat(request);
+            response = await requestLLM(() => ai.chat(request));
           }
 
 
@@ -6473,10 +6606,17 @@ addAITraceStage(
             generationFallbackUsed,
         };
 
+        const generationResultValid =
+          response.truncated !== true &&
+          !structuredEvidenceContractRejected &&
+          Boolean(response.text?.trim());
+
         addAITraceStage(
           aiTrace,
           "generation",
-          "completed",
+          generationResultValid
+            ? "completed"
+            : "failed",
           {
             attempt:
               generationAttempts,
@@ -6490,6 +6630,14 @@ addAITraceStage(
             responseLength:
               response.text?.trim()
                 .length ?? 0,
+
+            requestedOutputTokenLimit,
+
+            truncated:
+              response.truncated === true,
+
+            structuredAnswerRejected:
+              structuredEvidenceContractRejected,
           },
         );
 
@@ -6540,8 +6688,15 @@ addAITraceStage(
       response.text?.trim() ??
       "";
 
+    const generationIncomplete =
+      response.truncated === true ||
+      structuredEvidenceContractRejected ||
+      !rawResponse;
+
     console.log(
-      "AI GENERATION SUCCESS",
+      generationIncomplete
+        ? "AI GENERATION INCOMPLETE"
+        : "AI GENERATION SUCCESS",
       {
         ...logBase,
 
@@ -6554,7 +6709,17 @@ addAITraceStage(
         responseLength:
           rawResponse.length,
 
-        maxTokens,
+        maxTokens: useEvidenceAnswerContract
+          ? Math.max(maxTokens, STRUCTURED_ANSWER_MAX_TOKENS)
+          : maxTokens,
+
+        reason: response.truncated === true
+          ? "truncated"
+          : structuredEvidenceContractRejected
+            ? "structured_answer_rejected"
+            : !rawResponse
+              ? "empty_response"
+              : undefined,
       },
     );
 
@@ -6655,8 +6820,6 @@ if (
     {
       ...logBase,
 
-      response:
-        normalized,
         structuredEvidenceContractRejected,
     },
   );
@@ -6686,13 +6849,15 @@ const retry =
       "Return only the completed customer-facing answer.",
     ].join("\n"),
 
-       Math.min(
-        Math.max(
-          maxTokens * 2,
-          360,
-        ),
-        560,
-      ),
+       useEvidenceAnswerContract
+        ? Math.max(
+            maxTokens * 2,
+            STRUCTURED_ANSWER_RETRY_MAX_TOKENS,
+          )
+        : Math.min(
+            Math.max(maxTokens * 2, 360),
+            560,
+          ),
       true,
     );
 
@@ -6757,9 +6922,6 @@ if (
     {
       ...logBase,
 
-      response:
-        normalized,
-
       structuredEvidenceContractRejected,
     },
   );
@@ -6808,8 +6970,8 @@ if (
             reason:
               validation.reason,
 
-            unsupportedFacts:
-              validation.unsupportedFacts,
+            unsupportedFactCount:
+              validation.unsupportedFacts.length,
           },
         );
 
@@ -6820,8 +6982,8 @@ if (
           valid:
             validation.valid,
 
-          unsupportedFacts:
-            validation.unsupportedFacts,
+          unsupportedFactCount:
+            validation.unsupportedFacts.length,
 
           reason:
             validation.reason,
@@ -6843,8 +7005,8 @@ if (
             reason:
               validation.reason,
 
-            unsupportedFacts:
-              validation.unsupportedFacts,
+            unsupportedFactCount:
+              validation.unsupportedFacts.length,
           },
         );
 
@@ -6918,10 +7080,15 @@ const retry = await generate(
         "Use exactly [[NO_MATCH]] only when approved knowledge supports none of the customer's question.",
         "Return only the final customer-facing answer.",
       ].join("\n"),
-  Math.min(
-    Math.max(maxTokens * 2, 360),
-    560,
-  ),
+  useEvidenceAnswerContract
+    ? Math.max(
+        maxTokens * 2,
+        STRUCTURED_ANSWER_RETRY_MAX_TOKENS,
+      )
+    : Math.min(
+        Math.max(maxTokens * 2, 360),
+        560,
+      ),
   true,
 );
 
@@ -6974,14 +7141,14 @@ validation = validateGeneratedResponseGrounding(
             attempt: 2,
             valid: validation.valid,
             reason: validation.reason,
-            unsupportedFacts: validation.unsupportedFacts,
+            unsupportedFactCount: validation.unsupportedFacts.length,
           },
         );
 
         aiTrace.grounding = {
           attempts: 2,
           valid: validation.valid,
-          unsupportedFacts: validation.unsupportedFacts,
+          unsupportedFactCount: validation.unsupportedFacts.length,
           reason: validation.reason,
         };
 
@@ -7001,8 +7168,8 @@ validation = validateGeneratedResponseGrounding(
             reason:
               validation.reason,
 
-            unsupportedFacts:
-              validation.unsupportedFacts,
+            unsupportedFactCount:
+              validation.unsupportedFacts.length,
           },
         );
       } catch (
@@ -7096,9 +7263,12 @@ validation = validateGeneratedResponseGrounding(
     "provider_fallback",
   );
 
-  return buildAIProviderFallback(
-    profile.businessName,
-    message.text,
+  return finalizeReply(
+    buildAIProviderFallback(
+      profile.businessName,
+      message.text,
+      alreadyOffered,
+    ),
   );
 }
 
@@ -7131,7 +7301,7 @@ completeAIExecutionTrace(
     : "answered",
 );
 
-return normalized;
+return finalizeReply(normalized);
 }
 
 export interface KnowledgeQueryRewriteResult {
@@ -7139,6 +7309,7 @@ export interface KnowledgeQueryRewriteResult {
   rewritten: boolean;
   reason:
     | "rewritten"
+    | "context_preserved"
     | "empty_query"
     | "empty_response"
     | "invalid_response"
@@ -7150,6 +7321,7 @@ export async function rewriteKnowledgeQuery(
   ai: AIProvider,
   originalQuery: string,
   contextualQuery: string,
+  diagnosticCorrelationId?: string,
 ): Promise<KnowledgeQueryRewriteResult> {
   const fallbackQuery =
     contextualQuery.trim() ||
@@ -7164,7 +7336,7 @@ export async function rewriteKnowledgeQuery(
   }
 
   try {
-    const response = await ai.chat({
+    const request = () => ai.chat({
       task: "reasoning",
       maxTokens: 96,
       temperature: 0,
@@ -7197,6 +7369,9 @@ export async function rewriteKnowledgeQuery(
         },
       ],
     });
+    const response = diagnosticCorrelationId
+      ? await traceInboundOperation("llm_request", diagnosticCorrelationId, request)
+      : await request();
 
     const rawText =
       response.text?.trim() ?? "";

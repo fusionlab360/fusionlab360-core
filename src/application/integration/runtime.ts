@@ -20,6 +20,9 @@ export interface IntegrationRuntimeEnvironment {
 
   GHL_OAUTH_CLIENT_SECRET:
     string;
+
+  GHL_OAUTH_REDIRECT_URI?:
+    string;
 }
 
 
@@ -69,6 +72,9 @@ export function createIntegrationRuntime(
 
           GHL_OAUTH_CLIENT_SECRET:
             env.GHL_OAUTH_CLIENT_SECRET,
+
+          GHL_OAUTH_REDIRECT_URI:
+            env.GHL_OAUTH_REDIRECT_URI,
         },
       );
 

@@ -43,9 +43,16 @@ import {
 } from "../../core/messaging";
 
 import {
+  classifyInboundProcessingError,
+  InboundEventLeaseActiveError,
   processGHLInboundMessage,
   type KnowledgeRetriever,
 } from "./inbound-service";
+import {
+  createInboundCorrelationId,
+  traceInboundOperation,
+} from "./inbound-diagnostics";
+import { withDurableOutboundDelivery } from "./outbound-delivery";
 
 import {
   processGHLKnowledgeFaqWebhook,
@@ -72,6 +79,78 @@ import {
 import {
   syncKnowledgeBase,
 } from "../knowledge/sync-service";
+import type {
+  GHLInboundQueueEnvelope,
+} from "./inbound-queue-contract";
+import {
+  publishGHLInboundQueueEvent,
+} from "./inbound-queue";
+
+
+function getErrorClassification(
+  error: unknown,
+): string {
+  return error instanceof Error
+    ? error.name
+    : typeof error;
+}
+
+export async function awaitInboundMessageProcessing(
+  processing: Promise<void>,
+): Promise<
+  | { success: true }
+  | { success: false; retryAfterSeconds?: number }
+> {
+  try {
+    await processing;
+    return { success: true };
+  } catch (error: unknown) {
+    console.error(
+      "GHL inbound message processing failed.",
+      {
+        operation: "inbound_pipeline",
+        classification: classifyInboundProcessingError(error),
+      },
+    );
+    return {
+      success: false,
+      ...(error instanceof InboundEventLeaseActiveError
+        ? { retryAfterSeconds: error.retryAfterSeconds }
+        : {}),
+    };
+  }
+}
+
+export async function respondAfterInboundMessageProcessing<T, F>(
+  processing: Promise<void>,
+  acknowledge: () => T,
+  reject: (retryAfterSeconds?: number) => F,
+): Promise<T | F> {
+  const result = await awaitInboundMessageProcessing(processing);
+  return result.success
+    ? acknowledge()
+    : reject(result.retryAfterSeconds);
+}
+
+export async function respondAfterInboundQueueAcceptance<T, F>(
+  queue: Queue<GHLInboundQueueEnvelope> | undefined,
+  envelope: GHLInboundQueueEnvelope,
+  acknowledge: () => T,
+  reject: (error: unknown) => F,
+  correlationId?: string,
+): Promise<T | F> {
+  try {
+    const publish = () => publishGHLInboundQueueEvent(queue, envelope);
+    if (correlationId) {
+      await traceInboundOperation("queue_publish", correlationId, publish);
+    } else {
+      await publish();
+    }
+    return acknowledge();
+  } catch (error: unknown) {
+    return reject(error);
+  }
+}
 
 
 export async function ghlInboundMessageController(
@@ -94,11 +173,16 @@ export async function ghlInboundMessageController(
   const rawBody =
     await c.req.text();
 
+  const signature =
+    c.req.header(
+      "X-GHL-Signature",
+    );
+
     console.log(
   "FL360 WEBHOOK CONTROLLER VERSION",
   {
     version:
-      "2026-10-07-oauth-knowledge-01",
+      "2026-10-14-inbound-lifecycle-01",
 
     path:
       c.req.path,
@@ -115,17 +199,7 @@ export async function ghlInboundMessageController(
       rawBody.length,
 
     signaturePresent:
-      Boolean(
-        c.req.header(
-          "X-GHL-Signature",
-        ),
-      ),
-
-    bodyPreview:
-      rawBody.slice(
-        0,
-        1000,
-      ),
+      Boolean(signature),
   },
 );
 
@@ -135,12 +209,6 @@ export async function ghlInboundMessageController(
    * 2. Read GHL signature
    * --------------------------------------------------
    */
-
-  const signature =
-    c.req.header(
-      "X-GHL-Signature",
-    );
-
 
   /*
    * --------------------------------------------------
@@ -263,6 +331,9 @@ export async function ghlInboundMessageController(
 
           GHL_OAUTH_CLIENT_SECRET:
             c.env.GHL_OAUTH_CLIENT_SECRET,
+
+          GHL_OAUTH_REDIRECT_URI:
+            c.env.GHL_OAUTH_REDIRECT_URI,
         },
 
         payload as
@@ -279,9 +350,7 @@ export async function ghlInboundMessageController(
 
             "GHL INSTALL processing failed.",
 
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -331,6 +400,9 @@ export async function ghlInboundMessageController(
 
           GHL_OAUTH_CLIENT_SECRET:
             c.env.GHL_OAUTH_CLIENT_SECRET,
+
+          GHL_OAUTH_REDIRECT_URI:
+            c.env.GHL_OAUTH_REDIRECT_URI,
         },
 
         payload as
@@ -347,9 +419,7 @@ export async function ghlInboundMessageController(
 
             "GHL APP UPDATE processing failed.",
 
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -398,6 +468,9 @@ export async function ghlInboundMessageController(
         GHL_OAUTH_CLIENT_SECRET:
           c.env.GHL_OAUTH_CLIENT_SECRET,
 
+        GHL_OAUTH_REDIRECT_URI:
+          c.env.GHL_OAUTH_REDIRECT_URI,
+
       },
 
     );
@@ -439,7 +512,13 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge FAQ webhook processed",
 
-            result,
+            {
+              knowledgeBaseId: result.knowledgeBaseId,
+              action: result.action,
+              documentId: result.documentId,
+              duplicate: result.duplicate,
+              syncPerformed: result.sync !== null,
+            },
 
           );
 
@@ -456,9 +535,7 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge FAQ webhook processing failed.",
 
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -517,7 +594,13 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge trained URL webhook processed",
 
-            result,
+            {
+              knowledgeBaseId: result.knowledgeBaseId,
+              action: result.action,
+              documentId: result.documentId,
+              duplicate: result.duplicate,
+              syncPerformed: result.sync !== null,
+            },
 
           );
 
@@ -534,9 +617,7 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge trained URL webhook processing failed.",
 
-            error instanceof Error
-              ? error.message
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -632,28 +713,13 @@ export async function ghlInboundMessageController(
 
             : null,
 
-        name:
-
+        namePresent:
           typeof (
-
             payload as Record<
               string,
               unknown
             >
-
-          ).name ===
-            "string"
-
-            ? (
-
-                payload as Record<
-                  string,
-                  unknown
-                >
-
-              ).name
-
-            : null,
+          ).name === "string",
 
         deleted:
 
@@ -976,11 +1042,7 @@ export async function ghlInboundMessageController(
 
                 message:
 
-                  error instanceof Error
-
-                    ? error.message
-
-                    : error,
+                  getErrorClassification(error),
 
               },
 
@@ -1003,11 +1065,7 @@ export async function ghlInboundMessageController(
 
             error:
 
-              lastError instanceof Error
-
-                ? lastError.message
-
-                : lastError,
+              getErrorClassification(lastError),
 
           },
 
@@ -1024,11 +1082,7 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge Base creation background task failed.",
 
-            error instanceof Error
-
-              ? error.message
-
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -1101,10 +1155,17 @@ export async function ghlInboundMessageController(
         ) => {
 
           console.log(
-
             "GHL Knowledge Base delete webhook processed",
-
-            result,
+            {
+              eventId: result.eventId,
+              eventType: result.eventType,
+              tenantId: result.tenantId,
+              knowledgeBaseId: result.knowledgeBaseId,
+              knowledgeSourceId: result.knowledgeSourceId,
+              documentsFound: result.documentsFound,
+              documentsMarkedDeleted: result.documentsMarkedDeleted,
+              vectorsDeleted: result.vectorsDeleted,
+            },
 
           );
 
@@ -1121,11 +1182,7 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge Base delete webhook processing failed.",
 
-            error instanceof Error
-
-              ? error.message
-
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -1203,7 +1260,16 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge asset webhook observed",
 
-            result,
+            {
+              eventId: result.eventId,
+              eventType: result.eventType,
+              tenantId: result.tenantId,
+              knowledgeBaseId: result.knowledgeBaseId,
+              documentId: result.documentId,
+              assetType: result.assetType,
+              duplicate: result.duplicate,
+              observed: result.observed,
+            },
 
           );
 
@@ -1220,11 +1286,7 @@ export async function ghlInboundMessageController(
 
             "GHL Knowledge asset webhook processing failed.",
 
-            error instanceof Error
-
-              ? error.message
-
-              : error,
+            getErrorClassification(error),
 
           );
 
@@ -1390,8 +1452,11 @@ export async function ghlInboundMessageController(
    * --------------------------------------------------
    */
 
+  const correlationId = await createInboundCorrelationId(
+    message.providerMessageId,
+  );
   const tenant =
-    await resolveTenantByProviderLocation(
+    await traceInboundOperation("tenant_resolution", correlationId, () => resolveTenantByProviderLocation(
 
       c.env.DB,
 
@@ -1399,7 +1464,7 @@ export async function ghlInboundMessageController(
 
       message.locationId,
 
-    );
+    ));
 
 
   /*
@@ -1418,6 +1483,40 @@ export async function ghlInboundMessageController(
       integrationRuntime,
 
     );
+
+  if (c.env.GHL_INBOUND_QUEUE_ENABLED === "true") {
+    const envelope: GHLInboundQueueEnvelope = {
+      version: 1,
+      tenantId: context.tenant.id,
+      provider: "gohighlevel",
+      sourceEventId: message.providerMessageId,
+      message,
+    };
+
+    return respondAfterInboundQueueAcceptance(
+      c.env.GHL_INBOUND_QUEUE,
+      envelope,
+      () => c.json({
+        success: true,
+        accepted: true,
+        eventId: message.providerMessageId,
+      }),
+      (error) => {
+        console.error(
+          "GHL inbound event could not be durably accepted.",
+          {
+            operation: "queue_publish",
+            classification: classifyInboundProcessingError(error),
+          },
+        );
+        return c.json(
+          { success: false, message: "Inbound event could not be accepted." },
+          503,
+        );
+      },
+      correlationId,
+    );
+  }
 
 
   /*
@@ -1481,8 +1580,7 @@ export async function ghlInboundMessageController(
    * --------------------------------------------------
    */
 
-  c.executionCtx.waitUntil(
-
+  return respondAfterInboundMessageProcessing(
     processGHLInboundMessage(
 
       c.env.DB,
@@ -1500,49 +1598,29 @@ export async function ghlInboundMessageController(
       c.env.AI_BOOKING_ENABLED ===
         "true",
 
-    ).catch(
+      (provider, eventId, _leaseToken, renewLease) =>
+        withDurableOutboundDelivery(
+          c.env.DB,
+          provider,
+          eventId,
+          renewLease,
+        ),
 
-      (
-        error:
-          unknown,
-      ) => {
-
-        console.error(
-
-          "GHL inbound message processing failed.",
-
-          error instanceof Error
-
-            ? error.message
-
-            : error,
-
-        );
-
-      },
+      "synchronous_webhook",
 
     ),
-
+    () => c.json({
+      success: true,
+      accepted: true,
+      eventId: message.providerMessageId,
+    }),
+    (retryAfterSeconds) => c.json(
+      { success: false, message: "Inbound message processing failed." },
+      503,
+      retryAfterSeconds
+        ? { "Retry-After": String(retryAfterSeconds) }
+        : undefined,
+    ),
   );
-
-
-  /*
-   * --------------------------------------------------
-   * 24. Acknowledge inbound message
-   * --------------------------------------------------
-   */
-
-  return c.json({
-
-    success:
-      true,
-
-    accepted:
-      true,
-
-    eventId:
-      message.providerMessageId,
-
-  });
 
 }

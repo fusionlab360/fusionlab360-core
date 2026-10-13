@@ -32,6 +32,9 @@ export interface GHLRuntimeEnvironment {
 
   GHL_OAUTH_CLIENT_SECRET:
     string;
+
+  GHL_OAUTH_REDIRECT_URI?:
+    string;
 }
 
 

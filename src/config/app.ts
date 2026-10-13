@@ -7,6 +7,9 @@ import type { RequestContext } from "../context";
 import {
   bootstrapSecurity,
 } from "../bootstrap/security";
+import type {
+  GHLInboundQueueEnvelope,
+} from "../domain/messaging/inbound-queue-contract";
 
 
 export type AppBindings = {
@@ -38,6 +41,10 @@ export type AppBindings = {
   GHL_OAUTH_CLIENT_SECRET:
     string;
 
+  /** Explicit per-environment OAuth callback; absent/blank fails closed. */
+  GHL_OAUTH_REDIRECT_URI?:
+    string;
+
   GEMINI_API_KEY:
     string;
 
@@ -48,6 +55,11 @@ export type AppBindings = {
    * Safe default: disabled.
    */
   AI_BOOKING_ENABLED?: string;
+
+  /** Queue mode is opt-in until an environment binding is reviewed. */
+  GHL_INBOUND_QUEUE_ENABLED?: string;
+
+  GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
 
 };
 
