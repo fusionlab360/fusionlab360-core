@@ -4,10 +4,25 @@ export const TENANT_FEATURES = {
     description: "Generate ordinary AI chat responses.",
     defaultEnabled: true,
   },
+
   ai_booking: {
     label: "AI Booking",
-    description: "Handle AI-assisted appointment bookings.",
+    description: "Handle AI-assisted booking conversations.",
     defaultEnabled: true,
+  },
+
+  booking_appointment: {
+    label: "Appointment Booking",
+    description:
+      "Allow appointment bookings when supported by the configured provider.",
+    defaultEnabled: true,
+  },
+
+  booking_accommodation: {
+    label: "Accommodation Booking",
+    description:
+      "Allow accommodation bookings when supported by the configured provider.",
+    defaultEnabled: false,
   },
 } as const;
 

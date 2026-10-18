@@ -3,6 +3,7 @@ import type {
   AppBindings,
   AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   getTenantFeatures,
@@ -14,7 +15,7 @@ const featureRoutes = new Hono<{
   Variables: AppVariables;
 }>();
 
-featureRoutes.get("/", getTenantFeatures);
-featureRoutes.patch("/:featureKey", updateTenantFeature);
+featureRoutes.get("/", requirePermission("features:read"), getTenantFeatures);
+featureRoutes.patch("/:featureKey", requirePermission("features:write"), updateTenantFeature);
 
 export default featureRoutes;

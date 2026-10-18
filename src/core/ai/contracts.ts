@@ -27,6 +27,23 @@ export interface AIChatRequest {
 
   temperature?:
     number;
+
+  signal?: AbortSignal;
+}
+
+export interface AIProviderAttemptDiagnostic {
+  provider: string;
+  durationMs: number;
+  outcome: "success" | "error" | "timeout";
+  failureKind?:
+    | "timeout"
+    | "type_error"
+    | "http_response"
+    | "invalid_response"
+    | "empty_response"
+    | "provider_error"
+    | "unknown";
+  httpStatus?: number;
 }
 
 
@@ -45,6 +62,10 @@ export interface AIChatResponse {
 
   truncated?:
     boolean;
+
+  providerAttempts?: AIProviderAttemptDiagnostic[];
+
+  fallbackUsed?: boolean;
 }
 
 

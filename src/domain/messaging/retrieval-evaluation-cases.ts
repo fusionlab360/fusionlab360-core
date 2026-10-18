@@ -1,5 +1,6 @@
 import type { RetrievalEvaluationCase } from "./retrieval-evaluation";
 import type { KnowledgeIntent } from "./knowledge-intelligence";
+import type { KnowledgeQueryHistoryItem } from "./knowledge-query-context";
 
 /**
  * Initial AI retrieval evaluation benchmark.
@@ -35,6 +36,12 @@ export type RetrievalEvaluationCategory =
 export interface RetrievalEvaluationBenchmarkCase
   extends RetrievalEvaluationCase {
   question: string;
+
+  /** Optional synthetic, conversation-scoped history for follow-up cases. */
+  history?: KnowledgeQueryHistoryItem[];
+
+  /** Required with history so contextual evaluation is deterministic. */
+  currentQueryAt?: string;
 
   expectedIntents: KnowledgeIntent[];
 

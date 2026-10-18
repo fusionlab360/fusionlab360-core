@@ -15,6 +15,81 @@ export type IntegrationEventClaimResult =
 export class IntegrationEventRepository
   extends BaseRepository {
 
+  async prepareDeadLetterReplay(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+    now: string,
+    leaseExpiresAt: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_status = 'received',
+          processing_attempts = 0,
+          processing_started_at = ?,
+          processed_at = NULL,
+          processing_lease_token = ?,
+          processing_lease_expires_at = ?,
+          last_error_code = 'OPERATOR_REPLAY_PENDING',
+          last_error_message = 'Operator replay dispatch is pending.'
+      WHERE tenant_id = ? AND event_id = ?
+        AND EXISTS (
+          SELECT 1 FROM integration_event_dead_letters d
+          WHERE d.tenant_id = integration_events.tenant_id
+            AND d.event_id = integration_events.event_id
+        )
+        AND (
+          processing_status = 'dead_letter'
+          OR (processing_status = 'received'
+            AND last_error_code = 'OPERATOR_REPLAY_ENQUEUE_FAILED')
+          OR (processing_status = 'received'
+            AND last_error_code = 'OPERATOR_REPLAY_PENDING'
+            AND processing_lease_expires_at <= ?)
+        )
+    `).bind(now, leaseToken, leaseExpiresAt, tenantId, eventId, now).run();
+    return result.meta.changes === 1;
+  }
+
+  async completeDeadLetterReplayDispatch(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_started_at = NULL,
+          processing_lease_token = NULL,
+          processing_lease_expires_at = NULL,
+          last_error_code = NULL,
+          last_error_message = NULL
+      WHERE tenant_id = ? AND event_id = ?
+        AND processing_status = 'received'
+        AND last_error_code = 'OPERATOR_REPLAY_PENDING'
+        AND processing_lease_token = ?
+    `).bind(tenantId, eventId, leaseToken).run();
+    return result.meta.changes === 1;
+  }
+
+  async failDeadLetterReplayDispatch(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_started_at = NULL,
+          processing_lease_token = NULL,
+          processing_lease_expires_at = NULL,
+          last_error_code = 'OPERATOR_REPLAY_ENQUEUE_FAILED',
+          last_error_message = 'Operator replay could not be confirmed as queued.'
+      WHERE tenant_id = ? AND event_id = ?
+        AND processing_status = 'received'
+        AND last_error_code = 'OPERATOR_REPLAY_PENDING'
+        AND processing_lease_token = ?
+    `).bind(tenantId, eventId, leaseToken).run();
+    return result.meta.changes === 1;
+  }
+
   async find(
   tenantId: string,
   eventId: string,

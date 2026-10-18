@@ -1,4 +1,5 @@
-import { ghlFetch } from "../client";
+import type { RequestContext } from "../../../../context";
+import { ghlFetchAuthenticated } from "../client";
 
 export interface GHLLLocation {
   id: string;
@@ -7,13 +8,13 @@ export interface GHLLLocation {
 }
 
 export async function getGHLLLocation(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
 ) {
-  return ghlFetch<{
+  return ghlFetchAuthenticated<{
     location: GHLLLocation;
   }>(
-    apiKey,
+    context,
     `/locations/${encodeURIComponent(locationId)}`,
   );
 }

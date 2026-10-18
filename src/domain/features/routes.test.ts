@@ -8,6 +8,7 @@ import type {
   AppVariables,
 } from "../../config/app";
 import type { RequestContext } from "../../context/types";
+import type { AuthenticatedPrincipal } from "../../core/security/principal";
 
 import featureRoutes from "./routes";
 
@@ -109,6 +110,11 @@ function createTestApp(db: D1Database) {
       c.req.header("x-test-tenant") ?? "tenant-a";
 
     const context = {
+        client: {
+            id: "test-client",
+            tenantId,
+            permissions: ["features:read", "features:write"],
+        },
         tenant: {
             id: tenantId,
             name: tenantId,
@@ -116,6 +122,12 @@ function createTestApp(db: D1Database) {
         } as unknown as RequestContext;
 
     c.set("context", context);
+    c.set("principal", {
+        type: "client",
+        clientId: "test-client",
+        tenantId,
+        permissions: ["features:read", "features:write"],
+    } satisfies AuthenticatedPrincipal);
     await next();
   });
 
@@ -163,6 +175,19 @@ test("GET /features returns default states", async () => {
   assert.equal(
     body.features.find((f) => f.key === "ai_booking")?.enabled,
     true,
+  );
+  assert.equal(
+    body.features.find(
+      (f) => f.key === "booking_appointment",
+    )?.enabled,
+    true,
+  );
+
+  assert.equal(
+    body.features.find(
+      (f) => f.key === "booking_accommodation",
+    )?.enabled,
+    false,
   );
 });
 

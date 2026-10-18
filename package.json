@@ -2,12 +2,14 @@
   "name": "fusionlab360-core",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --env dev",
     "deploy": "wrangler deploy --minify",
     "typecheck": "tsc --noEmit",
-    "test:ai-retrieval": "tsx --test src/domain/messaging/retrieval-evaluation.test.ts src/domain/messaging/ai-chat-service.test.ts src/domain/knowledge/relevance-policy.test.ts src/domain/knowledge/answer-service.test.ts src/domain/knowledge/answer-controller.test.ts src/core/ai/evidence-answer.test.ts src/core/ai/validated-generation.test.ts src/core/ai/providers/hybrid.test.ts src/bootstrap/error.test.ts src/integrations/knowledge/vectorize/retriever.test.ts src/domain/knowledge/retrieval-service.test.ts src/domain/messaging/knowledge-intelligence.test.ts src/domain/messaging/retrieval-evaluation-cases.test.ts src/domain/messaging/retrieval-evaluation-runner.test.ts src/domain/messaging/tenant-knowledge-retriever.test.ts src/domain/messaging/knowledge-query-context.test.ts",
+    "test:ai-retrieval": "tsx --test src/domain/messaging/retrieval-evaluation.test.ts src/domain/messaging/ai-chat-service.test.ts src/domain/knowledge/relevance-policy.test.ts src/domain/knowledge/answer-service.test.ts src/domain/knowledge/answer-controller.test.ts src/core/ai/evidence-answer.test.ts src/core/ai/validated-generation.test.ts src/core/ai/providers/hybrid.test.ts src/bootstrap/error.test.ts src/integrations/knowledge/vectorize/retriever.test.ts src/domain/knowledge/retrieval-service.test.ts src/domain/messaging/knowledge-intelligence.test.ts src/domain/messaging/retrieval-evaluation-cases.test.ts src/domain/messaging/retrieval-evaluation-runner.test.ts src/domain/messaging/tenant-knowledge-retriever.test.ts src/domain/messaging/knowledge-query-context.test.ts src/domain/messaging/ai-pipeline.test.ts src/domain/messaging/ai-pipeline-feature-flag.test.ts",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "client:create": "tsx src/cli/index.ts client:create",
+    "client:permissions": "tsx src/cli/index.ts client:permissions",
+    "integration-event:replay": "tsx src/cli/index.ts integration-event:replay",
     "client:list": "tsx src/cli/index.ts client:list",
     "client:rotate": "tsx src/cli/index.ts client:rotate",
     "client:revoke": "tsx src/cli/index.ts client:revoke"

@@ -106,7 +106,7 @@ function createFakeDb() {
   };
 }
 
-test("registered features default to enabled", async () => {
+test("registered features use their declared defaults", async () => {
   const { db } = createFakeDb();
 
   assert.equal(
@@ -125,6 +125,34 @@ test("registered features default to enabled", async () => {
       "ai_booking",
     ),
     true,
+  );
+
+    assert.equal(
+    await isTenantFeatureEnabled(
+      db,
+      "tenant-a",
+      "booking_appointment",
+    ),
+    true,
+  );
+
+  assert.equal(
+    await isTenantFeatureEnabled(
+      db,
+      "tenant-a",
+      "booking_accommodation",
+    ),
+    false,
+  );
+
+  assert.equal(
+    TENANT_FEATURES.booking_appointment.defaultEnabled,
+    true,
+  );
+
+  assert.equal(
+    TENANT_FEATURES.booking_accommodation.defaultEnabled,
+    false,
   );
 
   assert.equal(

@@ -103,6 +103,91 @@ test(
 );
 
 test(
+  "evaluation runner resolves a contextual address follow-up before retrieval and selection",
+  async () => {
+    const branchCase: RetrievalEvaluationBenchmarkCase = {
+      ...verifiedServiceCase,
+      id: "runner-contextual-address-001",
+      question: "Can I know the address?",
+      history: [
+        {
+          role: "customer",
+          text: "Can you tell me the address for Northside branch?",
+          timestamp: "2026-10-14T10:00:00.000Z",
+        },
+      ],
+      currentQueryAt: "2026-10-14T10:01:00.000Z",
+      relevantSourceKeys: ["branch:northside"],
+      requiredSourceKeys: ["branch:northside"],
+      expectedIntents: ["contact"],
+      category: "branch_specific",
+    };
+    const branchDocument: KnowledgeContextItem = {
+      id: "chunk-northside-address",
+      knowledgeSourceId: "source-northside-address",
+      providerDocumentId: "document-northside-address",
+      title: "Northside Branch Information",
+      sourceType: "rich_text",
+      content: "Northside branch address: 18 Sample Road, Sampletown.",
+      score: 0.91,
+      retrievalMethod: "hybrid",
+    };
+    let receivedQuery = "";
+    let receivedOriginalQuery = "";
+
+    const result = await runRetrievalEvaluation({
+      retriever: {
+        search: async (query, originalQuery) => {
+          receivedQuery = query;
+          receivedOriginalQuery = originalQuery ?? "";
+          return [branchDocument];
+        },
+      },
+      sourceKeyById: {
+        "document-northside-address": "branch:northside",
+      },
+      cases: [branchCase],
+    });
+
+    const observed = result.cases[0];
+    assert.ok(observed);
+    assert.match(receivedQuery, /Northside/i);
+    assert.match(receivedQuery, /address/i);
+    assert.equal(receivedOriginalQuery, branchCase.question);
+    assert.equal(observed.contextUsed, true);
+    assert.equal(observed.contextSourceKind, "resolved_branch_address");
+    assert.deepEqual(observed.retrievedSourceKeys, ["branch:northside"]);
+    assert.deepEqual(observed.selectedSourceKeys, ["branch:northside"]);
+    assert.equal(observed.candidateDiagnostics[0]?.decision, "selected");
+  },
+);
+
+test(
+  "contextual evaluation requires a timestamp for deterministic history resolution",
+  async () => {
+    const contextualCase: RetrievalEvaluationBenchmarkCase = {
+      ...verifiedServiceCase,
+      history: [
+        {
+          role: "customer",
+          text: "Tell me about Northside branch.",
+          timestamp: "2026-10-14T10:00:00.000Z",
+        },
+      ],
+    };
+
+    await assert.rejects(
+      runRetrievalEvaluation({
+        retriever: { search: async () => [] },
+        sourceKeyById: {},
+        cases: [contextualCase],
+      }),
+      /requires currentQueryAt/,
+    );
+  },
+);
+
+test(
   "evaluation runner reports existing high-risk classification without changing selection",
   async () => {
     const highRiskCase: RetrievalEvaluationBenchmarkCase = {

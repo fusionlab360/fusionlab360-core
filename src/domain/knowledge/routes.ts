@@ -6,6 +6,7 @@ import type {
   AppBindings,
   AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   getKnowledgeBasesController,
@@ -47,18 +48,21 @@ const knowledgeRoutes =
 
 knowledgeRoutes.get(
   "/gohighlevel/bases",
+  requirePermission("knowledge:read"),
   getKnowledgeBasesController,
 );
 
 
 knowledgeRoutes.get(
   "/gohighlevel/bases/:knowledgeBaseId/documents",
+  requirePermission("knowledge:read"),
   getKnowledgeDocumentsController,
 );
 
 
 knowledgeRoutes.post(
   "/gohighlevel/bases/:knowledgeBaseId/sync",
+  requirePermission("knowledge:write"),
   syncKnowledgeBaseController,
 );
 
@@ -71,6 +75,7 @@ knowledgeRoutes.post(
 
 knowledgeRoutes.post(
   "/index",
+  requirePermission("knowledge:write"),
   indexKnowledgeController,
 );
 
@@ -83,6 +88,7 @@ knowledgeRoutes.post(
 
 knowledgeRoutes.post(
   "/search",
+  requirePermission("knowledge:read"),
   searchKnowledgeController,
 );
 
@@ -95,6 +101,7 @@ knowledgeRoutes.post(
 
 knowledgeRoutes.post(
   "/answer",
+  requirePermission("knowledge:answer"),
   answerKnowledgeController,
 );
 

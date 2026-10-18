@@ -36,9 +36,12 @@ export class ConfigurationRepository extends BaseRepository {
 
     logger.debug("Integration configuration loaded", {
       integrationId,
-      workflow: configuration.workflow.key,
-      attributeMappings:
-        configuration.attributeMappings.length,
+      hasWorkflow: Boolean(configuration?.workflow),
+      attributeMappingsCount: Array.isArray(
+        configuration?.attributeMappings,
+      )
+        ? configuration.attributeMappings.length
+        : null,
     });
 
     return configuration;

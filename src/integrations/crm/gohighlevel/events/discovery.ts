@@ -1,6 +1,10 @@
 import {
-  ghlFetch,
+  ghlFetchAuthenticated,
 } from "../client";
+
+import type {
+  RequestContext,
+} from "../../../../context";
 
 import type {
   GHLEventConfiguration,
@@ -93,13 +97,13 @@ interface GHLAssociationsResponse {
  * No tenant-specific object key is hardcoded here.
  */
 export async function listGHLObjects(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
-): Promise<GHLObjectSummary[]> {
+): Promise<GHLObjectSummary[]>{
 
   const response =
-    await ghlFetch<GHLObjectsResponse>(
-      apiKey,
+    await ghlFetchAuthenticated<GHLObjectsResponse>(
+      context,
       `/objects/?locationId=${encodeURIComponent(
         locationId,
       )}`,
@@ -125,7 +129,7 @@ export async function listGHLObjects(
  * configuration and is never hardcoded.
  */
 export async function getGHLObjectSchema(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
   schemaKey: string,
 ): Promise<GHLObjectSchemaResponse> {
@@ -142,8 +146,8 @@ export async function getGHLObjectSchema(
 
 
   const response =
-    await ghlFetch<GHLObjectSchemaResponse>(
-      apiKey,
+    await ghlFetchAuthenticated<GHLObjectSchemaResponse>(
+      context,
       `/objects/${encodeURIComponent(
         normalizedSchemaKey,
       )}?locationId=${encodeURIComponent(
@@ -183,13 +187,13 @@ export async function getGHLObjectSchema(
  * to the GHL location.
  */
 export async function listGHLAssociations(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
 ): Promise<GHLAssociation[]> {
 
   const response =
-    await ghlFetch<GHLAssociationsResponse>(
-      apiKey,
+    await ghlFetchAuthenticated<GHLAssociationsResponse>(
+      context,
       `/associations/?locationId=${encodeURIComponent(
         locationId,
       )}&skip=0&limit=100`,
@@ -345,7 +349,7 @@ function requireGHLObjectField(
  *   secondObjectKey
  */
 export async function discoverGHLEventConfiguration(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
   schemaKey: string,
   dateFieldKey: string,
@@ -360,7 +364,7 @@ export async function discoverGHLEventConfiguration(
 
   const schema =
     await getGHLObjectSchema(
-      apiKey,
+      context,
       locationId,
       schemaKey,
     );
@@ -444,7 +448,7 @@ export async function discoverGHLEventConfiguration(
 
   const associations =
     await listGHLAssociations(
-      apiKey,
+      context,
       locationId,
     );
 

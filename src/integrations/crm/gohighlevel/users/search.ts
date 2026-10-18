@@ -1,4 +1,5 @@
-import { ghlFetch } from "../client";
+import type { RequestContext } from "../../../../context";
+import { ghlFetchAuthenticated } from "../client";
 
 interface GHLUser {
   id: string;
@@ -14,12 +15,12 @@ interface GHLUsersSearchResponse {
 }
 
 export async function searchGHLUsers(
-  apiKey: string,
+  context: RequestContext,
   companyId: string,
   locationId: string,
 ) {
-  return ghlFetch<GHLUsersSearchResponse>(
-    apiKey,
+  return ghlFetchAuthenticated<GHLUsersSearchResponse>(
+    context,
     `/users/search?companyId=${encodeURIComponent(
       companyId,
     )}&locationId=${encodeURIComponent(

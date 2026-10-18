@@ -1,4 +1,4 @@
-import { app } from "../config/app";
+import { createApp } from "../config/app";
 
 import { authMiddleware } from "../middleware/auth";
 
@@ -9,8 +9,10 @@ import contactRoutes from "../domain/contact/routes";
 import reservationRoutes from "../domain/reservation/routes";
 
 import bookingRoutes from "../domain/booking/routes";
+import { bookingTestRoutes } from "../domain/booking/routes";
 
 import integrationRoutes from "../domain/integration/routes";
+import { integrationTestRoutes } from "../domain/integration/routes";
 
 import messagingTestRoutes
   from "../domain/messaging/test-routes";
@@ -35,6 +37,15 @@ import featureRoutes from "../domain/features/routes";
 import {
   evaluateRetrievalController,
 } from "../domain/messaging/retrieval-evaluation-controller";
+import { requirePermission } from "../middleware/authorization";
+
+export function shouldEnableNonProductionRoutes(environment?: string): boolean {
+  return environment === "development" || environment === "staging";
+}
+
+export function createApplication(environment?: string) {
+const includeNonProductionRoutes = shouldEnableNonProductionRoutes(environment);
+const app = createApp();
 
 
 /*
@@ -129,15 +140,10 @@ app.use(
   authMiddleware,
 );
 
-app.use(
-  "/messaging-test/*",
-  authMiddleware,
-);
-
-app.use(
-  "/ai-test/*",
-  authMiddleware,
-);
+if (includeNonProductionRoutes) {
+  app.use("/messaging-test/*", authMiddleware);
+  app.use("/ai-test/*", authMiddleware);
+}
 
 app.use(
   "/ai/*",
@@ -176,6 +182,9 @@ app.route(
  */
 
 app.route("/booking", bookingRoutes);
+if (includeNonProductionRoutes) {
+  app.route("/booking", bookingTestRoutes);
+}
 
 
 /*
@@ -188,6 +197,9 @@ app.route(
   "/integrations",
   integrationRoutes,
 );
+if (includeNonProductionRoutes) {
+  app.route("/integrations", integrationTestRoutes);
+}
 
 
 /*
@@ -196,10 +208,9 @@ app.route(
  * --------------------------------------------------
  */
 
-app.route(
-  "/messaging-test",
-  messagingTestRoutes,
-);
+if (includeNonProductionRoutes) {
+  app.route("/messaging-test", messagingTestRoutes);
+}
 
 
 /*
@@ -208,10 +219,9 @@ app.route(
  * --------------------------------------------------
  */
 
-app.route(
-  "/ai-test",
-  aiTestRoutes,
-);
+if (includeNonProductionRoutes) {
+  app.route("/ai-test", aiTestRoutes);
+}
 
 
 /*
@@ -253,10 +263,13 @@ app.use(
  * --------------------------------------------------
  */
 
-app.post(
-  "/knowledge/evaluate",
-  evaluateRetrievalController,
-);
+if (includeNonProductionRoutes) {
+  app.post(
+    "/knowledge/evaluate",
+    requirePermission("knowledge:evaluate"),
+    evaluateRetrievalController,
+  );
+}
 
 /*
  * --------------------------------------------------
@@ -275,3 +288,6 @@ app.route(
 app.use("/features", authMiddleware);
 app.use("/features/*", authMiddleware);
 app.route("/features", featureRoutes);
+
+return app;
+}

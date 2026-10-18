@@ -177,6 +177,47 @@ export class OAuthInstallationRepository
       .run();
   }
 
+  /** Insert a shared provider installation without replacing another tenant's token. */
+  async createIfAbsent(
+    installation: OAuthInstallation,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `
+        INSERT INTO oauth_installations (
+          provider,
+          account_type,
+          external_account_id,
+          external_user_id,
+          access_token,
+          refresh_token,
+          access_token_expires_at,
+          refresh_lock_token,
+          refresh_lock_expires_at,
+          metadata,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT (provider, account_type, external_account_id)
+        DO NOTHING
+        `,
+      )
+      .bind(
+        installation.provider,
+        installation.accountType,
+        installation.externalAccountId,
+        installation.externalUserId,
+        installation.accessToken,
+        installation.refreshToken,
+        installation.accessTokenExpiresAt ?? null,
+        installation.metadata,
+      )
+      .run();
+
+    return (result.meta?.changes ?? 0) === 1;
+  }
+
 
   /**
    * Atomically acquire the OAuth refresh lease.

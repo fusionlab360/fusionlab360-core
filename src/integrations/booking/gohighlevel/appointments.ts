@@ -488,32 +488,7 @@ export async function createGHLAppointment(
       },
     );
 
-
-  console.log(
-    "GHL CREATE APPOINTMENT RAW RESPONSE",
-    {
-      responseType:
-        typeof response,
-
-      topLevelKeys:
-        response &&
-        typeof response ===
-          "object"
-          ? Object.keys(
-              response as unknown as Record<
-                string,
-                unknown
-              >,
-            )
-          : [],
-
-      response:
-        response,
-    },
-  );
-
-
-  return normalizeAppointmentResponse(
+   return normalizeAppointmentResponse(
       response,
 
       {
@@ -578,35 +553,7 @@ export async function getGHLAppointment(
       },
     );
 
-
-console.log(
-  "GHL GET APPOINTMENT RAW RESPONSE",
-  {
-    appointmentId:
-      appointmentId,
-
-    responseType:
-      typeof response,
-
-    topLevelKeys:
-      response &&
-      typeof response ===
-        "object"
-        ? Object.keys(
-            response as unknown as Record<
-              string,
-              unknown
-            >,
-          )
-        : [],
-
-    response:
-      response,
-  },
-);
-
-
-return normalizeAppointmentResponse(
+    return normalizeAppointmentResponse(
   response,
 );
 
@@ -690,37 +637,7 @@ export async function updateGHLAppointment(
       },
     );
 
-    console.log(
-  "GHL UPDATE APPOINTMENT RAW RESPONSE",
-  {
-    appointmentId:
-      appointmentId,
-
-    updateInput:
-      input,
-
-    responseType:
-      typeof response,
-
-    topLevelKeys:
-      response &&
-      typeof response ===
-        "object"
-        ? Object.keys(
-            response as unknown as Record<
-              string,
-              unknown
-            >,
-          )
-        : [],
-
-    response:
-      response,
-  },
-);
-
-
-return normalizeAppointmentResponse(
+  return normalizeAppointmentResponse(
   response,
 );
 }

@@ -2,9 +2,17 @@ import type { CanonicalInboundMessage } from "../../canonical/message";
 
 import type {
   AIChatResponse,
+  AIProviderAttemptDiagnostic,
   AIProvider,
 } from "../../core/ai";
-import { traceInboundOperation } from "./inbound-diagnostics";
+import { AI_GENERATION_DEADLINE_MS } from "../../core/ai/provider-timeout";
+import {
+  getWorkerVersionIdentity,
+  traceInboundOperation,
+} from "./inbound-diagnostics";
+import type {
+  WorkerVersionMetadataBinding,
+} from "./inbound-diagnostics";
 
 import type { MessagingMessage } from "../../core/messaging";
 
@@ -22,11 +30,13 @@ import {
 import {
   selectKnowledgeForAnswer,
   analyzeKnowledgeQuery,
+  compareKnowledgeQueryEntityContext,
   type KnowledgeAttributeCoverage,
 } from "./knowledge-intelligence";
 
 import {
   resolveKnowledgeQuery,
+  getKnowledgeQueryContextSourceKind,
   type KnowledgeQueryHistoryItem,
 } from "./knowledge-query-context";
 
@@ -200,6 +210,9 @@ const MAX_KNOWLEDGE_CONTEXT_CHARS =
 const MAX_KNOWLEDGE_SOURCES =
   6;
 
+const MAX_ATTRIBUTE_RECOVERY_CANDIDATES =
+  20;
+
 const MAX_HISTORY_MESSAGES =
   20;
 
@@ -265,6 +278,39 @@ function getSafeAIErrorName(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)
     ? name
     : "Error";
+}
+
+function getSafeProviderAttempts(error: unknown): AIProviderAttemptDiagnostic[] {
+  if (!error || typeof error !== "object") return [];
+  const attempts = (error as { providerAttempts?: unknown }).providerAttempts;
+  if (!Array.isArray(attempts)) return [];
+
+  const allowedProviders = new Set(["gemini", "cloudflare-workers-ai"]);
+  const allowedFailureKinds = new Set<NonNullable<AIProviderAttemptDiagnostic["failureKind"]>>([
+    "timeout", "type_error", "http_response", "invalid_response", "empty_response", "provider_error", "unknown",
+  ]);
+
+  return attempts.flatMap((value): AIProviderAttemptDiagnostic[] => {
+    if (!value || typeof value !== "object") return [];
+    const attempt = value as Partial<AIProviderAttemptDiagnostic>;
+    if (
+      typeof attempt.provider !== "string" || !allowedProviders.has(attempt.provider) ||
+      typeof attempt.durationMs !== "number" || !Number.isFinite(attempt.durationMs) || attempt.durationMs < 0 ||
+      (attempt.outcome !== "success" && attempt.outcome !== "error" && attempt.outcome !== "timeout")
+    ) return [];
+
+    return [{
+      provider: attempt.provider,
+      durationMs: Math.round(attempt.durationMs),
+      outcome: attempt.outcome,
+      ...(attempt.failureKind && allowedFailureKinds.has(attempt.failureKind)
+        ? { failureKind: attempt.failureKind }
+        : {}),
+      ...(typeof attempt.httpStatus === "number" && Number.isInteger(attempt.httpStatus) && attempt.httpStatus >= 100 && attempt.httpStatus <= 599
+        ? { httpStatus: attempt.httpStatus }
+        : {}),
+    }];
+  });
 }
 
 /* ==================================================
@@ -1598,7 +1644,7 @@ function buildBusinessActionInstructions(
 
 
 
-function buildKnowledgeContext(
+export function buildKnowledgeContext(
   knowledge: KnowledgeContextItem[],
 ): {
   text: string;
@@ -4914,13 +4960,13 @@ if (
     ) {
       return {
         decision:
-          "handoff",
+          "answer_partial",
 
         confidence:
-          "low",
+          "medium",
 
         reason:
-          "no_requested_attribute_coverage",
+          "partial_knowledge_coverage",
       };
     }
 
@@ -5005,6 +5051,7 @@ function buildKnowledgeInstructions(
    "Every business-specific claim you make must be directly supported by it. Earlier assistant messages are NOT evidence.",
     "Never invent, estimate, assume or substitute a price, discount, promotion, availability, policy, service, schedule, branch, staff detail or medical fact.",
     "A document proving something exists does not prove its price, discount, availability, duration or eligibility unless those details are written in it.",
+    "For broad service-catalogue questions, list only services explicitly documented in the selected knowledge. A single service entry is not proof of an exhaustive catalogue; do not describe it as complete unless the evidence says it is complete.",
     "Similar names do not mean the same entity. Never swap in a different entity.",
     "Write naturally in your own words. Do not mention sources or source numbers.",
     "Direct-answer rule: when one approved source clearly answers a simple question, answer directly in 1-2 short sentences. Do not add a greeting, restate the question, explain your reasoning, or ask a follow-up unless it is genuinely useful.",
@@ -5102,7 +5149,13 @@ function buildKnowledgeInstructions(
   ) {
 
     lines.push(
-      "ATTRIBUTE ANSWERABILITY: No requested information attribute is currently confirmed by the selected approved knowledge. Do not generate unsupported business-specific facts from the retrieved context.",
+      `ATTRIBUTE ANSWERABILITY: The selected approved knowledge does not confirm the requested attribute${
+        attributeCoverage?.missing.length === 1 ? "" : "s"
+      }: ${
+        attributeCoverage?.missing
+          .map((item) => `${item.intent}:${item.attribute}`)
+          .join(", ") || "the requested detail"
+      }. Provide any directly supported, relevant fact from the selected evidence. If the customer directly asked for the missing detail, explicitly say that NUVI's information does not confirm it; do not imply that the business itself lacks that information. Never treat a related fact as proof of the missing attribute. Never invent an address, opening hours, map link, price, availability, service detail or other business fact. Keep the response natural, concise and useful rather than giving a generic refusal. If the selected evidence has no directly supported relevant detail, use the controlled no-match behavior.`,
     );
   }
 
@@ -5519,18 +5572,26 @@ export async function generateAIReply(
 
   analysisQueryOverride: string = "",
   diagnosticCorrelationId?: string,
+  workerVersionMetadata?: WorkerVersionMetadataBinding | null,
+  knowledgeRecoverySearch?: (
+    query: string,
+    originalQuery: string,
+  ) => Promise<KnowledgeContextItem[]>,
 ):
   Promise<string> {
 
   const requestLLM = (
     run: () => Promise<AIChatResponse>,
   ): Promise<AIChatResponse> => diagnosticCorrelationId
-    ? traceInboundOperation("llm_request", diagnosticCorrelationId, run)
+    ? traceInboundOperation("llm_request", diagnosticCorrelationId, run, workerVersionMetadata)
     : run();
 
-  const hasPriorAssistantResponse = history.some(
+  const conversationHistory = history.filter(
+    (item) => item.conversationId === message.conversationId,
+  );
+
+  const hasPriorAssistantResponse = conversationHistory.some(
     (item) =>
-      item.conversationId === message.conversationId &&
       item.id !== message.providerMessageId &&
       item.senderType === "ai",
   );
@@ -5553,6 +5614,18 @@ export async function generateAIReply(
               message.providerMessageId,
           },
         );
+      const workerVersionIdentity = getWorkerVersionIdentity(workerVersionMetadata);
+      if (workerVersionIdentity) {
+        aiTrace.workerVersion = {
+          id: workerVersionIdentity.workerVersionId,
+          ...(workerVersionIdentity.workerVersionTag
+            ? { tag: workerVersionIdentity.workerVersionTag }
+            : {}),
+          ...(workerVersionIdentity.workerVersionTimestamp
+            ? { timestamp: workerVersionIdentity.workerVersionTimestamp }
+            : {}),
+        };
+      }
 
       const logBase = {
         tenantId:
@@ -5566,6 +5639,8 @@ export async function generateAIReply(
 
         traceId:
           aiTrace.traceId,
+
+        ...(workerVersionIdentity ?? {}),
       };
 
   /*
@@ -5578,7 +5653,7 @@ export async function generateAIReply(
     getAIScopeDecision(
       message.text,
       profile.businessName,
-      history,
+      conversationHistory,
     );
 
       aiTrace.scope =
@@ -5649,7 +5724,7 @@ export async function generateAIReply(
 
   const orderedHistory =
     buildConversationHistory(
-      history,
+      conversationHistory,
     );
 
   const knowledgeHistory: KnowledgeQueryHistoryItem[] =
@@ -5698,6 +5773,53 @@ const knowledgeQuery = {
     analysisQueryOverride.trim() ||
     resolvedKnowledgeQuery.analysisQuery,
 };
+
+const selectorAnalysisQuery =
+  knowledgeQuery.analysisQuery || message.text;
+const entityContextHandoff = compareKnowledgeQueryEntityContext(
+  resolvedKnowledgeQuery.retrievalQuery,
+  resolvedKnowledgeQuery.analysisQuery || resolvedKnowledgeQuery.originalQuery,
+  knowledgeQuery.retrievalQuery,
+  selectorAnalysisQuery,
+);
+const contextSourceKind = getKnowledgeQueryContextSourceKind(
+  resolvedKnowledgeQuery.contextSource,
+);
+
+console.log("AI KNOWLEDGE SELECTOR HANDOFF", {
+  ...logBase,
+  correlationId: diagnosticCorrelationId ?? null,
+  contextSourceKind,
+  contextualResolutionSucceeded: resolvedKnowledgeQuery.contextUsed,
+  resolvedEntityAvailable:
+    resolvedKnowledgeQuery.contextUsed &&
+    entityContextHandoff.resolvedEntityTermCount > 0,
+  resolvedEntityType:
+    !resolvedKnowledgeQuery.contextUsed ||
+    entityContextHandoff.resolvedEntityTermCount === 0
+    ? null
+    : contextSourceKind?.startsWith("resolved_branch")
+      ? "branch"
+      : "contextual_entity",
+  resolvedRetrievalQueryPresent: Boolean(resolvedKnowledgeQuery.retrievalQuery),
+  resolvedRetrievalQueryLength: resolvedKnowledgeQuery.retrievalQuery.length,
+  resolvedAnalysisQueryPresent: Boolean(resolvedKnowledgeQuery.analysisQuery),
+  resolvedAnalysisQueryLength: resolvedKnowledgeQuery.analysisQuery?.length ?? 0,
+  selectorRetrievalQueryPresent: Boolean(knowledgeQuery.retrievalQuery),
+  selectorRetrievalQueryLength: knowledgeQuery.retrievalQuery.length,
+  selectorAnalysisQueryPresent: Boolean(selectorAnalysisQuery),
+  selectorAnalysisQueryLength: selectorAnalysisQuery.length,
+  resolvedEntityTermCount: resolvedKnowledgeQuery.contextUsed
+    ? entityContextHandoff.resolvedEntityTermCount
+    : 0,
+  selectorEntityTermCount: entityContextHandoff.selectorEntityTermCount,
+  sharedEntityTermCount: resolvedKnowledgeQuery.contextUsed
+    ? entityContextHandoff.sharedEntityTermCount
+    : 0,
+  resolvedEntityPreserved: resolvedKnowledgeQuery.contextUsed
+    ? entityContextHandoff.resolvedEntityPreserved
+    : null,
+});
 
   /*
    * --------------------------------------------------
@@ -5819,8 +5941,12 @@ const aiMessages:
       action:
         businessActionState.action,
 
-      context:
-        businessActionState.context,
+      contextPresent: {
+        service: Boolean(businessActionState.context.service),
+        branch: Boolean(businessActionState.context.branch),
+        date: Boolean(businessActionState.context.date),
+        time: Boolean(businessActionState.context.time),
+      },
 
       readiness:
         businessActionState.readiness,
@@ -5892,12 +6018,107 @@ const highRisk =
    * --------------------------------------------------
    */
 
-  const knowledgeSelection =
+  let knowledgeSelection =
   selectKnowledgeForAnswer(
     knowledgeQuery.retrievalQuery,
     knowledge,
-    knowledgeQuery.analysisQuery || message.text,
+    selectorAnalysisQuery,
+    workerVersionIdentity,
   );
+
+
+  const missingAttributeRecoveryTerms: Record<string, string> = {
+    time: "opening hours operating schedule",
+    price: "price cost fee amount",
+    location: "street address location",
+    map_link: "map link directions URL",
+    contact: "phone contact number email",
+    availability: "availability open slots",
+    service: "services treatments provided",
+    facility: "facilities amenities",
+    staff: "staff doctors team",
+    package: "packages plans",
+    discount: "discounts",
+    promotion: "promotions offers",
+    booking: "booking reservation appointment",
+    medical: "medical treatment information",
+    general: "requested information",
+  };
+  const shouldRecoverMissingAttribute =
+    !highRisk &&
+    knowledgeSelection.selected.length > 0 &&
+    knowledgeSelection.intentCoverage.missing.length === 0 &&
+    knowledgeSelection.attributeCoverage.missing.length > 0 &&
+    Boolean(knowledgeRecoverySearch);
+  let attributeRecoveryAttempted = false;
+  let attributeRecoveryQueryLength = 0;
+  let recoveredCandidateCount = 0;
+
+  if (shouldRecoverMissingAttribute && knowledgeRecoverySearch) {
+    const recoveryTerms = [
+      ...new Set(
+        knowledgeSelection.attributeCoverage.missing.map(
+          ({ attribute }) => missingAttributeRecoveryTerms[attribute] ?? attribute,
+        ),
+      ),
+    ].join(" ");
+    const recoveryQuery = `${knowledgeQuery.retrievalQuery} ${recoveryTerms}`.trim();
+    attributeRecoveryAttempted = true;
+    attributeRecoveryQueryLength = recoveryQuery.length;
+
+    let recoveredCandidates: KnowledgeContextItem[] = [];
+    try {
+      recoveredCandidates = (await knowledgeRecoverySearch(
+        recoveryQuery,
+        knowledgeQuery.retrievalQuery,
+      )).slice(0, MAX_ATTRIBUTE_RECOVERY_CANDIDATES);
+    } catch {
+      // A failed bounded recovery falls back to the already selected evidence.
+    }
+
+    const candidateIdentity = (item: KnowledgeContextItem): string => {
+      const source = item.providerDocumentId?.trim() || item.knowledgeSourceId?.trim() || "";
+      const chunk = item.id?.trim() ||
+        (typeof item.chunkIndex === "number" ? String(item.chunkIndex) : "");
+      return source && chunk
+        ? `${item.sourceType}|${source}|${chunk}`
+        : `${item.sourceType}|${item.title.trim()}|${item.content.trim()}`;
+    };
+    const combinedCandidates = [...knowledge];
+    const seenCandidateIdentities = new Set(combinedCandidates.map(candidateIdentity));
+    let addedCandidateCount = 0;
+    for (const candidate of recoveredCandidates) {
+      const identity = candidateIdentity(candidate);
+      if (!seenCandidateIdentities.has(identity)) {
+        seenCandidateIdentities.add(identity);
+        combinedCandidates.push(candidate);
+        addedCandidateCount += 1;
+      }
+    }
+
+    const initialMissingAttributeCount =
+      knowledgeSelection.attributeCoverage.missing.length;
+    recoveredCandidateCount = recoveredCandidates.length;
+    if (addedCandidateCount > 0) {
+      knowledge = combinedCandidates;
+      knowledgeSelection = selectKnowledgeForAnswer(
+        recoveryQuery,
+        knowledge,
+        selectorAnalysisQuery,
+        workerVersionIdentity,
+      );
+    }
+    console.log("AI KNOWLEDGE ATTRIBUTE RECOVERY", {
+      ...logBase,
+      attempted: true,
+      recoveredCandidateCount: recoveredCandidates.length,
+      addedCandidateCount,
+      missingAttributeCountBefore: initialMissingAttributeCount,
+      missingAttributeCountAfter: knowledgeSelection.attributeCoverage.missing.length,
+      selectedCountAfter: knowledgeSelection.selected.length,
+    });
+  }
+
 
   // Selection is the canonical approved evidence set. Do not discard it
   // based on the response style policy: the policy and selector can classify
@@ -5961,6 +6182,10 @@ const highRisk =
 
       knowledgeAttributeCoverageStatus,
 
+      attributeRecoveryAttempted,
+      attributeRecoveryQueryLength,
+      recoveredCandidateCount,
+
       // Diagnostics only: do not log raw customer messages.
       retrievalQueryLength:
         knowledgeQuery.retrievalQuery.length,
@@ -5973,8 +6198,6 @@ const highRisk =
           .slice(0, 10)
           .map((item, index) => ({
             rank: index + 1,
-
-            title: item.title,
 
             sourceType: item.sourceType,
 
@@ -6014,6 +6237,12 @@ const highRisk =
 
             entityMatch: item.entityMatch,
 
+            entityTermCount: item.entityTermCount,
+
+            entityTitleOverlapCount: item.entityTitleOverlapCount,
+
+            entityContentOverlapCount: item.entityContentOverlapCount,
+
             titleMatch: item.titleMatch,
 
             intentMatch: item.intentMatch,
@@ -6024,11 +6253,17 @@ const highRisk =
             exactPhraseMatch:
               item.exactPhraseMatch,
 
-            matchedTerms:
-              item.matchedTerms.slice(0, 8),
+            matchedTermCount: item.matchedTerms.length,
 
-            matchedFocusPhrases:
-              item.matchedFocusPhrases.slice(0, 5),
+            matchedFocusPhraseCount: item.matchedFocusPhrases.length,
+
+            requestedAttributeSupport:
+              knowledgeSelection.candidateDiagnostics[index]
+                ?.requestedAttributeSupport ?? [],
+
+            eligibilityPaths:
+              knowledgeSelection.candidateDiagnostics[index]
+                ?.eligibilityPaths ?? [],
 
             selected:
               knowledgeSelection.selected.some(
@@ -6134,7 +6369,12 @@ addAITraceStage(
             : null,
 
       businessActionContext:
-        businessActionContext,
+        {
+          servicePresent: Boolean(businessActionContext.service),
+          branchPresent: Boolean(businessActionContext.branch),
+          datePresent: Boolean(businessActionContext.date),
+          timePresent: Boolean(businessActionContext.time),
+        },
 
       businessActionReadiness:
         businessActionReadiness,
@@ -6176,10 +6416,9 @@ addAITraceStage(
         highRisk?.name ??
         null,
 
-      topSource:
-        knowledgeSelection
-          .ranked[0]
-          ?.title ??
+      topSourceKey:
+        knowledgeSelection.ranked[0]?.providerDocumentId?.trim() ||
+        knowledgeSelection.ranked[0]?.knowledgeSourceId?.trim() ||
         null,
 
       selectedSourceKeys:
@@ -6199,8 +6438,13 @@ addAITraceStage(
           (
             item,
           ) => ({
-            title:
-              item.title,
+            sourceType:
+              item.sourceType,
+
+            sourceKey:
+              item.providerDocumentId?.trim() ||
+              item.knowledgeSourceId?.trim() ||
+              null,
 
             score:
               item.score,
@@ -6208,9 +6452,9 @@ addAITraceStage(
             rerankScore:
               item.rerankScore,
 
-            matchedTerms:
-              item.matchedTerms ??
-              [],
+            matchedTermCount:
+              item.matchedTerms?.length ??
+              0,
 
             titleMatch:
               item.titleMatch,
@@ -6222,6 +6466,30 @@ addAITraceStage(
               item.exactPhraseMatch,
           }),
         ),
+
+      eligibleCandidateCount:
+        knowledgeSelection.candidateDiagnostics.filter(
+          (item) => item.decision !== "rejected",
+        ).length,
+
+      rejectedCandidateCount:
+        knowledgeSelection.candidateDiagnostics.filter(
+          (item) => item.decision === "rejected",
+        ).length,
+
+      selectedCandidateCount:
+        groundedKnowledge.length,
+
+      requestedAttributesSupportedBySelectedEvidence:
+        knowledgeAttributeCoverage.missing.length === 0,
+
+      answerabilityDecision: coreAIAnswerability.decision,
+      traceAnswerabilityDecision: aiTrace.answerability?.decision ?? null,
+      selectedCountMatchesTrace:
+        aiTrace.retrieval?.selectedCount === groundedKnowledge.length,
+      selectorAnswerabilityConsistent:
+        aiTrace.answerability?.decision === coreAIAnswerability.decision &&
+        aiTrace.retrieval?.selectedCount === groundedKnowledge.length,
     },
   );
 
@@ -6461,6 +6729,50 @@ addAITraceStage(
 
     let generationFallbackUsed = false;
     let structuredEvidenceContractRejected = false;
+    const generationProviderAttempts: AIProviderAttemptDiagnostic[] = [];
+    const generationDeadlineSignal = AbortSignal.timeout(AI_GENERATION_DEADLINE_MS);
+    const generationStartedAt = performance.now();
+
+    const recordProviderAttempts = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      const attempts = (value as { providerAttempts?: unknown }).providerAttempts;
+      if (!Array.isArray(attempts)) return;
+      for (const item of attempts) {
+        if (!item || typeof item !== "object") continue;
+        const attempt = item as Partial<AIProviderAttemptDiagnostic>;
+        const durationMs = attempt.durationMs;
+        if (
+          typeof attempt.provider === "string" &&
+          typeof durationMs === "number" &&
+          Number.isFinite(durationMs) &&
+          durationMs >= 0 &&
+          (attempt.outcome === "success" || attempt.outcome === "error" || attempt.outcome === "timeout")
+        ) {
+          const safeAttempt: AIProviderAttemptDiagnostic = {
+            provider: attempt.provider,
+            durationMs: Math.round(durationMs),
+            outcome: attempt.outcome,
+          };
+          if (
+            attempt.failureKind === "timeout" ||
+            attempt.failureKind === "type_error" ||
+            attempt.failureKind === "http_response" ||
+            attempt.failureKind === "invalid_response" ||
+            attempt.failureKind === "empty_response" ||
+            attempt.failureKind === "provider_error" ||
+            attempt.failureKind === "unknown"
+          ) {
+            safeAttempt.failureKind = attempt.failureKind;
+          }
+          const httpStatus = attempt.httpStatus;
+          if (typeof httpStatus === "number" && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) {
+            safeAttempt.httpStatus = attempt.httpStatus;
+          }
+          generationProviderAttempts.push(safeAttempt);
+          generationProviders.add(attempt.provider);
+        }
+      }
+    };
 
     const generate = async (
       correction?: string,
@@ -6494,6 +6806,7 @@ addAITraceStage(
               : ("response" as const),
               maxTokens: requestedOutputTokenLimit,
               temperature,
+              signal: generationDeadlineSignal,
             };
 
 
@@ -6501,24 +6814,29 @@ addAITraceStage(
 
           if (forceFallback && ai.chatFallback) {
             generationFallbackUsed = true;
-            const chatFallback = ai.chatFallback;
-            response = await requestLLM(() => chatFallback(request));
+            response = await requestLLM(() => ai.chatFallback!(request));
           } else if (
             request.task === "structured" &&
             ai.chatFallback
           ) {
             try {
               response = await requestLLM(() => ai.chat(request));
-            } catch {
+            } catch (error: unknown) {
+              recordProviderAttempts(error);
               // Recover structured generation when the primary provider
               // throws. Do not expose internal provider errors to customers.
               generationFallbackUsed = true;
-              const chatFallback = ai.chatFallback;
-              response = await requestLLM(() => chatFallback(request));
+              response = await requestLLM(() => ai.chatFallback!(request));
             }
           } else {
             response = await requestLLM(() => ai.chat(request));
           }
+
+        recordProviderAttempts(response);
+        generationFallbackUsed ||= response.fallbackUsed === true;
+        for (const attempt of response.providerAttempts ?? []) {
+          generationProviders.add(attempt.provider);
+        }
 
 
         if (
@@ -6596,6 +6914,17 @@ addAITraceStage(
 
           fallbackUsed:
             generationFallbackUsed,
+
+          providerAttempts:
+            [...generationProviderAttempts],
+
+          durationMs:
+            Math.round(performance.now() - generationStartedAt),
+
+          outcome:
+            response.truncated === true || structuredEvidenceContractRejected
+              ? "incomplete"
+              : "success",
         };
 
         const generationResultValid =
@@ -6639,6 +6968,8 @@ addAITraceStage(
         error:
           unknown
       ) {
+
+        recordProviderAttempts(error);
 
         addAITraceStage(
           aiTrace,
@@ -6705,6 +7036,14 @@ addAITraceStage(
           ? Math.max(maxTokens, STRUCTURED_ANSWER_MAX_TOKENS)
           : maxTokens,
 
+        providerAttempts: [...generationProviderAttempts],
+
+        fallbackUsed: generationFallbackUsed,
+
+        generationDurationMs: Math.round(performance.now() - generationStartedAt),
+
+        generationDeadlineMs: AI_GENERATION_DEADLINE_MS,
+
         reason: response.truncated === true
           ? "truncated"
           : structuredEvidenceContractRejected
@@ -6751,6 +7090,15 @@ addAITraceStage(
 
       fallbackUsed:
         true,
+
+      providerAttempts:
+        [...generationProviderAttempts],
+
+      durationMs:
+        Math.round(performance.now() - generationStartedAt),
+
+      outcome:
+        "error",
     };
 
     return handoff(
@@ -7314,6 +7662,7 @@ export async function rewriteKnowledgeQuery(
   originalQuery: string,
   contextualQuery: string,
   diagnosticCorrelationId?: string,
+  workerVersionMetadata?: WorkerVersionMetadataBinding | null,
 ): Promise<KnowledgeQueryRewriteResult> {
   const fallbackQuery =
     contextualQuery.trim() ||
@@ -7362,7 +7711,12 @@ export async function rewriteKnowledgeQuery(
       ],
     });
     const response = diagnosticCorrelationId
-      ? await traceInboundOperation("llm_request", diagnosticCorrelationId, request)
+      ? await traceInboundOperation(
+        "llm_request",
+        diagnosticCorrelationId,
+        request,
+        workerVersionMetadata,
+      )
       : await request();
 
     const rawText =
@@ -7439,6 +7793,7 @@ export async function rewriteKnowledgeQuery(
       "AI knowledge query rewrite failed; using contextual query.",
       {
         errorName: getSafeAIErrorName(error),
+        providerAttempts: getSafeProviderAttempts(error),
       },
     );
 

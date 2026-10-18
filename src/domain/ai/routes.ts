@@ -6,6 +6,7 @@ import type {
   AppBindings,
   AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   getAIProfile,
@@ -28,11 +29,13 @@ const aiRoutes =
  */
 aiRoutes.get(
   "/profile",
+  requirePermission("ai:read"),
   getAIProfile,
 );
 
 aiRoutes.put(
   "/profile",
+  requirePermission("ai:write"),
   updateAIProfile,
 );
 

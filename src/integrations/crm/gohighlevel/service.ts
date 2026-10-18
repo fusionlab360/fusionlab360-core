@@ -45,7 +45,7 @@ const pipelineId =
       });
 
       metadata = await resolveMetadata(
-        crm.credentials.apiKey,
+        context,
         locationId,
       );
 

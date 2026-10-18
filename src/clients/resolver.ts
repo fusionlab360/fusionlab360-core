@@ -1,5 +1,5 @@
 
-import { authenticateClient } from "./service";
+import { authenticateClient, resolveActiveClientById } from "./service";
 import type { APIClient } from "./types";
 
 export async function resolveClient(
@@ -10,4 +10,11 @@ export async function resolveClient(
     db,
     apiKeyHash,
   );
+}
+
+export async function resolveClientById(
+  db: D1Database,
+  clientId: string,
+): Promise<APIClient> {
+  return resolveActiveClientById(db, clientId);
 }

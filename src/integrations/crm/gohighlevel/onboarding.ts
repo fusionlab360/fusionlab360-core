@@ -27,50 +27,40 @@ import {
   discoverGHLEventConfiguration,
 } from "./events/discovery";
 
+import type { RequestContext } from "../../../context";
+
 
 export const goHighLevelOnboarding: CRMOnboarding = {
 
   async preview(
-    apiKey: string,
-    locationId: string,
+    context: RequestContext,
   ): Promise<CRMPreviewResult> {
+    const locationId =
+      context.tenant.integrations.crm.credentials.locationId.trim();
 
-    const metadata =
-      await resolveMetadata(
-        apiKey,
-        locationId,
-      );
-
+    const metadata = await resolveMetadata(
+      context,
+      locationId,
+    );
 
     return {
-      provider:
-        "gohighlevel",
-
+      provider: "gohighlevel",
       locationId,
-
-      pipelines:
-        metadata.pipelines,
-
-      stages:
-        metadata.stages.length,
-
-      customFields:
-        metadata.customFields.length,
+      pipelines: metadata.pipelines,
+      stages: metadata.stages.length,
+      customFields: metadata.customFields.length,
     };
   },
 
 
   async configure(
-    apiKey: string,
-    locationId: string,
-    pipelineId: string,
-    providerOptions?:
-      Record<
-        string,
-        unknown
-      >,
-  ): Promise<IntegrationConfiguration> {
+  context: RequestContext,
+  pipelineId: string,
+  providerOptions?: Record<string, unknown>,
+): Promise<IntegrationConfiguration> {
 
+   const locationId =
+    context.tenant.integrations.crm.credentials.locationId.trim();
 
     /*
      * --------------------------------------------------
@@ -81,9 +71,8 @@ export const goHighLevelOnboarding: CRMOnboarding = {
      * No tenant-specific values are hardcoded.
      */
 
-    const metadata =
-      await resolveMetadata(
-        apiKey,
+     const metadata = await resolveMetadata(
+        context,
         locationId,
       );
 
@@ -109,7 +98,7 @@ export const goHighLevelOnboarding: CRMOnboarding = {
 
     const locationResponse =
       await getGHLLLocation(
-        apiKey,
+        context,
         locationId,
       );
 
@@ -137,7 +126,7 @@ export const goHighLevelOnboarding: CRMOnboarding = {
 
     const usersResponse =
       await searchGHLUsers(
-        apiKey,
+        context,
         companyId,
         locationId,
       );
@@ -249,7 +238,7 @@ export const goHighLevelOnboarding: CRMOnboarding = {
 
     const eventConfiguration =
       await discoverGHLEventConfiguration(
-        apiKey,
+        context,
         locationId,
         eventSchemaKey,
         eventDateFieldKey,

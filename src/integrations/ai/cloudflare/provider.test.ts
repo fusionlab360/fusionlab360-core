@@ -89,6 +89,20 @@ test(
   },
 );
 
+test("passes an abort signal to Workers AI for bounded provider execution", async () => {
+  let receivedSignal: AbortSignal | undefined;
+  const ai = {
+    run: async (_model: string, _input: unknown, options?: { signal?: AbortSignal }) => {
+      receivedSignal = options?.signal;
+      return { response: "A grounded test response." };
+    },
+  } as unknown as Ai;
+  const provider = createCloudflareAIProvider(ai);
+  await provider.chat({ ...request, signal: AbortSignal.timeout(60_000) });
+  assert.ok(receivedSignal instanceof AbortSignal);
+  assert.equal(receivedSignal.aborted, false);
+});
+
 test(
   "returns a truncated response when the provider exhausts its output budget",
   async () => {

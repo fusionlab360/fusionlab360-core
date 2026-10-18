@@ -4,6 +4,16 @@ import type { APIClient } from "./types";
 export function mapClient(
   record: ClientRecord,
 ): APIClient {
+ const parsedPermissions: unknown = JSON.parse(record.permissions);
+ if (
+  !Array.isArray(parsedPermissions) ||
+  parsedPermissions.some(
+   (permission) => typeof permission !== "string" || !permission.trim(),
+  )
+ ) {
+  throw new Error("Invalid API client permissions.");
+ }
+
  return {
   id: record.id,
   name: record.name,
@@ -13,6 +23,6 @@ export function mapClient(
   apiKey: "",
 
   status: record.status as APIClient["status"],
-  permissions: JSON.parse(record.permissions),
+  permissions: parsedPermissions,
 };
 }

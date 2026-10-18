@@ -20,9 +20,6 @@ export class LoggerReservationHandler
       {
         type: event.type,
         tenantId: event.tenantId,
-        reservationId: event.reservationId,
-        contactId: event.contactId,
-        opportunityId: event.opportunityId,
       },
     );
 

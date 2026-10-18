@@ -4,6 +4,7 @@ import type {
   AppBindings,
   AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   testGetConversationController,
@@ -18,11 +19,13 @@ const messagingTestRoutes =
 
 messagingTestRoutes.get(
   "/conversations/:conversationId/messages",
+  requirePermission("messaging:test"),
   testGetConversationController,
 );
 
 messagingTestRoutes.post(
   "/conversations/:conversationId/reply",
+  requirePermission("messaging:test"),
   testSendMessageController,
 );
 

@@ -1,3 +1,4 @@
+
 import type { Context } from "hono";
 
 import type {
@@ -137,11 +138,17 @@ function parseBoundedInteger(
   return integer;
 }
 
-export async function evaluateRetrievalController(
+type RetrievalEvaluationControllerDependencies = {
+  createRetriever?: typeof createTenantKnowledgeRetriever;
+  runEvaluation?: typeof runRetrievalEvaluation;
+};
+
+async function evaluateRetrievalControllerImpl(
   c: Context<{
     Bindings: AppBindings;
     Variables: AppVariables;
   }>,
+  dependencies: RetrievalEvaluationControllerDependencies = {},
 ) {
   let body: unknown;
 
@@ -167,8 +174,7 @@ export async function evaluateRetrievalController(
     );
   }
 
-  const request =
-    body as RetrievalEvaluationRequest;
+  const request = body as RetrievalEvaluationRequest;
 
   const sourceKeyById = parseSourceKeyMap(
     request.sourceKeyById,
@@ -230,18 +236,57 @@ export async function evaluateRetrievalController(
       (testCase) => caseIds.includes(testCase.id),
     );
 
-  const requestContext = c.get("context");
-
-  const retriever = createTenantKnowledgeRetriever({
-    ai: c.env.AI,
-    vectorize: c.env.VECTORIZE_V2,
-    tenantId: requestContext.tenant.id,
-    db: c.env.DB,
-    topK: retrievalTopK,
-  });
+  let tenantId: string | undefined;
+  let evaluationStage = "validate_request_context";
 
   try {
-    const evaluation = await runRetrievalEvaluation({
+    const requestContext = c.get("context");
+
+    tenantId = requestContext?.tenant?.id;
+
+    if (
+      typeof tenantId !== "string" ||
+      !tenantId.trim()
+    ) {
+      console.error(
+        "Knowledge retrieval evaluation failed.",
+        {
+          stage: evaluationStage,
+          errorName: "MissingRequestContext",
+        },
+      );
+
+      return c.json(
+        {
+          success: false,
+          message:
+            "Authenticated tenant context is unavailable.",
+        },
+        500,
+      );
+    }
+
+    evaluationStage = "initialize_retriever";
+
+    const createRetriever =
+      dependencies.createRetriever ??
+      createTenantKnowledgeRetriever;
+
+    const retriever = createRetriever({
+      ai: c.env.AI,
+      vectorize: c.env.VECTORIZE_V2,
+      tenantId,
+      db: c.env.DB,
+      topK: retrievalTopK,
+    });
+
+    evaluationStage = "run_evaluation";
+
+    const runEvaluation =
+      dependencies.runEvaluation ??
+      runRetrievalEvaluation;
+
+    const evaluation = await runEvaluation({
       retriever,
       sourceKeyById,
       cases: selectedCases,
@@ -258,6 +303,7 @@ export async function evaluateRetrievalController(
         : "diagnostics_only_no_verified_cases",
 
       casesRun: evaluation.cases.length,
+
       verifiedCasesEvaluated:
         evaluation.summary?.verifiedCasesEvaluated ?? 0,
 
@@ -269,7 +315,8 @@ export async function evaluateRetrievalController(
     console.error(
       "Knowledge retrieval evaluation failed.",
       {
-        tenantId: requestContext.tenant.id,
+        tenantId: tenantId ?? "unknown",
+        stage: evaluationStage,
         errorName:
           error instanceof Error
             ? error.name
@@ -287,3 +334,17 @@ export async function evaluateRetrievalController(
     );
   }
 }
+
+export function createEvaluateRetrievalController(
+  dependencies: RetrievalEvaluationControllerDependencies = {},
+) {
+  return (
+    c: Context<{
+      Bindings: AppBindings;
+      Variables: AppVariables;
+    }>,
+  ) => evaluateRetrievalControllerImpl(c, dependencies);
+}
+
+export const evaluateRetrievalController =
+  createEvaluateRetrievalController();

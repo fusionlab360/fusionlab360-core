@@ -1,19 +1,19 @@
 import { buildInsertTenantSql } from "../sql/insert-tenant";
 import { buildInsertIntegrationSql } from "../sql/insert-integration";
-import { buildInsertCredentialsSql } from "../sql/insert-credentials";
+import {
+  buildInsertPendingOAuthCredentialSql,
+} from "../sql/insert-credentials";
 
 import { generateId } from "../utils/id";
-
 import { createClient } from "./client-service";
 
 export interface CreateTenantInput {
   tenantId: string;
   tenantName: string;
-
   provider: string;
-
-  apiKey: string;
+  companyId: string;
   locationId: string;
+  permissions: string[];
 }
 
 export interface CreateTenantResult {
@@ -24,46 +24,59 @@ export interface CreateTenantResult {
 export async function createTenant(
   input: CreateTenantInput,
 ): Promise<CreateTenantResult> {
+  const requiredFields = [
+    ["Tenant ID", input.tenantId],
+    ["Tenant name", input.tenantName],
+    ["Provider", input.provider],
+    ["GHL Company ID", input.companyId],
+    ["GHL Location ID", input.locationId],
+  ] as const;
 
-  console.log("Creating tenant...");
+  const missing = requiredFields.find(
+    ([, value]) => !value.trim(),
+  );
+
+  if (missing) {
+    throw new Error(`${missing[0]} is required.`);
+  }
+
+  if (input.provider !== "gohighlevel") {
+    throw new Error(
+      "OAuth-first tenant creation currently supports GoHighLevel only.",
+    );
+  }
 
   const tenantSql = buildInsertTenantSql({
     id: input.tenantId,
     name: input.tenantName,
+    status: "inactive",
   });
 
   const integrationId = generateId();
 
-  console.log(
-    "Creating integration:",
-    integrationId,
-  );
-
-  const integrationSql =
-    buildInsertIntegrationSql({
-      id: integrationId,
-      tenantId: input.tenantId,
-      provider: input.provider,
-    });
-
-  const credentialsSql =
-    buildInsertCredentialsSql({
-      tenantId: input.tenantId,
-      provider: input.provider,
-      apiKey: input.apiKey,
-      locationId: input.locationId,
-    });
-
-  const clientId = `${input.tenantId}-default`;
-
-const client =
-  await createClient({
+  const integrationSql = buildInsertIntegrationSql({
+    id: integrationId,
     tenantId: input.tenantId,
-    clientId,
-    clientName: "Default API Client",
+    provider: input.provider,
+    enabled: false,
   });
 
-  const sqlBatch = `
+  const credentialsSql = buildInsertPendingOAuthCredentialSql({
+    tenantId: input.tenantId,
+    provider: input.provider,
+    companyId: input.companyId,
+    locationId: input.locationId,
+  });
+
+  const client = await createClient({
+    tenantId: input.tenantId,
+    clientId: `${input.tenantId}-default`,
+    clientName: "Default API Client",
+    permissions: input.permissions,
+  });
+
+  return {
+    sql: `
 ${tenantSql}
 
 ${integrationSql}
@@ -71,10 +84,7 @@ ${integrationSql}
 ${credentialsSql}
 
 ${client.sql}
-`;
-
-  return {
-    sql: sqlBatch,
+`,
     apiKey: client.apiKey,
   };
 }

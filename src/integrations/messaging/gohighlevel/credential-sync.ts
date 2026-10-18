@@ -3,6 +3,14 @@ import {
 } from "../../../persistence/repositories/credential-repository";
 
 import {
+  IntegrationRepository,
+} from "../../../persistence/repositories/integration-repository";
+
+import {
+  TenantRepository,
+} from "../../../persistence/repositories/tenant-repository";
+
+import {
   exchangeGHLCompanyTokenForLocationToken,
   getGHLProviderErrorDiagnostics,
 } from "./oauth";
@@ -12,6 +20,55 @@ import {
   type GHLCompanyOAuthRuntimeEnvironment,
 } from "./company-oauth-runtime";
 
+/** Complete the local activation steps after a location token is persisted. */
+export async function completePendingGHLLocationOnboarding(
+  db: D1Database,
+  tenantId: string,
+  companyId: string,
+  locationId: string,
+): Promise<void> {
+  const credentialRepository = new CredentialRepository(db);
+  const integrationRepository = new IntegrationRepository(db);
+  const tenantRepository = new TenantRepository(db);
+
+  await credentialRepository.assertLocationOwnership(tenantId, "gohighlevel", locationId);
+
+  const credentialConnected =
+    await credentialRepository.markPendingOAuthCredentialConnected(
+      tenantId,
+      "gohighlevel",
+      locationId,
+      companyId,
+    );
+
+  if (!credentialConnected) {
+    throw new Error("The matching OAuth credential could not be finalized.");
+  }
+
+  const integrationEnabled =
+    await integrationRepository.enablePendingOAuthIntegration(
+      tenantId,
+      "gohighlevel",
+      locationId,
+      companyId,
+    );
+
+  if (!integrationEnabled) {
+    throw new Error("The matching OAuth integration could not be enabled.");
+  }
+
+  const tenantActivated =
+    await tenantRepository.activatePendingOAuthTenant(
+      tenantId,
+      "gohighlevel",
+      locationId,
+      companyId,
+    );
+
+  if (!tenantActivated) {
+    throw new Error("The matching OAuth tenant could not be activated.");
+  }
+}
 
 export async function syncGHLLocationCredential(
   db:
@@ -32,6 +89,10 @@ export async function syncGHLLocationCredential(
     planId?: string;
     userId?: string;
   },
+  options?: {
+    expectedTenantId?: string;
+    companyAccessToken?: string;
+  },
 ): Promise<{
   tenantId: string;
 
@@ -47,6 +108,14 @@ export async function syncGHLLocationCredential(
 
   expiresIn:
     number | null;
+
+  success: boolean;
+
+  credentialSyncStatus:
+    | "stored"
+    | "skipped_legacy_pit";
+
+  error?: "legacy_pit_preserved";
 }> {
 
   const normalizedCompanyId =
@@ -106,6 +175,63 @@ export async function syncGHLLocationCredential(
     );
   }
 
+  if (
+    options?.expectedTenantId &&
+    tenantId !== options.expectedTenantId
+  ) {
+    throw new Error(
+      "The OAuth Location no longer maps to the tenant that initiated authorization.",
+    );
+  }
+
+
+  const existingCredential =
+    await credentialRepository.findByTenantAndProvider(
+      tenantId,
+      "gohighlevel",
+    );
+
+    let existingMetadata: Record<string, unknown> | null = null;
+
+  try {
+    existingMetadata = existingCredential?.metadata
+      ? JSON.parse(existingCredential.metadata)
+      : null;
+  } catch {
+    existingMetadata = null;
+  }
+
+  const isPendingOAuth =
+    existingCredential?.authType === "oauth2" &&
+    existingMetadata?.connectionStatus === "pending_oauth";
+
+  if (isPendingOAuth) {
+    const pendingCompanyId = existingMetadata?.companyId;
+    const pendingLocationId = existingMetadata?.locationId;
+
+    if (
+      pendingCompanyId !== normalizedCompanyId ||
+      pendingLocationId !== normalizedLocationId
+    ) {
+      throw new Error(
+        "OAuth callback does not match the pending tenant Company ID and Location ID.",
+      );
+    }
+  }
+
+  if (existingCredential?.authType === "api_key") {
+    return {
+      tenantId,
+      companyId: normalizedCompanyId,
+      locationId: normalizedLocationId,
+      scope: null,
+      versionId: null,
+      expiresIn: null,
+      success: false,
+      credentialSyncStatus: "skipped_legacy_pit",
+      error: "legacy_pit_preserved",
+    };
+  }
 
   /*
    * --------------------------------------------------
@@ -121,12 +247,20 @@ export async function syncGHLLocationCredential(
    * - persistence
    */
 
-  const companyAccessToken =
+  const suppliedCompanyAccessToken =
+    options?.companyAccessToken?.trim();
+
+  if (
+    options?.companyAccessToken !== undefined &&
+    !suppliedCompanyAccessToken
+  ) {
+    throw new Error("HighLevel Company access token is required.");
+  }
+
+  const companyAccessToken = suppliedCompanyAccessToken ??
     await resolveGHLCompanyOAuthToken(
       db,
-
       env,
-
       normalizedCompanyId,
     );
 
@@ -216,6 +350,11 @@ export async function syncGHLLocationCredential(
         locationToken.planId ??
         payloadMetadata?.planId ??
         null,
+
+      connectionStatus:
+        isPendingOAuth
+          ? "pending_oauth"
+          : "connected",
     });
 
 
@@ -228,47 +367,58 @@ export async function syncGHLLocationCredential(
    * credential from being overwritten.
    */
 
-  await credentialRepository
-    .upsertOAuthCredential(
+    const credentialWrite =
+    await credentialRepository.upsertOAuthCredential(
       tenantId,
-
       "gohighlevel",
-
       normalizedLocationId,
-
       locationToken.access_token,
-
-      locationToken.refresh_token ??
-        null,
-
+      locationToken.refresh_token ?? null,
       metadata,
-
       accessTokenExpiresAt,
     );
 
+  if (credentialWrite.status === "skipped_legacy_pit") {
+    return {
+      tenantId,
+      companyId: normalizedCompanyId,
+      locationId: normalizedLocationId,
+      scope: null,
+      versionId: null,
+      expiresIn: null,
+      success: false,
+      credentialSyncStatus: "skipped_legacy_pit",
+      error: "legacy_pit_preserved",
+    };
+  }
+
+    if (isPendingOAuth) {
+    await completePendingGHLLocationOnboarding(
+      db,
+      tenantId,
+      normalizedCompanyId,
+      normalizedLocationId,
+    );
+  }
 
   return {
     tenantId,
-
-    companyId:
-      normalizedCompanyId,
-
-    locationId:
-      normalizedLocationId,
-
-    scope:
-      locationToken.scope ??
-      null,
-
+    companyId: normalizedCompanyId,
+    locationId: normalizedLocationId,
+    scope: locationToken.scope ?? null,
     versionId:
       locationToken.versionId ??
+      payloadMetadata?.versionId ??
       null,
-
     expiresIn:
-      locationToken.expires_in ??
-      null,
+      typeof locationToken.expires_in === "number"
+        ? locationToken.expires_in
+        : null,
+    success: true,
+    credentialSyncStatus: "stored",
   };
 }
+
 
 
 /**
@@ -325,72 +475,55 @@ export async function syncGHLKnownLocationCredentials(
       );
 
 
-  const results:
-    Array<{
-      locationId:
-        string;
-
-      success:
-        boolean;
-
-      error?:
-        string;
-    }> = [];
+    const results: Array<{
+    locationId: string;
+    success: boolean;
+    status:
+      | "stored"
+      | "skipped_legacy_pit"
+      | "failed";
+    error?: string;
+  }> = [];
 
 
   for (
     const location of locations
   ) {
 
-    try {
-
-      await syncGHLLocationCredential(
+        try {
+      const syncResult = await syncGHLLocationCredential(
         db,
-
         env,
-
         normalizedCompanyId,
-
         location.locationId,
-
         payloadMetadata,
       );
 
-
       results.push({
-        locationId:
-          location.locationId,
-
-        success:
-          true,
+        locationId: location.locationId,
+        success: syncResult.success,
+        status:
+          syncResult.credentialSyncStatus === "stored"
+            ? "stored"
+            : "skipped_legacy_pit",
+        ...(syncResult.error
+          ? { error: syncResult.error }
+          : {}),
       });
-
-    } catch (
-      error: unknown
-    ) {
-
+    } catch (error: unknown) {
       console.error(
         "GHL location credential refresh failed.",
-
         {
-          companyId:
-            normalizedCompanyId,
-
-          locationId:
-            location.locationId,
-
+          companyId: normalizedCompanyId,
+          locationId: location.locationId,
           ...getGHLProviderErrorDiagnostics(error),
         },
       );
 
-
       results.push({
-        locationId:
-          location.locationId,
-
-        success:
-          false,
-
+        locationId: location.locationId,
+        success: false,
+        status: "failed",
         error:
           getGHLProviderErrorDiagnostics(error).classification,
       });
@@ -398,13 +531,18 @@ export async function syncGHLKnownLocationCredentials(
   }
 
 
-  return {
-    companyId:
-      normalizedCompanyId,
+    const status =
+    locations.length === 0
+      ? "no_locations"
+      : results.every((result) => result.success)
+        ? "complete"
+        : "incomplete";
 
-    locationsFound:
-      locations.length,
-
-    results,
-  };
+    return {
+      companyId: normalizedCompanyId,
+      locationsFound: locations.length,
+      success: status === "complete",
+      status,
+      results,
+    };
 }

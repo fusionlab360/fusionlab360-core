@@ -54,8 +54,14 @@ import {
 
 import {
   resolveKnowledgeQuery,
+  getKnowledgeQueryContextSourceKind,
   type KnowledgeQueryHistoryItem,
 } from "./knowledge-query-context";
+
+import {
+  analyzeKnowledgeQuery,
+  type KnowledgeIntent,
+} from "./knowledge-intelligence";
 
 import {
   calculateAIThinkingDelay,
@@ -82,9 +88,70 @@ import {
   logInboundExecutionPath,
   traceInboundOperation,
 } from "./inbound-diagnostics";
-import type { InboundExecutionPath } from "./inbound-diagnostics";
+
+import type {
+  InboundExecutionPath,
+  InboundProcessingOperation,
+  WorkerVersionMetadataBinding,
+} from "./inbound-diagnostics";
+
+import {
+  compareAIShadowAnswerToLiveReply,
+  runAIKnowledgePipeline,
+} from "./ai-pipeline";
+
+import {
+  isAIPipelineV2TenantAllowed,
+} from "./ai-pipeline-feature-flag";
+
+
+
+import {
+  scheduleAIPipelineShadowIfAllowed,
+} from "./ai-pipeline-feature-flag";
+
+
 export { classifyInboundProcessingError } from "./inbound-diagnostics";
 export type { InboundProcessingErrorClassification } from "./inbound-diagnostics";
+
+const informationalKnowledgeIntents = new Set<KnowledgeIntent>([
+  "services",
+  "price",
+  "discount",
+  "promotion",
+  "facilities",
+  "location",
+  "hours",
+  "staff",
+  "package",
+  "medical",
+  "contact",
+]);
+
+/**
+ * Avoid the booking-intent model call for unambiguous business-information
+ * questions when no booking state is active. Unknown/general and booking-like
+ * messages remain on the existing booking path.
+ */
+export function shouldRunBookingIntentExtraction(input: {
+  message: string;
+  bookingSessionActive: boolean;
+  confirmedBookingActionRequested: boolean;
+  confirmedBookingActionPending: boolean;
+}): boolean {
+  if (
+    input.bookingSessionActive ||
+    input.confirmedBookingActionRequested ||
+    input.confirmedBookingActionPending
+  ) {
+    return true;
+  }
+
+  const intents = analyzeKnowledgeQuery(input.message).intents;
+  return !intents.length || !intents.every((intent) =>
+    informationalKnowledgeIntents.has(intent),
+  );
+}
 
 export const runInboundProcessingOperation = traceInboundOperation;
 const getErrorClassification = classifyInboundProcessingError;
@@ -513,7 +580,9 @@ export async function processGHLInboundMessage(
   ) => MessagingProvider,
 
   executionPath: InboundExecutionPath = "synchronous_webhook",
-
+  workerVersionMetadata?: WorkerVersionMetadataBinding | null,
+  aiPipelineV2TenantAllowlist?: string,
+  scheduleBackgroundTask?: (task: Promise<unknown>) => void,
 ): Promise<void> {
 
   /*
@@ -535,7 +604,19 @@ export async function processGHLInboundMessage(
   const correlationId = await createInboundCorrelationId(
     message.providerMessageId,
   );
-  logInboundExecutionPath(executionPath, correlationId);
+  const runInboundProcessingOperation = <T>(
+    operation: InboundProcessingOperation,
+    operationCorrelationId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => traceInboundOperation(
+    operation,
+    operationCorrelationId,
+    run,
+    workerVersionMetadata,
+  );
+  if (executionPath !== "queue_consumer") {
+    logInboundExecutionPath(executionPath, correlationId, workerVersionMetadata);
+  }
 
   const eventResult =
     await runInboundProcessingOperation("event_accept", correlationId, () => eventService.accept({
@@ -671,6 +752,9 @@ try {
       message.conversationId,
       20,
     ));
+  history = history.filter(
+    (item) => item.conversationId === message.conversationId,
+  );
 
   /*
    * --------------------------------------------------------
@@ -782,10 +866,10 @@ try {
     );
 
   const profile =
-    await profileService.getOrCreate(
+    await runInboundProcessingOperation("conversation_profile", correlationId, () => profileService.getOrCreate(
       context.tenant.id,
       context.tenant.name,
-    );
+    ));
 
   /*
    * --------------------------------------------------------
@@ -825,11 +909,11 @@ try {
   ) {
 
     const existingSession =
-      await sessionRepository.find(
+      await runInboundProcessingOperation("session_decision", correlationId, () => sessionRepository.find(
         context.tenant.id,
         message.provider,
         message.conversationId,
-      );
+      ));
 
     await sessionRepository.upsert(
       context.tenant.id,
@@ -870,12 +954,15 @@ try {
   let tenantAIChatEnabled = false;
 
     try {
-      tenantAIChatEnabled =
-        await isTenantFeatureEnabled(
+      tenantAIChatEnabled = await runInboundProcessingOperation(
+        "ai_chat_feature",
+        correlationId,
+        () => isTenantFeatureEnabled(
           db,
           context.tenant.id,
           "ai_chat",
-        );
+        ),
+      );
     } catch (error: unknown) {
       console.error(
         "Failed to load tenant AI Chat setting.",
@@ -888,7 +975,7 @@ try {
     }
 
   const decision =
-    await sessionService.handleInbound({
+    await runInboundProcessingOperation("session_decision", correlationId, () => sessionService.handleInbound({
 
       tenantId:
         context.tenant.id,
@@ -908,7 +995,7 @@ try {
       previousActivityAt,
 
       profile,
-    });
+    }));
 
   console.log(
     "AI SESSION DECISION",
@@ -951,12 +1038,15 @@ try {
 
     if (bookingEnabled) {
       try {
-        tenantBookingEnabled =
-          await isTenantFeatureEnabled(
+        tenantBookingEnabled = await runInboundProcessingOperation(
+          "booking_state",
+          correlationId,
+          () => isTenantFeatureEnabled(
             db,
             context.tenant.id,
             "ai_booking",
-          );
+          ),
+        );
       } catch (error: unknown) {
         console.error(
           "Failed to load tenant AI Booking setting.",
@@ -979,11 +1069,11 @@ try {
     const activeBookingSession =
       tenantBookingEnabled &&
       bookingSessionRepository
-        ? await bookingSessionRepository.find(
+        ? await runInboundProcessingOperation("booking_state", correlationId, () => bookingSessionRepository.find(
             context.tenant.id,
             message.provider,
             message.conversationId,
-          )
+          ))
         : null;
 
 
@@ -1260,6 +1350,9 @@ try {
         20,
       ),
     );
+  const conversationHistory = latestHistory.filter(
+    (item) => item.conversationId === message.conversationId,
+  );
 
   console.log("AI POST-THINKING HISTORY FETCH COMPLETE", {
     tenantId: context.tenant.id,
@@ -1278,7 +1371,7 @@ try {
   const newerMessageCheckStartedAt = performance.now();
   const newerInboundMessage =
     hasNewerInboundMessage(
-      latestHistory,
+      conversationHistory,
       message.providerMessageId,
       message.occurredAt,
     );
@@ -1319,7 +1412,7 @@ try {
    */
 
   history =
-    latestHistory;
+    conversationHistory;
 
   const retrievalHistory: KnowledgeQueryHistoryItem[] = history
     .filter(
@@ -1381,14 +1474,20 @@ try {
 
   if (
       tenantBookingEnabled &&
-      !clarificationResolved
+      !clarificationResolved &&
+      shouldRunBookingIntentExtraction({
+        message: message.text,
+        bookingSessionActive,
+        confirmedBookingActionRequested,
+        confirmedBookingActionPending,
+      })
     ) {
       try {
         if (leaseLost) {
           throw new Error("Inbound event processing lease was lost.");
         }
         const bookingResult =
-          await processAIBooking({
+          await runInboundProcessingOperation("booking_intent", correlationId, () => processAIBooking({
           db,
 
           context,
@@ -1413,7 +1512,7 @@ try {
             resolveBookingTimezone(
               context,
             ),
-        });
+        }));
 
 
 
@@ -1804,6 +1903,7 @@ try {
             message.text,
             knowledgeQuery.retrievalQuery,
             correlationId,
+            workerVersionMetadata,
           ),
     );
 
@@ -1856,7 +1956,9 @@ try {
           knowledgeQuery.contextUsed,
 
         contextSource:
-          knowledgeQuery.contextSource,
+          getKnowledgeQueryContextSourceKind(
+            knowledgeQuery.contextSource,
+          ),
 
       },
     );
@@ -2048,6 +2150,13 @@ const reply =
     isHumanTakeover,
     knowledgeQuery.analysisQuery,
     correlationId,
+    workerVersionMetadata,
+    async (recoveryQuery, contextualQuery) =>
+      runInboundProcessingOperation(
+        "knowledge_retrieval",
+        correlationId,
+        () => knowledgeRetriever.search(recoveryQuery, contextualQuery),
+      ),
   ));
 
   /*
@@ -2059,6 +2168,100 @@ const reply =
   const normalizedReply = reply?.trim();
   if (!normalizedReply) return;
 
+  /*
+ * --------------------------------------------------------
+ * AI Pipeline V2 shadow evaluation
+ * --------------------------------------------------------
+ *
+ * Runs only for explicitly allowlisted tenants and only
+ * when a background-task scheduler is available.
+ *
+ * The candidate answer is diagnostic only. It does not
+ * replace the existing reply or send a customer message.
+ */
+
+try {
+  scheduleAIPipelineShadowIfAllowed({
+    tenantId: context.tenant.id,
+    allowlist: aiPipelineV2TenantAllowlist,
+    scheduleBackgroundTask,
+
+    run: async (): Promise<void> => {
+      try {
+        if (await isHumanTakeover()) {
+          console.info("AI_PIPELINE_V2_SHADOW_SKIPPED", {
+            tenantId: context.tenant.id,
+            correlationId,
+            reason: "human_takeover",
+          });
+          return;
+        }
+
+        const shadowResult = await runAIKnowledgePipeline({
+          ai,
+          customerMessage: message.text,
+          history: retrievalHistory,
+          retriever: knowledgeRetriever,
+          tenantAIInstructions,
+        });
+
+        const comparison =
+          compareAIShadowAnswerToLiveReply(
+            normalizedReply,
+            shadowResult,
+          );
+
+        // Never log customer or candidate answer text.
+        console.info("AI_PIPELINE_V2_SHADOW_RESULT", {
+          tenantId: context.tenant.id,
+          correlationId,
+          status: shadowResult.status,
+
+          answerStatus:
+            shadowResult.status === "answered"
+              ? shadowResult.answerStatus
+              : null,
+
+          comparisonReason:
+            comparison.comparable
+              ? null
+              : comparison.reason,
+
+          comparable: comparison.comparable,
+          normalizedExactMatch:
+            comparison.normalizedExactMatch,
+          answerLength:
+            shadowResult.status === "answered"
+              ? shadowResult.answer.length
+              : 0,
+          evidenceCount:
+            "evidenceIds" in shadowResult
+              ? shadowResult.evidenceIds.length
+              : 0,
+          attempts:
+            "attempts" in shadowResult
+              ? shadowResult.attempts
+              : 0,
+          fallbackUsed:
+            "fallbackUsed" in shadowResult
+              ? shadowResult.fallbackUsed
+              : false,
+        });
+      } catch {
+        console.warn("AI_PIPELINE_V2_SHADOW_FAILED", {
+          tenantId: context.tenant.id,
+          correlationId,
+          reason: "shadow_evaluation_failed",
+        });
+      }
+    },
+  });
+} catch {
+  console.warn("AI_PIPELINE_V2_SHADOW_SCHEDULING_FAILED", {
+    tenantId: context.tenant.id,
+    correlationId,
+  });
+}
   /*
    * --------------------------------------------------------
    * 13. Natural AI response delay

@@ -43,6 +43,18 @@ import {
 } from "../../persistence/repositories/ai-booking-session-repository";
 
 
+import {
+  isTenantFeatureEnabled,
+} from "../features/tenant-feature-service";
+
+import type {
+  TenantFeatureKey,
+} from "../features/tenant-feature-service";
+
+import {
+  getConfiguredGHLRentalsBookingPageUrl,
+} from "./rentals-booking-page";
+
 /*
  * --------------------------------------------------
  * Input
@@ -6055,23 +6067,11 @@ console.log(
     conversationId:
       input.conversationId,
 
-    message:
-      input.currentMessage,
-
     action:
       intent.action,
 
     bookingType:
       intent.bookingType,
-
-    offeringQuery:
-      intent.offeringQuery,
-
-    date:
-      intent.date,
-
-    time:
-      intent.time,
 
     sessionStatus:
       session?.status ??
@@ -6398,18 +6398,6 @@ console.log(
 
     quantity:
       session.quantity,
-
-    date:
-      getStoredString(
-        session,
-        "date",
-      ),
-
-    time:
-      getStoredString(
-        session,
-        "time",
-      ),
   },
 );
 
@@ -6490,6 +6478,115 @@ session.updatedAt =
  * than by hard-coded industry logic.
  * ----------------------------------------------
  */
+
+
+
+const bookingFeatureKey: TenantFeatureKey =
+  bookingType === "appointment"
+    ? "booking_appointment"
+    : "booking_accommodation";
+
+const bookingFeatureEnabled =
+  await isTenantFeatureEnabled(
+    input.db,
+    input.context.tenant.id,
+    bookingFeatureKey,
+  );
+
+if (!bookingFeatureEnabled) {
+  session.status = "collecting";
+  session.updatedAt = input.occurredAt;
+
+  await saveSession(
+    repository,
+    session,
+  );
+
+  return {
+    handled: true,
+    state: "collecting",
+    intent,
+    message:
+      bookingType === "appointment"
+        ? "Appointment booking is not enabled for this business."
+        : "Accommodation booking is not enabled for this business.",
+    session,
+  };
+}
+
+/*
+ * --------------------------------------------------
+ * Accommodation booking handoff to GHL Rentals
+ * --------------------------------------------------
+ *
+ * Core does not create accommodation reservations
+ * through the CRM booking provider. Instead, NUVI
+ * directs the customer to the tenant's configured
+ * GHL Rentals booking page.
+ * --------------------------------------------------
+ */
+
+if (
+  bookingType === "accommodation" &&
+  input.context.tenant.integrations.crm.provider === "gohighlevel"
+) {
+  let bookingUrl: string | null = null;
+
+  try {
+    bookingUrl =
+      await getConfiguredGHLRentalsBookingPageUrl(
+        input.db,
+        input.context.tenant,
+      );
+  } catch (error: unknown) {
+    console.error(
+      "Failed to resolve GHL Rentals booking-page handoff.",
+      {
+        tenantId: input.context.tenant.id,
+        errorName:
+          error instanceof Error
+            ? error.name
+            : "UnknownError",
+      },
+    );
+  }
+
+
+
+
+
+  session.status = "collecting";
+  session.updatedAt = input.occurredAt;
+
+  await saveSession(
+    repository,
+    session,
+  );
+
+  if (!bookingUrl) {
+    return {
+      handled: true,
+      state: "collecting",
+      intent,
+      message:
+        "I can't access the accommodation booking page right now. Please contact the business directly for assistance.",
+      session,
+      actionExecuted: false,
+      actionResult: "none",
+    };
+  }
+
+  return {
+    handled: true,
+    state: "collecting",
+    intent,
+    message:
+      `You can check availability and complete your accommodation booking here: ${bookingUrl}`,
+    session,
+    actionExecuted: false,
+    actionResult: "none",
+  };
+}
 
 const bookingTypeSupported =
   await supportsBookingType(

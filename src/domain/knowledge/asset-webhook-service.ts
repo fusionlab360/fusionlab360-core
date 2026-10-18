@@ -1,6 +1,8 @@
 import {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
+import type { GHLInboundQueueEnvelope } from "../messaging/inbound-queue-contract";
+import { enqueuePersistedKnowledgeEvent } from "./queue-dispatch";
 
 
 import {
@@ -239,6 +241,11 @@ export async function processGHLKnowledgeAssetWebhook(
 
   integrationRuntime:
     IntegrationRuntime,
+  options: {
+    queue?: Queue<GHLInboundQueueEnvelope>;
+    enqueueOnly?: boolean;
+    skipEventPersistence?: boolean;
+  } = {},
 
 ): Promise<{
 
@@ -372,7 +379,7 @@ export async function processGHLKnowledgeAssetWebhook(
     );
 
 
-  const eventAccepted =
+  const eventAccepted = options.skipEventPersistence ||
     await eventRepository.createIfAbsent({
 
       eventId:
@@ -409,6 +416,25 @@ export async function processGHLKnowledgeAssetWebhook(
         ),
 
     });
+
+  if (options.enqueueOnly) {
+    const enqueued = await enqueuePersistedKnowledgeEvent(
+      options.queue,
+      eventRepository,
+      tenant.id,
+      webhookId,
+    );
+    return {
+      eventId: webhookId,
+      eventType,
+      tenantId: tenant.id,
+      knowledgeBaseId,
+      documentId,
+      assetType,
+      duplicate: !eventAccepted || !enqueued,
+      observed: true,
+    };
+  }
 
 
   /*
@@ -1106,6 +1132,11 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
 
   integrationRuntime:
     IntegrationRuntime,
+  options: {
+    queue?: Queue<GHLInboundQueueEnvelope>;
+    enqueueOnly?: boolean;
+    skipEventPersistence?: boolean;
+  } = {},
 
 ): Promise<{
 
@@ -1273,7 +1304,7 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
     );
 
 
-  const eventAccepted =
+  const eventAccepted = options.skipEventPersistence ||
     await eventRepository.createIfAbsent({
 
       eventId:
@@ -1307,6 +1338,25 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
         ),
 
     });
+
+  if (options.enqueueOnly) {
+    await enqueuePersistedKnowledgeEvent(
+      options.queue,
+      eventRepository,
+      tenant.id,
+      resolvedEventId,
+    );
+    return {
+      eventId: resolvedEventId,
+      eventType: "KnowledgeBaseDelete",
+      tenantId: tenant.id,
+      knowledgeBaseId,
+      knowledgeSourceId: null,
+      documentsFound: 0,
+      documentsMarkedDeleted: 0,
+      vectorsDeleted: 0,
+    };
+  }
 
 
   /*

@@ -6,6 +6,10 @@ import type {
   IntegrationCredential,
 } from "../models/integration-credential";
 
+export type OAuthCredentialUpsertResult =
+  | { status: "stored" }
+  | { status: "skipped_legacy_pit" };
+
 
 export class CredentialRepository
   extends BaseRepository {
@@ -83,6 +87,88 @@ export class CredentialRepository
           row.updated_at as string,
       }),
     );
+  }
+
+  async markPendingOAuthCredentialConnected(
+    tenantId: string,
+    provider: string,
+    locationId: string,
+    companyId: string,
+  ): Promise<boolean> {
+    await this.db
+      .prepare(
+        `
+        UPDATE integration_credentials
+        SET
+          metadata = json_set(
+            metadata,
+            '$.connectionStatus',
+            'connected'
+          ),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ?
+          AND provider = ?
+          AND auth_type = 'oauth2'
+          AND api_key IS NOT NULL
+          AND TRIM(api_key) <> ''
+          AND location_id = ?
+          AND json_valid(metadata)
+          AND json_extract(metadata, '$.companyId') = ?
+          AND json_extract(
+            metadata,
+            '$.connectionStatus'
+          ) = 'pending_oauth'
+          AND EXISTS (
+            SELECT 1
+            FROM integrations i
+            WHERE i.tenant_id = integration_credentials.tenant_id
+              AND i.provider = integration_credentials.provider
+          )
+        `,
+      )
+      .bind(
+        tenantId,
+        provider,
+        locationId,
+        companyId,
+      )
+      .run();
+
+    const row = await this.db
+      .prepare(
+        `
+        SELECT 1 AS connected
+        FROM integration_credentials
+        WHERE tenant_id = ?
+          AND provider = ?
+          AND auth_type = 'oauth2'
+          AND api_key IS NOT NULL
+          AND TRIM(api_key) <> ''
+          AND location_id = ?
+          AND json_valid(metadata)
+          AND json_extract(metadata, '$.companyId') = ?
+          AND json_extract(
+            metadata,
+            '$.connectionStatus'
+          ) = 'connected'
+          AND EXISTS (
+            SELECT 1
+            FROM integrations i
+            WHERE i.tenant_id = integration_credentials.tenant_id
+              AND i.provider = integration_credentials.provider
+          )
+        LIMIT 1
+        `,
+      )
+      .bind(
+        tenantId,
+        provider,
+        locationId,
+        companyId,
+      )
+      .first<{ connected: number }>();
+
+    return row?.connected === 1;
   }
 
 
@@ -170,8 +256,11 @@ export class CredentialRepository
   ): Promise<
     string | null
   > {
+    if (!locationId.trim()) {
+      throw new Error("Provider Location identifier is required.");
+    }
 
-    const result =
+    const { results } =
       await this.db
         .prepare(
           `
@@ -179,23 +268,37 @@ export class CredentialRepository
             tenant_id
           FROM integration_credentials
           WHERE provider = ?
-            AND location_id = ?
-          LIMIT 1
+            AND TRIM(location_id) = ?
+          LIMIT 2
           `,
         )
         .bind(
           provider,
-          locationId,
+          locationId.trim(),
         )
-        .first<{
+        .all<{
           tenant_id: string;
         }>();
 
+    if ((results?.length ?? 0) > 1) {
+      throw new Error("Provider Location ownership is ambiguous.");
+    }
 
-    return (
-      result?.tenant_id ??
-      null
-    );
+    return results?.[0]?.tenant_id ?? null;
+  }
+
+  async assertLocationOwnership(
+    tenantId: string,
+    provider: string,
+    locationId: string,
+  ): Promise<void> {
+    if (!locationId.trim()) {
+      throw new Error("Provider Location identifier is required.");
+    }
+    const owner = await this.findTenantIdByProviderAndLocation(provider, locationId);
+    if (owner !== null && owner !== tenantId) {
+      throw new Error("Provider Location is already assigned to another tenant.");
+    }
   }
 
 
@@ -300,45 +403,27 @@ export class CredentialRepository
       );
   }
 
-
   /**
    * Store or update a provider OAuth credential.
    *
-   * IMPORTANT:
-   *
-   * This method will NEVER overwrite an existing
-   * api_key credential.
-   *
-   * Existing credential:
-   *
-   *   auth_type = api_key
-   *
-   * remains untouched.
-   *
-   * Existing credential:
-   *
-   *   auth_type = oauth2
-   *
-   * may be updated.
-   *
-   * New credential:
-   *
-   *   auth_type = oauth2
+   * Existing api_key credentials are deliberately preserved.
+   * The caller must not report successful OAuth sync when
+   * an existing legacy PIT prevented the write.
    */
   async upsertOAuthCredential(
     tenantId: string,
     provider: string,
     locationId: string,
     accessToken: string,
-    refreshToken:
-      string | null,
-    metadata:
-      string | null,
-    accessTokenExpiresAt:
-      number | null = null,
-  ): Promise<void> {
-
-    await this.db
+    refreshToken: string | null,
+    metadata: string | null,
+    accessTokenExpiresAt: number | null = null,
+  ): Promise<OAuthCredentialUpsertResult> {
+    if (provider === "gohighlevel") {
+      locationId = locationId.trim();
+      await this.assertLocationOwnership(tenantId, provider, locationId);
+    }
+    const result = await this.db
       .prepare(
         `
         INSERT INTO integration_credentials (
@@ -353,7 +438,7 @@ export class CredentialRepository
           created_at,
           updated_at
         )
-        VALUES (
+        SELECT
           ?,
           ?,
           'oauth2',
@@ -364,38 +449,27 @@ export class CredentialRepository
           ?,
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
+        WHERE ? <> 'gohighlevel' OR NOT EXISTS (
+          SELECT 1 FROM integration_credentials
+          WHERE provider = 'gohighlevel'
+            AND TRIM(location_id) = ?
+            AND tenant_id <> ?
         )
-
         ON CONFLICT (
           tenant_id,
           provider
         )
         DO UPDATE SET
-
-          api_key =
-            excluded.api_key,
-
-          location_id =
-            excluded.location_id,
-
-          refresh_token =
-            COALESCE(
-              excluded.refresh_token,
-              integration_credentials.refresh_token
-            ),
-
-          access_token_expires_at =
-            excluded.access_token_expires_at,
-
-          metadata =
-            excluded.metadata,
-
-          updated_at =
-            CURRENT_TIMESTAMP
-
-        WHERE
-          integration_credentials.auth_type =
-            'oauth2'
+          api_key = excluded.api_key,
+          location_id = excluded.location_id,
+          refresh_token = COALESCE(
+            excluded.refresh_token,
+            integration_credentials.refresh_token
+          ),
+          access_token_expires_at = excluded.access_token_expires_at,
+          metadata = excluded.metadata,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE integration_credentials.auth_type = 'oauth2'
         `,
       )
       .bind(
@@ -406,8 +480,32 @@ export class CredentialRepository
         refreshToken,
         accessTokenExpiresAt,
         metadata,
+        provider,
+        locationId,
+        tenantId,
       )
       .run();
+
+    if ((result.meta?.changes ?? 0) > 0) {
+      return { status: "stored" };
+    }
+
+    if (provider === "gohighlevel") {
+      await this.assertLocationOwnership(tenantId, provider, locationId);
+    }
+
+    const existing = await this.findByTenantAndProvider(
+      tenantId,
+      provider,
+    );
+
+    if (existing?.authType === "api_key") {
+      return { status: "skipped_legacy_pit" };
+    }
+
+    throw new Error(
+      "OAuth credential write made no changes, and no legacy PIT credential explains the skipped write.",
+    );
   }
 
     /**

@@ -1,11 +1,17 @@
 export type InboundProcessingOperation =
   | "synchronous_webhook"
   | "queue_consumer"
+  | "queue_dispatch"
   | "tenant_resolution"
   | "queue_publish"
   | "event_accept"
   | "event_claim"
   | "conversation_history"
+  | "conversation_profile"
+  | "session_decision"
+  | "ai_chat_feature"
+  | "booking_state"
+  | "booking_intent"
   | "ai_thinking_delay"
   | "post_thinking_history_fetch"
   | "newer_message_check"
@@ -34,6 +40,33 @@ export type InboundProcessingOutcome =
   | "newer_message"
   | "no_newer_message";
 
+export type WorkerVersionMetadataBinding = Pick<
+  WorkerVersionMetadata,
+  "id" | "tag" | "timestamp"
+>;
+
+export interface WorkerVersionIdentity {
+  workerVersionId: string;
+  workerVersionTag?: string;
+  workerVersionTimestamp?: string;
+}
+
+export function getWorkerVersionIdentity(
+  metadata?: WorkerVersionMetadataBinding | null,
+): WorkerVersionIdentity | undefined {
+  if (!metadata || typeof metadata.id !== "string" || !metadata.id.trim()) {
+    return undefined;
+  }
+
+  const tag = typeof metadata.tag === "string" ? metadata.tag.trim() : "";
+  const timestamp = typeof metadata.timestamp === "string" ? metadata.timestamp.trim() : "";
+  return {
+    workerVersionId: metadata.id.trim(),
+    ...(tag ? { workerVersionTag: tag } : {}),
+    ...(timestamp ? { workerVersionTimestamp: timestamp } : {}),
+  };
+}
+
 export async function createInboundCorrelationId(
   sourceEventId: string,
 ): Promise<string> {
@@ -45,6 +78,16 @@ export async function createInboundCorrelationId(
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
   return `ghl-in-${shortHash}`;
+}
+
+export function getInboundEventAgeMs(
+  occurredAt: string,
+  receivedAtMs: number = Date.now(),
+): number | null {
+  const occurredAtMs = Date.parse(occurredAt);
+  return Number.isFinite(occurredAtMs) && Number.isFinite(receivedAtMs)
+    ? Math.max(0, receivedAtMs - occurredAtMs)
+    : null;
 }
 
 export function classifyInboundProcessingError(
@@ -104,7 +147,9 @@ export function logInboundCheckpoint(
   startedAt?: number,
   error?: unknown,
   outcome?: InboundProcessingOutcome,
+  workerVersion?: WorkerVersionMetadataBinding | null,
 ): void {
+  const versionIdentity = getWorkerVersionIdentity(workerVersion);
   const fields = {
     operation,
     phase,
@@ -112,6 +157,7 @@ export function logInboundCheckpoint(
     ...(startedAt === undefined ? {} : { elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) }),
     ...(phase === "failed" ? { classification: classifyInboundProcessingError(error) } : {}),
     ...(operation === "newer_message_check" && outcome ? { outcome } : {}),
+    ...(versionIdentity ?? {}),
   };
   const message = "GHL inbound lifecycle checkpoint.";
 
@@ -125,23 +171,44 @@ export function logInboundCheckpoint(
 export function logInboundExecutionPath(
   path: InboundExecutionPath,
   correlationId: string,
+  workerVersion?: WorkerVersionMetadataBinding | null,
 ): void {
-  logInboundCheckpoint(path, "start", correlationId);
+  logInboundCheckpoint(path, "start", correlationId, undefined, undefined, undefined, workerVersion);
+}
+
+export function logInboundQueueReceived(
+  correlationId: string,
+  enqueuedAt: Date,
+  attempts: number,
+  workerVersion?: WorkerVersionMetadataBinding | null,
+): void {
+  const enqueuedAtMs = enqueuedAt.getTime();
+  const versionIdentity = getWorkerVersionIdentity(workerVersion);
+  console.info("GHL inbound Queue message received.", {
+    operation: "queue_received",
+    correlationId,
+    queueWaitMs: Number.isFinite(enqueuedAtMs)
+      ? Math.max(0, Date.now() - enqueuedAtMs)
+      : null,
+    attempts,
+    ...(versionIdentity ?? {}),
+  });
 }
 
 export async function traceInboundOperation<T>(
   operation: InboundProcessingOperation,
   correlationId: string,
   run: () => Promise<T>,
+  workerVersion?: WorkerVersionMetadataBinding | null,
 ): Promise<T> {
   const startedAt = performance.now();
-  logInboundCheckpoint(operation, "start", correlationId);
+  logInboundCheckpoint(operation, "start", correlationId, undefined, undefined, undefined, workerVersion);
   try {
     const result = await run();
-    logInboundCheckpoint(operation, "complete", correlationId, startedAt);
+    logInboundCheckpoint(operation, "complete", correlationId, startedAt, undefined, undefined, workerVersion);
     return result;
   } catch (error: unknown) {
-    logInboundCheckpoint(operation, "failed", correlationId, startedAt, error);
+    logInboundCheckpoint(operation, "failed", correlationId, startedAt, error, undefined, workerVersion);
     throw error;
   }
 }

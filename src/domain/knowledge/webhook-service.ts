@@ -13,6 +13,8 @@ import {
 import {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
+import type { GHLInboundQueueEnvelope } from "../messaging/inbound-queue-contract";
+import { enqueuePersistedKnowledgeEvent } from "./queue-dispatch";
 
 import {
   syncKnowledgeChange,
@@ -273,6 +275,11 @@ export async function processGHLKnowledgeFaqWebhook(
 
   integrationRuntime:
     IntegrationRuntime,
+  options: {
+    queue?: Queue<GHLInboundQueueEnvelope>;
+    enqueueOnly?: boolean;
+    skipEventPersistence?: boolean;
+  } = {},
 ): Promise<{
 
   
@@ -396,7 +403,7 @@ export async function processGHLKnowledgeFaqWebhook(
     );
 
 
-  const eventAccepted =
+  const eventAccepted = options.skipEventPersistence ||
     await registerKnowledgeWebhookEvent(
 
       db,
@@ -418,6 +425,22 @@ export async function processGHLKnowledgeFaqWebhook(
 
       payload,
     );
+
+  if (options.enqueueOnly) {
+    const enqueued = await enqueuePersistedKnowledgeEvent(
+      options.queue,
+      new IntegrationEventRepository(db),
+      tenant.id,
+      webhookId,
+    );
+    return {
+      knowledgeBaseId,
+      action: payload.action ?? null,
+      documentId: providerDocumentId,
+      duplicate: !eventAccepted || !enqueued,
+      sync: null,
+    };
+  }
 
 
   if (
@@ -589,6 +612,11 @@ export async function processGHLKnowledgeTrainedUrlWebhook(
 
   integrationRuntime:
     IntegrationRuntime,
+  options: {
+    queue?: Queue<GHLInboundQueueEnvelope>;
+    enqueueOnly?: boolean;
+    skipEventPersistence?: boolean;
+  } = {},
 ): Promise<{
   knowledgeBaseId:
     string;
@@ -684,7 +712,7 @@ export async function processGHLKnowledgeTrainedUrlWebhook(
     );
 
 
-  const eventAccepted =
+  const eventAccepted = options.skipEventPersistence ||
     await registerKnowledgeWebhookEvent(
 
       db,
@@ -706,6 +734,22 @@ export async function processGHLKnowledgeTrainedUrlWebhook(
 
       payload,
     );
+
+  if (options.enqueueOnly) {
+    const enqueued = await enqueuePersistedKnowledgeEvent(
+      options.queue,
+      new IntegrationEventRepository(db),
+      tenant.id,
+      webhookId,
+    );
+    return {
+      knowledgeBaseId,
+      action: payload.action ?? null,
+      documentId: providerDocumentId,
+      duplicate: !eventAccepted || !enqueued,
+      sync: null,
+    };
+  }
 
 
   if (

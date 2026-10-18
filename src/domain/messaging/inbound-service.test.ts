@@ -9,9 +9,11 @@ import {
   classifyInboundProcessingError,
   processGHLInboundMessage,
   runInboundProcessingOperation,
+  shouldRunBookingIntentExtraction,
 } from "./inbound-service";
 import {
   createInboundCorrelationId,
+  getInboundEventAgeMs,
   logInboundCheckpoint,
   logInboundExecutionPath,
 } from "./inbound-diagnostics";
@@ -23,6 +25,79 @@ test("inbound processing errors use bounded classifications", () => {
   assert.equal(classifyInboundProcessingError(new Error("canceled", { cause: Object.assign(new Error("cancelled"), { name: "AbortError" }) })), "cancelled");
   assert.equal(classifyInboundProcessingError(Object.assign(new Error("deadline"), { name: "TimeoutError" })), "timeout");
   assert.equal(classifyInboundProcessingError(new Error("private provider detail")), "unknown");
+});
+
+test("provider event age is measurable without exposing message identifiers", () => {
+  const receivedAt = Date.parse("2026-10-16T13:27:52.693Z");
+  assert.equal(
+    getInboundEventAgeMs("2026-10-16T13:27:50.000Z", receivedAt),
+    2693,
+  );
+  assert.equal(getInboundEventAgeMs("invalid", receivedAt), null);
+  assert.equal(
+    getInboundEventAgeMs("2026-10-16T13:27:53.000Z", receivedAt),
+    0,
+  );
+});
+
+test("clearly informational knowledge questions skip booking intent extraction when no session is active", () => {
+  const noSession = {
+    bookingSessionActive: false,
+    confirmedBookingActionRequested: false,
+    confirmedBookingActionPending: false,
+  };
+
+  assert.equal(
+    shouldRunBookingIntentExtraction({
+      ...noSession,
+      message: "What service your clinic provide?",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRunBookingIntentExtraction({
+      ...noSession,
+      message: "What are your opening hours?",
+    }),
+    false,
+  );
+});
+
+test("booking, availability, ambiguous messages, and active sessions retain booking intent extraction", () => {
+  const noSession = {
+    bookingSessionActive: false,
+    confirmedBookingActionRequested: false,
+    confirmedBookingActionPending: false,
+  };
+
+  for (const message of [
+    "I want to book an appointment",
+    "Do you have an appointment slot available?",
+    "Can you help me?",
+  ]) {
+    assert.equal(
+      shouldRunBookingIntentExtraction({ ...noSession, message }),
+      true,
+      message,
+    );
+  }
+
+  assert.equal(
+    shouldRunBookingIntentExtraction({
+      ...noSession,
+      message: "What services do you provide?",
+      bookingSessionActive: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRunBookingIntentExtraction({
+      ...noSession,
+      message: "Can I know the address?",
+      confirmedBookingActionRequested: true,
+    }),
+    true,
+  );
 });
 
 test("AI lifecycle failure identifies a fixed stage without logging private error details", async () => {
@@ -60,6 +135,7 @@ test("post-thinking checkpoints use bounded stages, outcomes, paths, and safe er
 
   try {
     const correlationId = "ghl-in-correlation-test";
+    await runInboundProcessingOperation("booking_intent", correlationId, async () => undefined);
     await runInboundProcessingOperation("ai_thinking_delay", correlationId, async () => undefined);
     await assert.rejects(
       runInboundProcessingOperation("post_thinking_history_fetch", correlationId, async () => {
@@ -98,6 +174,7 @@ test("post-thinking checkpoints use bounded stages, outcomes, paths, and safe er
     [...new Set(checkpoints.map((entry) => entry.operation))].sort(),
     [
       "ai_thinking_delay",
+      "booking_intent",
       "newer_message_check",
       "post_thinking_history_fetch",
       "queue_consumer",
@@ -120,6 +197,7 @@ test("post-thinking checkpoints use bounded stages, outcomes, paths, and safe er
   assert.equal(checkpoints.every((entry) => entry.correlationId === "ghl-in-correlation-test"), true);
   assert.equal(checkpoints.every((entry) => [
     "ai_thinking_delay",
+    "booking_intent",
     "newer_message_check",
     "post_thinking_history_fetch",
     "queue_consumer",
@@ -281,5 +359,38 @@ test("duplicate inbound event claim exits before handoff or reply side effects",
   assert.equal(aiCalls, 0);
   assert.equal(infoEntries.some((entry) =>
     (entry[1] as Record<string, unknown>)?.operation === "queue_consumer"
-  ), true);
+  ), false);
+});
+
+test("lifecycle diagnostics include available Worker version identity and tolerate missing metadata", async () => {
+  const entries: unknown[][] = [];
+  const original = console.info;
+  console.info = (...args: unknown[]) => entries.push(args);
+  try {
+    await runInboundProcessingOperation(
+      "knowledge_retrieval",
+      "ghl-in-version-test",
+      async () => undefined,
+      {
+        id: "version-lifecycle-1",
+        tag: "staging",
+        timestamp: "2026-10-14T00:00:00.000Z",
+      },
+    );
+    await runInboundProcessingOperation(
+      "knowledge_retrieval",
+      "ghl-in-version-missing",
+      async () => undefined,
+    );
+  } finally {
+    console.info = original;
+  }
+  const checkpoints = entries
+    .filter((entry) => entry[0] === "GHL inbound lifecycle checkpoint.")
+    .map((entry) => entry[1] as Record<string, unknown>);
+  assert.equal(checkpoints[0]?.workerVersionId, "version-lifecycle-1");
+  assert.equal(checkpoints[0]?.workerVersionTag, "staging");
+  assert.equal(checkpoints[0]?.workerVersionTimestamp, "2026-10-14T00:00:00.000Z");
+  assert.equal(checkpoints[2]?.workerVersionId, undefined);
+  assert.equal(JSON.stringify(entries).includes("customer text"), false);
 });

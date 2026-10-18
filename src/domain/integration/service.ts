@@ -26,9 +26,31 @@ export async function discoverAndSaveConfiguration(
     attributeMappings:
       configuration.attributeMappings.length,
   });
+const repositories = createRepositories(db);
 
-  const repositories =
-    createRepositories(db);
+const integrationId =
+  context.tenant.integrations.crm.id;
+
+const existingConfiguration =
+  await repositories.configurationRepository.getByIntegrationId(
+    integrationId,
+  );
+
+const mergedConfiguration = {
+  ...configuration,
+
+  providerConfiguration: {
+    ...(existingConfiguration?.providerConfiguration ?? {}),
+    ...(configuration.providerConfiguration ?? {}),
+  },
+};
+
+await repositories.configurationRepository.save(
+  integrationId,
+  mergedConfiguration,
+);
+
+return mergedConfiguration;
 
   logger.info("Saving integration configuration", {
     integrationId: context.tenant.integrations.crm.id,

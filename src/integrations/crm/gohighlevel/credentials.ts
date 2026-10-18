@@ -1,30 +1,16 @@
-import type {
-  Tenant,
-} from "../../../tenants/types";
-
+import type { Tenant } from "../../../tenants/types";
 
 export function getGHLCredentials(
-  context: {
-    tenant:
-      Tenant;
-  },
-) {
+  context: { tenant: Tenant },
+): { locationId: string } {
+  const locationId =
+    context.tenant.integrations.crm.credentials.locationId.trim();
 
-  const credentials =
-    context.tenant
-      .integrations
-      .crm
-      .credentials;
+  if (!locationId) {
+    throw new Error(
+      "GoHighLevel Location ID is not configured.",
+    );
+  }
 
-
-  return {
-
-    ...credentials,
-
-    apiKey:
-      credentials.apiKey.trim(),
-
-    locationId:
-      credentials.locationId.trim(),
-  };
+  return { locationId };
 }

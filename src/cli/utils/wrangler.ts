@@ -35,3 +35,31 @@ export function executeSql(sql: string): void {
 
   }
 }
+
+export function executeStagingSql(sql: string): void {
+  const tempFile = join(
+    tmpdir(),
+    `fusionlab360-staging-${Date.now()}.sql`,
+  );
+
+  writeFileSync(tempFile, sql, "utf8");
+
+  try {
+    console.log("\nExecuting SQL against staging D1...\n");
+
+    execSync(
+      `npx wrangler d1 execute fusionlab360-staging-db --remote --env staging --yes --file="${tempFile}"`,
+      {
+        stdio: "inherit",
+      },
+    );
+
+    console.log("\nStaging SQL executed successfully.");
+  } finally {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Temporary file may already have been removed.
+    }
+  }
+}

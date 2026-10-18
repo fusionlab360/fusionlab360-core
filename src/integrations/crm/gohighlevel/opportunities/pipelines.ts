@@ -1,19 +1,24 @@
-import { ghlFetch } from "../client";
+import type { RequestContext } from "../../../../context";
+import { ghlFetchAuthenticated } from "../client";
 import { GHL } from "../config";
+import type { GHLStage } from "../types";
 
 export interface GHLPipeline {
   id: string;
   name: string;
+  stages?: GHLStage[];
 }
 
 export function getPipelines(
-  apiKey: string,
-  locationId: string
+  context: RequestContext,
+  locationId: string,
 ) {
-  return ghlFetch<{
+  return ghlFetchAuthenticated<{
     pipelines: GHLPipeline[];
   }>(
-    apiKey,
-    `${GHL.ENDPOINTS.PIPELINES}?locationId=${encodeURIComponent(locationId)}`
+    context,
+    `${GHL.ENDPOINTS.PIPELINES}?locationId=${encodeURIComponent(
+      locationId,
+    )}`,
   );
 }

@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 
 import { handleError } from "../bootstrap/error";
 import type { RequestContext } from "../context";
+import type { AuthenticatedPrincipal } from "../core/security/principal";
 
 import {
   bootstrapSecurity,
@@ -13,6 +14,12 @@ import type {
 
 
 export type AppBindings = {
+
+  /** Runtime environment label supplied by Wrangler; unknown values fail closed. */
+  APP_ENVIRONMENT?: string;
+
+  /** Cloudflare-provided identity for the deployed Worker version. */
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 
   AI:
     Ai;
@@ -45,6 +52,10 @@ export type AppBindings = {
   GHL_OAUTH_REDIRECT_URI?:
     string;
 
+  /** Explicit provider-approved scopes used to build the OAuth install URL. */
+  GHL_OAUTH_SCOPES?:
+    string;
+
   GEMINI_API_KEY:
     string;
 
@@ -54,7 +65,15 @@ export type AppBindings = {
    *
    * Safe default: disabled.
    */
-  AI_BOOKING_ENABLED?: string;
+   AI_BOOKING_ENABLED?: string;
+
+  /**
+   * Comma-separated tenant IDs permitted for AI Pipeline V2.
+   * Missing or empty means no tenants are eligible.
+   *
+   * Eligibility alone does not activate the new pipeline.
+   */
+  AI_PIPELINE_V2_TENANT_ALLOWLIST?: string;
 
   /** Queue mode is opt-in until an environment binding is reviewed. */
   GHL_INBOUND_QUEUE_ENABLED?: string;
@@ -69,11 +88,14 @@ export type AppVariables = {
   context:
     RequestContext;
 
+  principal?:
+    AuthenticatedPrincipal;
+
 };
 
 
-export const app =
-  new Hono<{
+export function createApp() {
+  const app = new Hono<{
     Bindings:
       AppBindings;
 
@@ -190,3 +212,6 @@ app.notFound((c) => {
     404,
   );
 });
+
+  return app;
+}

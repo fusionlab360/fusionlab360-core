@@ -1,6 +1,6 @@
 import { logger } from "../../../core/logger";
-
-import { ghlFetch } from "./client";
+import type { RequestContext } from "../../../context";
+import { ghlFetchAuthenticated } from "./client";
 import { GHL } from "./config";
 import type { GHLCustomField } from "./types";
 
@@ -8,23 +8,12 @@ export type GHLCustomFieldModel =
   | "contact"
   | "opportunity";
 
-/**
- * Fetch GoHighLevel custom fields.
- *
- * Supports both Contact and Opportunity models.
- */
 export async function getCustomFields(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
   model: GHLCustomFieldModel = "opportunity",
-): Promise<{
-  customFields: GHLCustomField[];
-}> {
-  if (!apiKey?.trim()) {
-    throw new Error("Missing GoHighLevel API key.");
-  }
-
-  if (!locationId?.trim()) {
+): Promise<{ customFields: GHLCustomField[] }> {
+  if (!locationId.trim()) {
     throw new Error("Missing GoHighLevel location ID.");
   }
 
@@ -39,12 +28,9 @@ export async function getCustomFields(
     model,
   });
 
-  const response = await ghlFetch<{
+  const response = await ghlFetchAuthenticated<{
     customFields?: GHLCustomField[];
-  }>(
-    apiKey,
-    endpoint,
-  );
+  }>(context, endpoint);
 
   return {
     customFields: response.customFields ?? [],

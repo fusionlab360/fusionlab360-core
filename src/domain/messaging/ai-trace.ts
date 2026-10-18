@@ -51,6 +51,12 @@ export interface AIExecutionTrace {
   startedAt:
     string;
 
+  workerVersion?: {
+    id: string;
+    tag?: string;
+    timestamp?: string;
+  };
+
   completedAt?:
     string;
 
@@ -110,6 +116,16 @@ export interface AIExecutionTrace {
 
       responseLength?:
         number;
+
+      providerAttempts?: Array<{
+        provider: string;
+        durationMs: number;
+        outcome: "success" | "error" | "timeout";
+      }>;
+
+      durationMs?: number;
+
+      outcome?: "success" | "incomplete" | "error";
 
       fallbackUsed:
         boolean;

@@ -1,5 +1,11 @@
 import { createClientCommand } from "./commands/create-client";
 import { createTenantCommand } from "./commands/create-tenant";
+import { clientPermissionsCommand } from "./commands/client-permissions";
+import { integrationEventReplayCommand } from "./commands/integration-event-replay";
+
+import {
+  createStagingEvaluationClientCommand,
+} from "./commands/create-staging-evaluation-client";
 
 // Future commands
 // import { createTenantCommand } from "./commands/create-tenant";
@@ -13,6 +19,14 @@ async function main() {
   switch (command) {
     case "client:create":
       await createClientCommand();
+      break;
+
+    case "client:permissions":
+      await clientPermissionsCommand();
+      break;
+
+    case "integration-event:replay":
+      await integrationEventReplayCommand();
       break;
 
     case "client:list":
@@ -31,6 +45,10 @@ async function main() {
       await createTenantCommand();
       break;
 
+    case "client:create-staging-evaluation":
+      await createStagingEvaluationClientCommand();
+      break;
+
     // Future
     // case "tenant:create":
     //   await createTenantCommand();
@@ -43,6 +61,8 @@ FusionLab360 CLI
 Available commands
 
   client:create
+  client:permissions <inspect|grant|revoke>
+  integration-event:replay <inspect|replay>
   client:list
   client:rotate
   client:revoke

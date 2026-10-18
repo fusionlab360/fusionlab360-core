@@ -31,6 +31,13 @@ import {
   listGHLAssociations,
 } from "../../integrations/crm/gohighlevel/events/discovery";
 
+import {
+  createRepositories,
+} from "../../persistence/factory";
+
+import {
+  normalizeGHLRentalsBookingPageUrl,
+} from "../booking/rentals-booking-page";
 
 /**
  * Discover the configured CRM integration.
@@ -383,7 +390,7 @@ export async function previewGHLContactEventsController(
 
       const objects =
         await listGHLObjects(
-          credentials.apiKey,
+          context,
           credentials.locationId,
         );
 
@@ -478,13 +485,13 @@ export async function previewGHLContactEventsController(
     ] =
       await Promise.all([
         getGHLObjectSchema(
-          credentials.apiKey,
+          context,
           credentials.locationId,
           schemaKey,
         ),
 
         listGHLAssociations(
-          credentials.apiKey,
+          context,
           credentials.locationId,
         ),
       ]);
@@ -631,6 +638,238 @@ export async function previewGHLContactEventsController(
           error instanceof Error
             ? error.message
             : "GHL Contact Events preview failed.",
+      },
+      500,
+    );
+  }
+}
+
+type GHLRentalsBookingPageContext = Context<{
+  Bindings: AppBindings;
+  Variables: AppVariables;
+}>;
+
+/**
+ * Accept only public HTTPS booking-page URLs.
+ * Custom domains and HighLevel-hosted booking URLs are supported.
+ */
+
+
+/**
+ * Get the Rentals booking-page URL for the
+ * currently authenticated tenant.
+ */
+export async function getGHLRentalsBookingPageController(
+  c: GHLRentalsBookingPageContext,
+) {
+  const requestContext = c.get("context");
+  const crm = requestContext.tenant.integrations.crm;
+
+  if (crm.provider !== "gohighlevel") {
+    return c.json(
+      {
+        success: false,
+        message:
+          "Rentals booking-page configuration requires a GoHighLevel integration.",
+      },
+      409,
+    );
+  }
+
+  try {
+    const { configurationRepository } =
+      createRepositories(c.env.DB);
+
+    const configuration =
+      await configurationRepository.getByIntegrationId(
+        crm.id,
+      );
+
+    const bookingUrl =
+      normalizeGHLRentalsBookingPageUrl(
+        configuration
+          ?.providerConfiguration
+          ?.rentalsBookingUrl,
+      );
+
+    return c.json({
+      success: true,
+      bookingUrl,
+    });
+  } catch (error: unknown) {
+    logger.error(
+      "Failed to load GHL Rentals booking-page configuration.",
+      {
+        tenantId: requestContext.tenant.id,
+        errorName:
+          error instanceof Error
+            ? error.name
+            : "UnknownError",
+      },
+    );
+
+    return c.json(
+      {
+        success: false,
+        message:
+          "Unable to load Rentals booking-page configuration.",
+      },
+      500,
+    );
+  }
+}
+
+/**
+ * Set or clear the Rentals booking-page URL
+ * for the currently authenticated tenant.
+ *
+ * Set:
+ *   { "bookingUrl": "https://example.com/rentals/your-slug" }
+ *
+ * Clear:
+ *   { "bookingUrl": null }
+ */
+export async function updateGHLRentalsBookingPageController(
+  c: GHLRentalsBookingPageContext,
+) {
+  const requestContext = c.get("context");
+  const crm = requestContext.tenant.integrations.crm;
+
+  if (crm.provider !== "gohighlevel") {
+    return c.json(
+      {
+        success: false,
+        message:
+          "Rentals booking-page configuration requires a GoHighLevel integration.",
+      },
+      409,
+    );
+  }
+
+  let body: unknown;
+
+  try {
+    body = await c.req.json<unknown>();
+  } catch {
+    return c.json(
+      {
+        success: false,
+        message: "Invalid JSON body.",
+      },
+      400,
+    );
+  }
+
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    !("bookingUrl" in body)
+  ) {
+    return c.json(
+      {
+        success: false,
+        message:
+          "bookingUrl is required and must be an HTTPS URL or null.",
+      },
+      400,
+    );
+  }
+
+  const requestedUrl =
+    (body as { bookingUrl: unknown }).bookingUrl;
+
+  let bookingUrl: string | null;
+
+  if (requestedUrl === null) {
+    bookingUrl = null;
+  } else {
+    bookingUrl =
+      normalizeGHLRentalsBookingPageUrl(
+        requestedUrl,
+      );
+
+    if (!bookingUrl) {
+      return c.json(
+        {
+          success: false,
+          message:
+            "bookingUrl must be a valid public HTTPS URL without embedded credentials.",
+        },
+        400,
+      );
+    }
+  }
+
+  try {
+    const { configurationRepository } =
+      createRepositories(c.env.DB);
+
+    const integrationId = crm.id;
+
+    const configuration =
+      await configurationRepository.getByIntegrationId(
+        integrationId,
+      );
+
+    if (!configuration) {
+      return c.json(
+        {
+          success: false,
+          message:
+            "Configure the tenant's CRM integration before setting its Rentals booking page.",
+        },
+        409,
+      );
+    }
+
+    const providerConfiguration = {
+      ...(configuration.providerConfiguration ?? {}),
+    };
+
+    if (bookingUrl === null) {
+      delete providerConfiguration.rentalsBookingUrl;
+    } else {
+      providerConfiguration.rentalsBookingUrl =
+        bookingUrl;
+    }
+
+    await configurationRepository.save(
+      integrationId,
+      {
+        ...configuration,
+        providerConfiguration,
+      },
+    );
+
+    logger.info(
+      "GHL Rentals booking-page configuration updated.",
+      {
+        tenantId: requestContext.tenant.id,
+        configured: bookingUrl !== null,
+      },
+    );
+
+    return c.json({
+      success: true,
+      bookingUrl,
+    });
+  } catch (error: unknown) {
+    logger.error(
+      "Failed to update GHL Rentals booking-page configuration.",
+      {
+        tenantId: requestContext.tenant.id,
+        errorName:
+          error instanceof Error
+            ? error.name
+            : "UnknownError",
+      },
+    );
+
+    return c.json(
+      {
+        success: false,
+        message:
+          "Unable to update Rentals booking-page configuration.",
       },
       500,
     );

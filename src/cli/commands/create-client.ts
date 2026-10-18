@@ -1,34 +1,59 @@
 import { prompt, closePrompt } from "../utils/prompt";
 import { title, success } from "../utils/output";
 
-import { createClient } from "../services/client-service";
+import {
+  parsePermissionScopes,
+} from "../../clients/permissions";
 
-import { executeSql } from "../utils/wrangler";
+import {
+  createClient,
+} from "../services/client-service";
 
+import {
+  executeSqlForSelectedEnvironment,
+} from "../utils/execute-targeted-sql";
 
-export async function createClientCommand() {
+export async function createClientCommand(): Promise<void> {
   title("FusionLab360 Client Creator");
 
-  const tenantId = await prompt("Tenant ID: ");
-  const clientId = await prompt("Client ID: ");
-  const clientName = await prompt("Client Name: ");
+  try {
+    const tenantId = await prompt("Tenant ID: ");
+    const clientId = await prompt("Client ID: ");
+    const clientName = await prompt("Client Name: ");
+    const permissionsInput = await prompt(
+      "Permission scopes (comma-separated): ",
+    );
 
-  const result = await createClient({
-  tenantId,
-  clientId,
-  clientName,
-});
-  
-  executeSql(result.sql);
+    const permissions = parsePermissionScopes(
+      permissionsInput
+        .split(",")
+        .map((scope) => scope.trim())
+        .filter(Boolean),
+    );
 
-  success("Client created.");
-  
-  console.log("");
-  console.log("================================");
-  console.log("SAVE THIS API KEY");
-  console.log("================================");
-  console.log(result.apiKey);
-  console.log("================================");
+    if (!tenantId || !clientId || !clientName) {
+      throw new Error(
+        "Tenant ID, Client ID, and Client Name are required.",
+      );
+    }
+    const result = await createClient({
+      tenantId,
+      clientId,
+      clientName,
+      permissions,
+    });
 
-  await closePrompt();
+    const target = await executeSqlForSelectedEnvironment(
+      result.sql,
+      `CREATE CLIENT ${clientId}`,
+    );
+
+    success(`Client created in ${target}.`);
+    console.log(
+      "Save the new API key securely. Do not share it in logs or chat:",
+    );
+    console.log(result.apiKey);
+  } finally {
+    await closePrompt();
+  }
 }

@@ -880,8 +880,8 @@ Return JSON only.
           response.text?.length ??
           0,
 
-        response:
-          response.text,
+        finishReason:
+          response.finishReason ?? null,
       },
     );
 
@@ -904,8 +904,8 @@ Return JSON only.
         "BOOKING INTENT JSON EXTRACTION FAILED",
         {
 
-          response:
-            response.text,
+          responseLength:
+            response.text?.length ?? 0,
         },
       );
 
@@ -978,7 +978,8 @@ Return JSON only.
       "BOOKING INTENT AI REQUEST FAILED",
       {
 
-        currentMessage,
+        currentMessageLength:
+          currentMessage.length,
 
         error:
           error instanceof Error

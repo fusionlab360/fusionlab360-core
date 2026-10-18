@@ -81,12 +81,41 @@ test("response tasks use Gemini first and Cloudflare as fallback", async () => {
   const fallback = await hybrid.chatFallback!(request);
 
   assert.equal(primary.provider, "gemini");
+  assert.equal(primary.fallbackUsed, false);
+  assert.deepEqual(primary.providerAttempts?.map(({ provider, outcome }) => ({ provider, outcome })), [
+    { provider: "gemini", outcome: "success" },
+  ]);
   assert.equal(fallback.provider, "cloudflare");
 
   assert.deepEqual(calls, [
     "gemini:response",
     "cloudflare:response",
   ]);
+});
+
+test("provider failure records a bounded fallback attempt and marks fallback used", async () => {
+  const calls: string[] = [];
+  const gemini: AIProvider = {
+    async chat() {
+      calls.push("gemini");
+      throw new TypeError("network failure details must not be logged");
+    },
+  };
+  const cloudflare = createMockProvider("cloudflare", calls);
+  const originalWarn = console.warn;
+  console.warn = (() => undefined) as typeof console.warn;
+  try {
+    const response = await new HybridAIProvider(cloudflare, gemini).chat(createRequest("response"));
+    assert.equal(response.provider, "cloudflare");
+    assert.equal(response.fallbackUsed, true);
+    assert.deepEqual(response.providerAttempts?.map(({ provider, outcome }) => ({ provider, outcome })), [
+      { provider: "gemini", outcome: "error" },
+      { provider: "cloudflare-workers-ai", outcome: "success" },
+    ]);
+    assert.ok(response.providerAttempts?.every(({ durationMs }) => durationMs >= 0));
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("unspecified tasks preserve Cloudflare as primary and use Gemini as fallback", async () => {
@@ -136,4 +165,41 @@ test("fallback diagnostics omit provider error bodies", async () => {
   assert.match(warning, /Gemini AI failed/i);
   assert.doesNotMatch(warning, new RegExp(secret));
   assert.deepEqual(calls, ["cloudflare:response"]);
+});
+
+test("Gemini HTTP failures expose only the safe status code in attempt diagnostics", async () => {
+  const calls: string[] = [];
+  const gemini: AIProvider = {
+    async chat() {
+      calls.push("gemini");
+      throw new Error("Gemini request failed with HTTP 403.");
+    },
+  };
+  const originalWarn = console.warn;
+  console.warn = (() => undefined) as typeof console.warn;
+  try {
+    const response = await new HybridAIProvider(
+      createMockProvider("cloudflare", calls),
+      gemini,
+    ).chat(createRequest("reasoning"));
+
+    assert.equal(response.fallbackUsed, true);
+    const primaryAttempt = response.providerAttempts?.[0];
+    assert.ok(primaryAttempt);
+    assert.ok(primaryAttempt.durationMs >= 0);
+    assert.deepEqual({
+      provider: primaryAttempt.provider,
+      outcome: primaryAttempt.outcome,
+      failureKind: primaryAttempt.failureKind,
+      httpStatus: primaryAttempt.httpStatus,
+    }, {
+      provider: "gemini",
+      outcome: "error",
+      failureKind: "http_response",
+      httpStatus: 403,
+    });
+    assert.deepEqual(calls, ["gemini", "cloudflare:reasoning"]);
+  } finally {
+    console.warn = originalWarn;
+  }
 });

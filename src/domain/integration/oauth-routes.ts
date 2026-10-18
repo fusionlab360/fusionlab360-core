@@ -9,6 +9,7 @@ import type {
 
 import {
   ghlOAuthCallbackController,
+  startGhlOAuthController,
 } from "./oauth-controller";
 
 
@@ -25,6 +26,11 @@ const oauthRoutes =
 oauthRoutes.get(
   "/gohighlevel/callback",
   ghlOAuthCallbackController,
+);
+
+oauthRoutes.post(
+  "/gohighlevel/authorize",
+  startGhlOAuthController,
 );
 
 

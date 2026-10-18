@@ -38,31 +38,7 @@ export async function processReservation(
   payload: ReservationPayload,
 ): Promise<ReservationResult> {
 
-  // ===========================================
-  // DEBUG - Incoming Payload
-  // ===========================================
-
-  logger.info(
-    "========== INCOMING REQUEST ==========",
-  );
-
-  logger.info(
-    "Payload Keys",
-    {
-      keys: Object.keys(payload ?? {}),
-    },
-  );
-
-  logger.info(
-    "Payload JSON",
-    {
-      json: JSON.stringify(
-        payload,
-        null,
-        2,
-      ),
-    },
-  );
+  // Incoming reservation fields are sensitive and must not be logged.
 
 
   // ===========================================
@@ -80,9 +56,6 @@ export async function processReservation(
     {
       tenantId:
         context.tenant.id,
-
-      reservationId:
-        reservation.reservationId,
 
       provider:
         reservation.provider,
@@ -119,13 +92,7 @@ export async function processReservation(
       );
 
 
-    logger.info(
-      "Contact upsert completed",
-      {
-        contactId:
-          contact.id,
-      },
-    );
+    logger.info("Contact upsert completed");
 
   } catch (error) {
 
@@ -135,10 +102,7 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
-
-        error,
+        errorName: error instanceof Error ? error.name : "UnknownError",
       },
     );
 
@@ -159,8 +123,6 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
       },
     );
 
@@ -231,13 +193,6 @@ export async function processReservation(
           tenantId:
             context.tenant.id,
 
-          reservationId:
-            reservation.reservationId,
-
-          oldOpportunityId:
-            existingReservationLink
-              ?.opportunityId ??
-            null,
         },
       );
 
@@ -271,21 +226,7 @@ export async function processReservation(
 
       logger.info(
         "Fresh GHL opportunity created for historical cancelled reservation.",
-        {
-          tenantId:
-            context.tenant.id,
-
-          reservationId:
-            reservation.reservationId,
-
-          oldOpportunityId:
-            existingReservationLink
-              ?.opportunityId ??
-            null,
-
-          newOpportunityId:
-            freshOpportunity.id,
-        },
+        { tenantId: context.tenant.id },
       );
 
     } else {
@@ -306,13 +247,7 @@ export async function processReservation(
 
       logger.info(
         "Reservation lifecycle synchronized",
-        {
-          opportunityId:
-            opportunityResult.id,
-
-          action:
-            opportunityResult.action,
-        },
+        { action: opportunityResult.action },
       );
 
     }
@@ -325,12 +260,9 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
-
         historicalCancelled,
 
-        error,
+        errorName: error instanceof Error ? error.name : "UnknownError",
       },
     );
 
@@ -351,8 +283,6 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
       },
     );
 
@@ -375,14 +305,6 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
-
-        contactId:
-          contact.id,
-
-        opportunityId:
-          opportunityResult.id,
       },
     );
 
@@ -411,9 +333,6 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
-
         action:
           canonicalResult.action,
 
@@ -437,10 +356,7 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          reservation.reservationId,
-
-        error,
+        errorName: error instanceof Error ? error.name : "UnknownError",
       },
     );
 
@@ -491,17 +407,6 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          canonicalResult.reservationId,
-
-        canonicalReservationId:
-          canonicalResult.canonicalReservationId,
-
-        contactId:
-          contact.id,
-
-        opportunityId:
-          opportunityResult.id,
       },
     );
 
@@ -513,19 +418,7 @@ export async function processReservation(
         tenantId:
           context.tenant.id,
 
-        reservationId:
-          canonicalResult.reservationId,
-
-        canonicalReservationId:
-          canonicalResult.canonicalReservationId,
-
-        contactId:
-          contact.id,
-
-        opportunityId:
-          opportunityResult.id,
-
-        error,
+        errorName: error instanceof Error ? error.name : "UnknownError",
       },
     );
 
@@ -547,18 +440,6 @@ export async function processReservation(
     {
       tenantId:
         context.tenant.id,
-
-      reservationId:
-        reservation.reservationId,
-
-      canonicalReservationId:
-        canonicalResult.canonicalReservationId,
-
-      contactId:
-        contact.id,
-
-      opportunityId:
-        opportunityResult.id,
 
       lifecycle:
         canonicalResult.lifecycle,

@@ -50,6 +50,7 @@ import {
 } from "./inbound-service";
 import {
   createInboundCorrelationId,
+  getInboundEventAgeMs,
   traceInboundOperation,
 } from "./inbound-diagnostics";
 import { withDurableOutboundDelivery } from "./outbound-delivery";
@@ -163,6 +164,8 @@ export async function ghlInboundMessageController(
         AppVariables;
     }>,
 ) {
+
+  const webhookReceivedAt = Date.now();
 
   /*
    * --------------------------------------------------
@@ -487,63 +490,19 @@ export async function ghlInboundMessageController(
     "KnowledgeBaseFaqChange"
   ) {
 
-    c.executionCtx.waitUntil(
-
-      processGHLKnowledgeFaqWebhook(
-
-        c.env.DB,
-
-        c.env.AI,
-
-        c.env.VECTORIZE_V2,
-
-        payload as
-          GHLKnowledgeFaqWebhookPayload,
-
-        integrationRuntime,
-
-      ).then(
-
-        (
-          result,
-        ) => {
-
-          console.log(
-
-            "GHL Knowledge FAQ webhook processed",
-
-            {
-              knowledgeBaseId: result.knowledgeBaseId,
-              action: result.action,
-              documentId: result.documentId,
-              duplicate: result.duplicate,
-              syncPerformed: result.sync !== null,
-            },
-
-          );
-
-        },
-
-      ).catch(
-
-        (
-          error:
-            unknown,
-        ) => {
-
-          console.error(
-
-            "GHL Knowledge FAQ webhook processing failed.",
-
-            getErrorClassification(error),
-
-          );
-
-        },
-
-      ),
-
+    const result = await processGHLKnowledgeFaqWebhook(
+      c.env.DB,
+      c.env.AI,
+      c.env.VECTORIZE_V2,
+      payload as GHLKnowledgeFaqWebhookPayload,
+      integrationRuntime,
+      { queue: c.env.GHL_INBOUND_QUEUE, enqueueOnly: true },
     );
+    console.log("GHL Knowledge FAQ webhook queued", {
+      knowledgeBaseId: result.knowledgeBaseId,
+      documentId: result.documentId,
+      duplicate: result.duplicate,
+    });
 
 
     return c.json({
@@ -573,59 +532,17 @@ export async function ghlInboundMessageController(
     "KnowledgeBaseTrainedUrlChange"
   ) {
 
-    c.executionCtx.waitUntil(
-
-      processGHLKnowledgeTrainedUrlWebhook(
-
-        c.env.DB,
-
-        payload as
-          GHLKnowledgeTrainedUrlWebhookPayload,
-
-        integrationRuntime,
-
-      ).then(
-
-        (
-          result,
-        ) => {
-
-          console.log(
-
-            "GHL Knowledge trained URL webhook processed",
-
-            {
-              knowledgeBaseId: result.knowledgeBaseId,
-              action: result.action,
-              documentId: result.documentId,
-              duplicate: result.duplicate,
-              syncPerformed: result.sync !== null,
-            },
-
-          );
-
-        },
-
-      ).catch(
-
-        (
-          error:
-            unknown,
-        ) => {
-
-          console.error(
-
-            "GHL Knowledge trained URL webhook processing failed.",
-
-            getErrorClassification(error),
-
-          );
-
-        },
-
-      ),
-
+    const result = await processGHLKnowledgeTrainedUrlWebhook(
+      c.env.DB,
+      payload as GHLKnowledgeTrainedUrlWebhookPayload,
+      integrationRuntime,
+      { queue: c.env.GHL_INBOUND_QUEUE, enqueueOnly: true },
     );
+    console.log("GHL Knowledge trained URL webhook queued", {
+      knowledgeBaseId: result.knowledgeBaseId,
+      documentId: result.documentId,
+      duplicate: result.duplicate,
+    });
 
 
     return c.json({
@@ -1133,64 +1050,20 @@ export async function ghlInboundMessageController(
     "KnowledgeBaseDelete"
   ) {
 
-    c.executionCtx.waitUntil(
-
-      processGHLKnowledgeBaseDeleteWebhook(
-
-          c.env.DB,
-
-          c.env.AI,
-
-          c.env.VECTORIZE_V2,
-
-          payload as
-            GHLKnowledgeBaseDeleteWebhookPayload,
-
-          integrationRuntime,
-
-        ).then(
-
-        (
-          result,
-        ) => {
-
-          console.log(
-            "GHL Knowledge Base delete webhook processed",
-            {
-              eventId: result.eventId,
-              eventType: result.eventType,
-              tenantId: result.tenantId,
-              knowledgeBaseId: result.knowledgeBaseId,
-              knowledgeSourceId: result.knowledgeSourceId,
-              documentsFound: result.documentsFound,
-              documentsMarkedDeleted: result.documentsMarkedDeleted,
-              vectorsDeleted: result.vectorsDeleted,
-            },
-
-          );
-
-        },
-
-      ).catch(
-
-        (
-          error:
-            unknown,
-        ) => {
-
-          console.error(
-
-            "GHL Knowledge Base delete webhook processing failed.",
-
-            getErrorClassification(error),
-
-          );
-
-        },
-
-      ),
-
+    const result = await processGHLKnowledgeBaseDeleteWebhook(
+      c.env.DB,
+      c.env.AI,
+      c.env.VECTORIZE_V2,
+      payload as GHLKnowledgeBaseDeleteWebhookPayload,
+      integrationRuntime,
+      { queue: c.env.GHL_INBOUND_QUEUE, enqueueOnly: true },
     );
+    console.log("GHL Knowledge Base delete webhook queued", {
+      eventId: result.eventId,
+      eventType: result.eventType,
+      tenantId: result.tenantId,
+      knowledgeBaseId: result.knowledgeBaseId,
+    });
 
 
     return c.json({
@@ -1235,66 +1108,21 @@ export async function ghlInboundMessageController(
 
   ) {
 
-    c.executionCtx.waitUntil(
-
-      processGHLKnowledgeAssetWebhook(
-
-        c.env.DB,
-
-        c.env.AI,
-
-        c.env.VECTORIZE_V2,
-
-        payload as
-          GHLKnowledgeAssetWebhookPayload,
-
-        integrationRuntime,
-
-      ).then(
-
-        (
-          result,
-        ) => {
-
-          console.log(
-
-            "GHL Knowledge asset webhook observed",
-
-            {
-              eventId: result.eventId,
-              eventType: result.eventType,
-              tenantId: result.tenantId,
-              knowledgeBaseId: result.knowledgeBaseId,
-              documentId: result.documentId,
-              assetType: result.assetType,
-              duplicate: result.duplicate,
-              observed: result.observed,
-            },
-
-          );
-
-        },
-
-      ).catch(
-
-        (
-          error:
-            unknown,
-        ) => {
-
-          console.error(
-
-            "GHL Knowledge asset webhook processing failed.",
-
-            getErrorClassification(error),
-
-          );
-
-        },
-
-      ),
-
+    const result = await processGHLKnowledgeAssetWebhook(
+      c.env.DB,
+      c.env.AI,
+      c.env.VECTORIZE_V2,
+      payload as GHLKnowledgeAssetWebhookPayload,
+      integrationRuntime,
+      { queue: c.env.GHL_INBOUND_QUEUE, enqueueOnly: true },
     );
+    console.log("GHL Knowledge asset webhook queued", {
+      eventId: result.eventId,
+      eventType: result.eventType,
+      tenantId: result.tenantId,
+      duplicate: result.duplicate,
+      observed: result.observed,
+    });
 
 
     return c.json({
@@ -1455,6 +1283,12 @@ export async function ghlInboundMessageController(
   const correlationId = await createInboundCorrelationId(
     message.providerMessageId,
   );
+  console.info("GHL inbound message normalized for processing.", {
+    operation: "webhook_received",
+    correlationId,
+    webhookHandlingMs: Math.max(0, Date.now() - webhookReceivedAt),
+    eventAgeMs: getInboundEventAgeMs(message.occurredAt, webhookReceivedAt),
+  });
   const tenant =
     await traceInboundOperation("tenant_resolution", correlationId, () => resolveTenantByProviderLocation(
 
@@ -1607,6 +1441,12 @@ export async function ghlInboundMessageController(
         ),
 
       "synchronous_webhook",
+
+      c.env.CF_VERSION_METADATA,
+
+      c.env.AI_PIPELINE_V2_TENANT_ALLOWLIST,
+
+      (task) => c.executionCtx.waitUntil(task),
 
     ),
     () => c.json({

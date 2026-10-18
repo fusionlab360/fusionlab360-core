@@ -1,120 +1,134 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "fusionlab360-core",
-	"main": "src/index.ts",
-	"compatibility_date": "2025-07-01",
-	"observability": {
-		"enabled": true
-	},
-
-	"vars": {
-    "AI_BOOKING_ENABLED": "true",
-    "GHL_INBOUND_QUEUE_ENABLED": "true",
-    "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback"
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fusionlab360-core",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-01",
+  "observability": {
+    "enabled": true
   },
-
-	"ai": {
-		"binding": "AI"
-	},
-
-	
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "fusionlab360",
-			"database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
-		}
-	],
-	"queues": {
-		"producers": [
-			{
-				"binding": "GHL_INBOUND_QUEUE",
-				"queue": "fusionlab360-ghl-inbound"
-			}
-		],
-		"consumers": [
-			{
-				"queue": "fusionlab360-ghl-inbound",
-				"max_batch_size": 1,
-				"max_batch_timeout": 1,
-				"max_retries": 10,
-				"dead_letter_queue": "fusionlab360-ghl-dlq",
-				"max_concurrency": 1,
-				"retry_delay": 120
-			}
-		]
-	},
-	"env": {
-		"dev": {
-			"name": "fusionlab360-core-dev",
-			"d1_databases": [
-				{
-					"binding": "DB",
-					"database_name": "fusionlab360",
-					"database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4"
-				}
-			]
-		},
-		"staging": {
-			"name": "fusionlab360-core-staging",
-			"vars": {
-				"AI_BOOKING_ENABLED": "true",
-				"GHL_INBOUND_QUEUE_ENABLED": "true",
-				"GHL_OAUTH_REDIRECT_URI": ""
-			},
-			"ai": {
-				"binding": "AI"
-			},
-			"d1_databases": [
-				{
-					"binding": "DB",
-					"database_name": "fusionlab360-staging-db",
-					"database_id": "6fb68d59-14f4-47f3-a433-8f71acc3e424"
-				}
-			],
-			"vectorize": [
-				{
-					"binding": "VECTORIZE",
-					"index_name": "fusionlab360-knowledge-staging",
-					"remote": true
-				},
-				{
-					"binding": "VECTORIZE_V2",
-					"index_name": "fusionlab360-knowledge-v2-staging",
-					"remote": true
-				}
-			],
-			"queues": {
-				"producers": [
-					{
-						"binding": "GHL_INBOUND_QUEUE",
-						"queue": "fusionlab360-staging-ghl-inbound"
-					}
-				],
-				"consumers": [
-					{
-						"queue": "fusionlab360-staging-ghl-inbound",
-						"max_batch_size": 1,
-						"max_batch_timeout": 1,
-						"max_retries": 10,
-						"dead_letter_queue": "fusionlab360-staging-ghl-dlq",
-						"max_concurrency": 1,
-						"retry_delay": 120
-					}
-				]
-			}
-		}
-	},
-	"vectorize": [
-  {
-    "binding": "VECTORIZE",
-    "index_name": "fusionlab360-knowledge",
-    "remote": true
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
   },
-  {
-    "binding": "VECTORIZE_V2",
-    "index_name": "fusionlab360-knowledge-v2",
-    "remote": true
-  }
-]
+  "vars": {
+  "APP_ENVIRONMENT": "production",
+  "AI_BOOKING_ENABLED": "true",
+  "GHL_INBOUND_QUEUE_ENABLED": "true",
+  "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback",
+  "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write"
+},
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fusionlab360",
+      "database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4",
+      "remote": true
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "GHL_INBOUND_QUEUE",
+        "queue": "fusionlab360-ghl-inbound"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "fusionlab360-ghl-inbound",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 10,
+        "dead_letter_queue": "fusionlab360-ghl-dlq",
+        "max_concurrency": 1,
+        "retry_delay": 120
+      }
+    ]
+  },
+  "env": {
+    "dev": {
+      "name": "fusionlab360-core-dev",
+      "vars": {
+        "APP_ENVIRONMENT": "production"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "fusionlab360",
+          "database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4",
+          "remote": false
+        }
+      ]
+    },
+    "staging": {
+      "name": "fusionlab360-core-staging",
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "vars": {
+        "APP_ENVIRONMENT": "staging",
+        "AI_BOOKING_ENABLED": "false",
+        "GHL_INBOUND_QUEUE_ENABLED": "false",
+        "GHL_OAUTH_REDIRECT_URI": "https://fusionlab360-core-staging.fusionlab360-official.workers.dev/oauth/gohighlevel/callback",
+        "AI_PIPELINE_V2_TENANT_ALLOWLIST": "",
+        "JWT_ISSUER": "fusionlab360-core-staging",
+        "JWT_AUDIENCE": "fusionlab360-core-staging-api"
+      },
+      "ai": {
+        "binding": "AI"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "fusionlab360-staging-db",
+          "database_id": "6fb68d59-14f4-47f3-a433-8f71acc3e424",
+          "remote": true
+        }
+      ],
+      "vectorize": [
+        {
+          "binding": "VECTORIZE",
+          "index_name": "fusionlab360-knowledge-staging",
+          "remote": true
+        },
+        {
+          "binding": "VECTORIZE_V2",
+          "index_name": "fusionlab360-knowledge-v2-staging",
+          "remote": true
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "GHL_INBOUND_QUEUE",
+            "queue": "fusionlab360-staging-ghl-inbound"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "fusionlab360-staging-ghl-inbound",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_retries": 10,
+            "dead_letter_queue": "fusionlab360-staging-ghl-dlq",
+            "max_concurrency": 1,
+            "retry_delay": 120
+          }
+        ]
+      }
+    }
+  },
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "fusionlab360-knowledge",
+      "remote": true
+    },
+    {
+      "binding": "VECTORIZE_V2",
+      "index_name": "fusionlab360-knowledge-v2",
+      "remote": true
+    }
+  ]
 }

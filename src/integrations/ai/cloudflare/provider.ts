@@ -3,6 +3,10 @@ import type {
   AIChatResponse,
   AIProvider,
 } from "../../../core/ai";
+import {
+  CLOUDFLARE_AI_ATTEMPT_TIMEOUT_MS,
+  createProviderAttemptSignal,
+} from "../../../core/ai/provider-timeout";
 
 import {
   CLOUDFLARE_AI,
@@ -423,6 +427,13 @@ export function createCloudflareAIProvider(
 
             reasoning_effort:
                "low",
+          },
+
+          {
+            signal: createProviderAttemptSignal(
+              request.signal,
+              CLOUDFLARE_AI_ATTEMPT_TIMEOUT_MS,
+            ),
           },
         );
 

@@ -30,9 +30,8 @@ export interface Tenant {
   provider: CRMProvider;
 
   credentials: {
-    apiKey: string;
-    locationId: string;
-  };
+  locationId: string;
+};
 
   configuration: IntegrationConfiguration | null;
 };

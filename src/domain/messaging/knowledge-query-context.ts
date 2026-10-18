@@ -71,6 +71,41 @@ export interface KnowledgeQueryResolution {
   analysisQuery?: string;
 }
 
+export type KnowledgeQueryContextSourceKind =
+  | "resolved_branch_clarification"
+  | "resolved_branch_address_clarification"
+  | "resolved_branch_address"
+  | "resolved_branch_attribute"
+  | "conversation_context"
+  | null;
+
+/** Return a safe context-source category without exposing its entity text. */
+export function getKnowledgeQueryContextSourceKind(
+  contextSource: string | null | undefined,
+): KnowledgeQueryContextSourceKind {
+  if (!contextSource) {
+    return null;
+  }
+
+  if (contextSource === "resolved_branch_clarification") {
+    return "resolved_branch_clarification";
+  }
+
+  if (contextSource === "resolved_branch_address_clarification") {
+    return "resolved_branch_address_clarification";
+  }
+
+  if (contextSource.startsWith("resolved_branch_address:")) {
+    return "resolved_branch_address";
+  }
+
+  if (contextSource.startsWith("resolved_branch_attribute:")) {
+    return "resolved_branch_attribute";
+  }
+
+  return "conversation_context";
+}
+
 /* ==================================================
  * Configuration
  * ================================================== */
@@ -90,6 +125,9 @@ const CONTEXT_WINDOW_MS =
 const BRANCH_CONTACT_CLARIFICATION =
   "Do you mean the general contact number, or the number for a specific branch? If it’s for a branch, please tell me which one.";
 
+const BRANCH_ADDRESS_CLARIFICATION =
+  "Do you mean the general business address, or a specific branch? If it’s a branch, please tell me which location.";
+
 const GENERIC_LOCATION_TERMS = new Set([
   "branch",
   "branches",
@@ -104,6 +142,7 @@ const GENERIC_LOCATION_TERMS = new Set([
   "store",
   "restaurant",
   "where",
+  "about",
   "get",
   "tell",
   "give",
@@ -196,6 +235,58 @@ function getNamedLocationCandidates(
   return [...candidates.values()];
 }
 
+function getRecentNamedLocations(
+  messages: KnowledgeQueryHistoryItem[],
+): string[] {
+  const candidates = new Map<string, string>();
+  let awaitingBranchReply = false;
+
+  for (const item of messages) {
+    if (!item.text.trim()) {
+      continue;
+    }
+
+    if (item.role === "ai") {
+      if (
+        /\b(?:which|specific|name)\b/i.test(item.text) &&
+        /\b(?:branch|location)\b/i.test(item.text)
+      ) {
+        candidates.clear();
+        awaitingBranchReply = true;
+      }
+      continue;
+    }
+
+    if (item.role !== "customer") {
+      continue;
+    }
+
+    if (awaitingBranchReply) {
+      awaitingBranchReply = false;
+      const replyTerms = extractMeaningfulTerms(item.text).filter(
+        (term) =>
+          !GENERIC_LOCATION_TERMS.has(term) &&
+          !FOLLOW_UP_ATTRIBUTE_TERMS.has(term),
+      );
+      if (replyTerms.length > 0 && !isPureConversation(item.text)) {
+        const reply = replyTerms.join(" ");
+        candidates.set(normalize(reply), reply);
+        continue;
+      }
+    }
+
+    const terms = locationEntityTerms(item.text);
+    if (terms.length === 0) {
+      continue;
+    }
+
+    const candidate = terms.join(" ");
+    candidates.set(normalize(candidate), candidate);
+  }
+
+  return [...candidates.values()];
+}
+
 function resolveExplicitLocationReply(
   reply: string,
   knownCandidates: string[],
@@ -279,13 +370,14 @@ function extractMeaningfulTerms(
     .split(
       /\s+/u,
     )
+    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
     .filter(
       (
         token,
       ) =>
         token.length >=
           3 &&
-        !/^(the|and|for|with|that|this|what|when|where|which|how|does|do|is|are|can|could|would|should|will|it|its|i|me|my|you|your|we|our|to|of|in|on|at|a|an)$/u.test(
+        !/^(the|and|for|with|that|this|what|when|where|which|how|much|does|do|is|are|can|could|would|should|will|it|its|i|me|my|you|your|we|our|to|of|in|on|at|a|an)$/u.test(
           token,
         ),
     );
@@ -340,6 +432,7 @@ const FOLLOW_UP_ATTRIBUTE_TERMS =
     "operating",
 
     "address",
+    "addresses",
     "location",
     "locations",
 
@@ -441,6 +534,11 @@ const IMPLICIT_FOLLOW_UP_ATTRIBUTE_TERMS =
     "closing",
     "operating",
 
+    "address",
+    "addresses",
+    "location",
+    "locations",
+
     "availability",
     "available",
     "slot",
@@ -491,6 +589,14 @@ function extractTopicSubjectTerms(
       !FOLLOW_UP_REFERENCE_TERMS.has(
         term,
       ),
+  );
+}
+
+function isAddressRequestWithoutEntity(text: string): boolean {
+  return (
+    isCompleteQuestion(text) &&
+    /\b(?:address|addresses|location)\b/i.test(text) &&
+    locationEntityTerms(text).length === 0
   );
 }
 
@@ -741,6 +847,8 @@ function isFollowUpPattern(
     /\b(?:its|their|the\s+same)\s+(?:contact|phone|mobile|whatsapp|telephone)\s+(?:number|details?)\b/i,
 
     /\bhow\s+much\s+is\s+it\b/i,
+
+    /\bhow\s+much\s+(?:does|will|would)\s+(?:it|that|this)\s+(?:cost|charge)\b/i,
 
     /\bhow\s+long\s+is\s+it\b/i,
 
@@ -1341,9 +1449,13 @@ function isImplicitAttributeFollowUp(
       text,
     );
 
+  const requestsAddressWithoutEntity =
+    isAddressRequestWithoutEntity(text);
+
   if (
     requestsLocationLink ||
-    requestsBusinessHours
+    requestsBusinessHours ||
+    requestsAddressWithoutEntity
   ) {
     return true;
   }
@@ -1983,6 +2095,68 @@ const previousCustomerMessages =
     }
   }
 
+  const addressClarificationWasLastTurn =
+    lastHistoryItem?.role === "ai" &&
+    [BRANCH_ADDRESS_CLARIFICATION, MULTIPLE_BRANCH_CLARIFICATION].some(
+      (prompt) => normalize(lastHistoryItem.text) === normalize(prompt),
+    );
+
+  if (
+    addressClarificationWasLastTurn &&
+    isShortFragment(originalQuery) &&
+    !isPureConversation(originalQuery)
+  ) {
+    let priorAddressRequestIndex = -1;
+    for (let index = recentHistory.length - 2; index >= 0; index -= 1) {
+      const item = recentHistory[index];
+      if (
+        item?.role === "customer" &&
+        isAddressRequestWithoutEntity(item.text)
+      ) {
+        priorAddressRequestIndex = index;
+        break;
+      }
+    }
+
+    const priorAddressRequest = recentHistory[priorAddressRequestIndex];
+    if (priorAddressRequest) {
+      const branchCandidates = getRecentNamedLocations(
+        recentHistory.slice(0, priorAddressRequestIndex),
+      );
+      const isReferentialReply = BRANCH_REFERENCE_PATTERN.test(originalQuery);
+      const branch = isReferentialReply
+        ? branchCandidates.length === 1
+          ? branchCandidates[0]
+          : null
+        : resolveExplicitLocationReply(originalQuery, branchCandidates);
+
+      if (!branch || (isReferentialReply && branchCandidates.length !== 1)) {
+        return {
+          originalQuery,
+          retrievalQuery: originalQuery,
+          contextUsed: false,
+          contextSource: null,
+          clarificationQuestion:
+            branchCandidates.length > 1
+              ? MULTIPLE_BRANCH_CLARIFICATION
+              : BRANCH_ADDRESS_CLARIFICATION,
+        };
+      }
+
+      const contextualQuery = [branch, priorAddressRequest.text]
+        .join(" ")
+        .slice(0, MAX_COMBINED_QUERY_CHARS);
+      return {
+        originalQuery,
+        retrievalQuery: contextualQuery,
+        contextUsed: true,
+        contextSource: "resolved_branch_address_clarification",
+        clarificationResolved: true,
+        analysisQuery: contextualQuery,
+      };
+    }
+  }
+
   const priorTopicAnchor = selectTopicAnchor(previousCustomerMessages);
   const priorTopicRoot = selectTopicRootAnchor(
     previousCustomerMessages,
@@ -2006,6 +2180,88 @@ const previousCustomerMessages =
       contextSource: null,
       clarificationQuestion: BRANCH_CONTACT_CLARIFICATION,
     };
+  }
+
+  const isAddressFollowUp =
+    isAddressRequestWithoutEntity(originalQuery);
+
+  if (isAddressFollowUp) {
+    const locations = getRecentNamedLocations(recentHistory);
+
+    if (locations.length !== 1) {
+      return {
+        originalQuery,
+        retrievalQuery: originalQuery,
+        contextUsed: false,
+        contextSource: null,
+        clarificationQuestion:
+          locations.length > 1
+            ? MULTIPLE_BRANCH_CLARIFICATION
+            : BRANCH_ADDRESS_CLARIFICATION,
+      };
+    }
+
+    const branch = locations[0];
+    if (branch) {
+      return {
+        originalQuery,
+        retrievalQuery: `${branch} ${originalQuery}`.slice(
+          0,
+          MAX_COMBINED_QUERY_CHARS,
+        ),
+        contextUsed: true,
+        contextSource: `resolved_branch_address:${branch}`,
+      };
+    }
+  }
+
+  const refersToUnspecifiedBranch =
+    BRANCH_REFERENCE_PATTERN.test(originalQuery) &&
+    locationEntityTerms(originalQuery).length === 0;
+
+  if (refersToUnspecifiedBranch) {
+    const locations = getRecentNamedLocations(recentHistory);
+    if (locations.length !== 1) {
+      return {
+        originalQuery,
+        retrievalQuery: originalQuery,
+        contextUsed: false,
+        contextSource: null,
+        clarificationQuestion: MULTIPLE_BRANCH_CLARIFICATION,
+      };
+    }
+  }
+
+  const requestsContextualBusinessAttribute =
+    isImplicitAttributeFollowUp(originalQuery) &&
+    /\b(?:address|addresses|location|opening|hours?|open|close|operating)\b/i.test(
+      originalQuery,
+    ) &&
+    extractTopicSubjectTerms(originalQuery).length === 0;
+
+  if (requestsContextualBusinessAttribute) {
+    const locations = getRecentNamedLocations(recentHistory);
+    if (locations.length > 1) {
+      return {
+        originalQuery,
+        retrievalQuery: originalQuery,
+        contextUsed: false,
+        contextSource: null,
+        clarificationQuestion: MULTIPLE_BRANCH_CLARIFICATION,
+      };
+    }
+
+    if (locations.length === 1 && locations[0]) {
+      return {
+        originalQuery,
+        retrievalQuery: `${locations[0]} ${originalQuery}`.slice(
+          0,
+          MAX_COMBINED_QUERY_CHARS,
+        ),
+        contextUsed: true,
+        contextSource: `resolved_branch_attribute:${locations[0]}`,
+      };
+    }
   }
 
   /*
@@ -2100,6 +2356,16 @@ const topicSubjectAnchor =
   topicRootAnchor ??
   topicAnchor;
 
+const isDayOfWeekOpeningHoursFollowUp =
+  explicitFollowUp &&
+  /^(?:(?:what|how)\s+about|and)\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?[?.!]*$/i.test(
+    normalize(originalQuery),
+  ) &&
+  !!topicSubjectAnchor &&
+  /\b(?:opening\s+hours?|operating\s+hours?|hours?|open(?:s|ing)?|clos(?:e|es|ing))\b/i.test(
+    topicSubjectAnchor,
+  );
+
 const topicSwitch =
   hasBusinessTypeConflict(
     originalQuery,
@@ -2112,8 +2378,11 @@ const topicSwitch =
     hasNewTopicSubject(
       originalQuery,
       topicSubjectAnchor,
-    )
+    ) &&
+    !isDayOfWeekOpeningHoursFollowUp
   );
+
+
 
 /*
  * --------------------------------------------------

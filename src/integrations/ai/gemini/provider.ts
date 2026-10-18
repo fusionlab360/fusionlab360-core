@@ -4,6 +4,10 @@ import type {
   AIChatResponse,
   AIProvider,
 } from "../../../core/ai/contracts";
+import {
+  createProviderAttemptSignal,
+  GEMINI_ATTEMPT_TIMEOUT_MS,
+} from "../../../core/ai/provider-timeout";
 
 
 const DEFAULT_MODEL =
@@ -13,12 +17,7 @@ const DEFAULT_MODEL =
 interface GeminiGenerateContentResponse {
   candidates?: Array<{
     finishReason?: string;
-
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
+    content?: { parts?: Array<{ text?: string }> };
   }>;
 }
 
@@ -220,13 +219,11 @@ export function createGeminiAIProvider(
             method:
               "POST",
 
-            // Bound reasoning and structured fallback requests so
-            // HybridAIProvider can recover through another provider.
-            signal:
-              request.task === "reasoning" ||
-              request.task === "structured"
-                ? AbortSignal.timeout(6_000)
-                : undefined,
+            // Bound every request and propagate the overall generation deadline.
+            signal: createProviderAttemptSignal(
+              request.signal,
+              GEMINI_ATTEMPT_TIMEOUT_MS,
+            ),
 
             headers: {
               "Content-Type":
@@ -248,30 +245,14 @@ export function createGeminiAIProvider(
         !response.ok
       ) {
 
-        let details:
-          unknown;
-
-        try {
-
-          details =
-            await response.json();
-
-        } catch {
-
-          details =
-            await response.text();
-        }
-
-
         throw new Error(
-          `Gemini request failed with HTTP ${response.status}: ${JSON.stringify(details)}`,
+          `Gemini request failed with HTTP ${response.status}.`,
         );
       }
 
 
-      const data =
-        await response.json() as
-          GeminiGenerateContentResponse;
+      const payload: unknown = await response.json();
+      const data = parseGeminiResponse(payload);
 
 
      const finishReason =
@@ -295,5 +276,36 @@ export function createGeminiAIProvider(
           "MAX_TOKENS",
       };
     },
+  };
+}
+
+function parseGeminiResponse(value: unknown): GeminiGenerateContentResponse {
+  if (!value || typeof value !== "object") {
+    throw new Error("Gemini returned an invalid response shape.");
+  }
+  const candidates = (value as { candidates?: unknown }).candidates;
+  if (candidates === undefined) return {};
+  if (!Array.isArray(candidates)) {
+    throw new Error("Gemini returned an invalid candidates shape.");
+  }
+  return {
+    candidates: candidates.flatMap((candidate: unknown) => {
+      if (!candidate || typeof candidate !== "object") return [];
+      const raw = candidate as { finishReason?: unknown; content?: unknown };
+      const content = raw.content && typeof raw.content === "object"
+        ? raw.content as { parts?: unknown }
+        : undefined;
+      const parts = Array.isArray(content?.parts)
+        ? content.parts.flatMap((part: unknown) => {
+          if (!part || typeof part !== "object") return [];
+          const text = (part as { text?: unknown }).text;
+          return typeof text === "string" ? [{ text }] : [];
+        })
+        : undefined;
+      return [{
+        ...(typeof raw.finishReason === "string" ? { finishReason: raw.finishReason } : {}),
+        ...(content ? { content: { ...(parts ? { parts } : {}) } } : {}),
+      }];
+    }),
   };
 }

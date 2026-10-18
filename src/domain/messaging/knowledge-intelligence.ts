@@ -1,3 +1,5 @@
+import type { WorkerVersionIdentity } from "./inbound-diagnostics";
+
 /*
  * --------------------------------------------------
  * Retrieval Intelligence
@@ -133,6 +135,15 @@ export interface RankedKnowledgeItem
   entityTermMatches:
     string[];
 
+  entityTermCount:
+    number;
+
+  entityTitleOverlapCount:
+    number;
+
+  entityContentOverlapCount:
+    number;
+
   fallbackLike:
     boolean;
 
@@ -171,6 +182,20 @@ export interface KnowledgeSelectionCandidateDiagnostic {
   focusPhraseMatch: boolean;
   exactPhraseMatch: boolean;
   matchedTerms: string[];
+  entityTermCount: number;
+  entityTokenOverlapCount: number;
+  requestedAttributeSupport: Array<{
+    intent: KnowledgeIntent;
+    attribute: KnowledgeRequestedAttribute;
+    attributeEvidence: boolean;
+    entityEvidence: boolean;
+    supported: boolean;
+  }>;
+  eligibilityPaths: Array<{
+    path: string;
+    passed: boolean;
+    failedGates: string[];
+  }>;
   decision:
     | "selected"
     | "eligible_not_selected"
@@ -225,6 +250,26 @@ const SUPPORTED_RESCUE_VECTOR_THRESHOLD =
 
 const SUPPORTED_RESCUE_RERANK_THRESHOLD =
   0.72;
+
+// These words describe an entity's type or role; by themselves they do not
+// identify a particular tenant, branch, or location.
+const GENERIC_ENTITY_DESCRIPTORS = new Set([
+  "business",
+  "company",
+  "clinic",
+  "hospital",
+  "branch",
+  "location",
+  "outlet",
+  "office",
+  "store",
+  "shop",
+  "centre",
+  "center",
+  "organization",
+  "organisation",
+  "practice",
+]);
 
 /*
  * Exact phrase matches.
@@ -712,6 +757,41 @@ function normalize(
     .trim();
 }
 
+function isMapLinkRequest(query: string): boolean {
+  return (
+    /\b(?:map|maps|location|directions?)\b.{0,32}\b(?:link|url)\b/i.test(query) ||
+    /\b(?:link|url)\b.{0,32}\b(?:map|maps|location|directions?)\b/i.test(query) ||
+    /\bgoogle\s+maps?\b/i.test(query)
+  );
+}
+
+function hasMapLinkEvidence(value: string): boolean {
+  return /https?:\/\/(?:(?:www\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+|maps\.app\.goo\.gl|goo\.gl\/maps)(?:[/?#][^\s<>"')\]]*)?/i.test(
+    value,
+  );
+}
+
+function hasLocationAttributeEvidence(value: string): boolean {
+  const normalized = normalize(value);
+  const unavailableValue = /^(?:n\/?a|none|unknown|not provided|not available|not known)$/i;
+  const labeledAddress = /\b(?:address|alamat)\s*[:\-]\s*([^\r\n;]+)/i.exec(value)?.[1]?.trim();
+
+  if (labeledAddress && !unavailableValue.test(normalize(labeledAddress))) {
+    return true;
+  }
+
+  const streetAddress =
+    /\b\d{1,6}(?:[\/-][\w-]+)?\s+(?:jalan|jln|road|rd\.?|street|st\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|lorong|persiaran|lebuh|highway|hwy\.)\b/i.test(
+      normalized,
+    );
+  const locatedPlace =
+    /\b(?:located|situated|based)\s+(?:at|in)\s+([^\r\n.;]+)/i.exec(value)?.[1]?.trim();
+
+  return streetAddress || Boolean(
+    locatedPlace && !unavailableValue.test(normalize(locatedPlace)),
+  );
+}
+
 /*
 
 * --------------------------------------------------
@@ -759,7 +839,6 @@ function stemKnowledgeToken(token: string): string {
   if (token.length > 4 && token.endsWith("ies")) {
     return `${token.slice(0, -3)}y`;
   }
-
   if (
     token.length > 5 &&
     /(?:ches|shes|xes|zes|sses)$/.test(token)
@@ -894,6 +973,7 @@ function extractEntityTerms(
     (
       term,
     ) =>
+      !GENERIC_ENTITY_DESCRIPTORS.has(term) &&
       !intents.some(
         (
           currentIntent,
@@ -908,6 +988,63 @@ function extractEntityTerms(
           ),
       ),
   );
+}
+
+function extractQueryEntityTerms(
+  question: string,
+  retrievalAnalysis: KnowledgeQueryAnalysis,
+  analysisQuestion: string,
+  analysis: KnowledgeQueryAnalysis,
+): string[] {
+  return [
+    ...new Set([
+      ...extractEntityTerms(question, retrievalAnalysis.intents),
+      ...extractEntityTerms(analysisQuestion, analysis.intents),
+    ]),
+  ];
+}
+
+export interface KnowledgeQueryEntityComparison {
+  resolvedEntityTermCount: number;
+  selectorEntityTermCount: number;
+  sharedEntityTermCount: number;
+  resolvedEntityPreserved: boolean | null;
+}
+
+/** Compare entity terms using the same extraction rules as candidate ranking. */
+export function compareKnowledgeQueryEntityContext(
+  resolvedRetrievalQuery: string,
+  resolvedAnalysisQuery: string,
+  selectorRetrievalQuery: string,
+  selectorAnalysisQuery: string,
+): KnowledgeQueryEntityComparison {
+  const resolvedRetrievalAnalysis = analyzeKnowledgeQuery(resolvedRetrievalQuery);
+  const resolvedAnalysis = analyzeKnowledgeQuery(resolvedAnalysisQuery);
+  const selectorRetrievalAnalysis = analyzeKnowledgeQuery(selectorRetrievalQuery);
+  const selectorAnalysis = analyzeKnowledgeQuery(selectorAnalysisQuery);
+  const resolvedTerms = extractQueryEntityTerms(
+    resolvedRetrievalQuery,
+    resolvedRetrievalAnalysis,
+    resolvedAnalysisQuery,
+    resolvedAnalysis,
+  );
+  const selectorTerms = extractQueryEntityTerms(
+    selectorRetrievalQuery,
+    selectorRetrievalAnalysis,
+    selectorAnalysisQuery,
+    selectorAnalysis,
+  );
+  const selectorTermSet = new Set(selectorTerms);
+  const sharedEntityTermCount = resolvedTerms.filter((term) => selectorTermSet.has(term)).length;
+
+  return {
+    resolvedEntityTermCount: resolvedTerms.length,
+    selectorEntityTermCount: selectorTerms.length,
+    sharedEntityTermCount,
+    resolvedEntityPreserved: resolvedTerms.length === 0
+      ? null
+      : sharedEntityTermCount === resolvedTerms.length,
+  };
 }
 
 
@@ -1404,6 +1541,14 @@ function detectIntent(
       normalized,
     );
 
+  const asksAboutServiceCapability =
+    /\b(?:do|does|can)\b.{0,100}\b(?:provide|offer|perform|carry)\b/i.test(
+      normalized,
+    ) &&
+    !/\b(address|location|where|map|maps|directions|alamat|lokasi)\b/i.test(
+      normalized,
+    );
+
   if (
     asksForServiceCatalogue &&
     !hasExplicitPromotionMention
@@ -1415,9 +1560,8 @@ function detectIntent(
    * Promotion
    */
   if (
-    /\b(promotion|promotions|promo|promosi|offer|offers|special offer|deal|deals|voucher|coupon)\b/i.test(
-      normalized,
-    )
+    hasExplicitPromotionMention ||
+    (/\b(?:offer|offers)\b/i.test(normalized) && !asksAboutServiceCapability)
   ) {
     return "promotion";
   }
@@ -1501,28 +1645,6 @@ function detectIntent(
 
   /*
 
-   * Location
-
-   */
-
-  if (
-
-    /\b(branch|branches|location|locations|where|address|alamat|cawangan|lokasi)\b/i.test(
-
-      normalized,
-
-    )
-
-  ) {
-
-    return "location";
-
-  }
-
-
-
-  /*
-
    * Hours
 
    */
@@ -1581,6 +1703,51 @@ function detectIntent(
   ) {
 
     return "hours";
+
+  }
+
+
+
+  /*
+
+   * Service capability verbs commonly accompany a specific
+   * service name without using the word "service". Resolve
+   * those questions before treating a named branch as the
+   * requested location attribute.
+
+   */
+
+  if (asksAboutServiceCapability) {
+    return "services";
+  }
+
+
+
+  /*
+
+   * A named branch is often an entity modifier in an
+   * opening-hours question, not the requested attribute.
+   * Detect the requested hours attribute before location.
+
+   */
+
+  /*
+
+   * Location
+
+   */
+
+  if (
+
+    /\b(branch|branches|location|locations|where|address|alamat|cawangan|lokasi)\b/i.test(
+
+      normalized,
+
+    )
+
+  ) {
+
+    return "location";
 
   }
 
@@ -3457,28 +3624,12 @@ export function rerankKnowledge(
       analysisQuestion,
     );
 
-    const retrievalEntityTerms =
-      extractEntityTerms(
-        question,
-        retrievalAnalysis.intents,
-      );
-
-
-    const currentEntityTerms =
-      extractEntityTerms(
-        analysisQuestion,
-        analysis.intents,
-      );
-
-    const entityTerms =
-      [
-        ...new Set(
-          [
-            ...retrievalEntityTerms,
-            ...currentEntityTerms,
-          ],
-        ),
-      ];
+    const entityTerms = extractQueryEntityTerms(
+      question,
+      retrievalAnalysis,
+      analysisQuestion,
+      analysis,
+    );
 
   return knowledge
 
@@ -3759,6 +3910,9 @@ export function rerankKnowledge(
           exactPhraseMatch,
           entityMatch,
           entityTermMatches,
+          entityTermCount: entityTerms.length,
+          entityTitleOverlapCount: entityTitleOverlap.matched.length,
+          entityContentOverlapCount: entityContentOverlap.matched.length,
           fallbackLike,
         };
       },
@@ -3902,6 +4056,20 @@ function hasSupportingEvidence(
 
 }
 
+function hasExplicitServiceOfferingEvidence(
+  item: RankedKnowledgeItem,
+): boolean {
+  const content = normalize(item.content);
+  if (/\b(?:customer|help|support)\s+services?\b|\bservices?\s+(?:desk|department|team|area)\b/i.test(content)) {
+    return false;
+  }
+  return (
+    /\b(?:services?|treatments?)\s*[:\-]\s*\S/i.test(content) ||
+    /\b(?:services?|treatments?)\b.{0,80}\b(?:include|provid\w*|offer\w*|available|consist of|are|is)\b/i.test(content) ||
+    /\b(?:provid\w*|offer\w*|perform\w*|deliver\w*)\b.{0,80}\b(?:services?|treatments?)\b/i.test(content)
+  );
+}
+
 
 
 /*
@@ -4023,7 +4191,9 @@ function supportsRequestedIntent(
   hasIntentEvidence(
     intent,
     item.title,
-  )
+  ) ||
+  (intent === "location" && hasMapLinkEvidence(item.content)) ||
+  (intent === "location" && hasMapLinkEvidence(item.title))
 );
 }
 
@@ -4126,6 +4296,7 @@ type KnowledgeRequestedAttribute =
   | "time"
   | "price"
   | "location"
+  | "map_link"
   | "contact"
   | "availability"
   | "service"
@@ -4165,6 +4336,7 @@ export interface KnowledgeAttributeCoverage {
 function getPrimaryAttributeForIntent(
   intent:
     KnowledgeIntent,
+  query = "",
 ):
   KnowledgeRequestedAttribute {
 
@@ -4179,7 +4351,9 @@ function getPrimaryAttributeForIntent(
       return "price";
 
     case "location":
-      return "location";
+      return isMapLinkRequest(query)
+        ? "map_link"
+        : "location";
 
     case "contact":
       return "contact";
@@ -4222,6 +4396,7 @@ function hasRequestedAttributeEvidence(
 
   requirement:
     KnowledgeAttributeRequirement,
+  query = "",
 ):
   boolean {
 
@@ -4281,9 +4456,12 @@ function hasRequestedAttributeEvidence(
 
     case "location":
 
-      return hasIntentEvidence(
-        "location",
-        combined,
+      return hasLocationAttributeEvidence(combined);
+
+    case "map_link":
+
+      return hasMapLinkEvidence(
+        [item.title, item.content].join(" "),
       );
 
 
@@ -4382,6 +4560,7 @@ function supportsRequestedAttribute(
 
   entityTerms:
     string[],
+  query = "",
 ):
   boolean {
 
@@ -4389,6 +4568,7 @@ function supportsRequestedAttribute(
     !hasRequestedAttributeEvidence(
       item,
       requirement,
+      query,
     )
   ) {
 
@@ -4430,6 +4610,7 @@ function getKnowledgeAttributeCoverage(
 
   selected:
     RankedKnowledgeItem[],
+  query = "",
 ):
   KnowledgeAttributeCoverage {
 
@@ -4452,6 +4633,7 @@ function getKnowledgeAttributeCoverage(
               const attribute =
                 getPrimaryAttributeForIntent(
                   intent,
+                  query,
                 );
 
               return [
@@ -4482,6 +4664,7 @@ function getKnowledgeAttributeCoverage(
               item,
               requirement,
               entityTerms,
+              query,
             ),
         ),
     );
@@ -4510,6 +4693,87 @@ function getKnowledgeAttributeCoverage(
     covered,
     missing,
   };
+}
+
+function buildNormalEligibilityPathDiagnostics(
+  item: RankedKnowledgeItem,
+  intents: KnowledgeIntent[],
+  tenantWideServiceQuery: boolean,
+): KnowledgeSelectionCandidateDiagnostic["eligibilityPaths"] {
+  const supportingEvidence = hasSupportingEvidence(item);
+  const facilityIntent = intents.includes("facilities");
+  const paths = [
+    {
+      path: "tenant_wide_service",
+      gates: {
+        tenantWideServiceQuery,
+        serviceIntentEvidence: intents.includes("services") && item.intentMatch,
+        explicitServiceOfferingEvidence: hasExplicitServiceOfferingEvidence(item),
+        vectorScore: item.score >= 0.55,
+        rerankerScore: item.rerankScore >= 0.72,
+        supportingEvidence,
+      },
+    },
+    {
+      path: "entity_specific",
+      gates: {
+        entityMatch: item.entityMatch,
+        vectorScore: item.score >= 0.55,
+        rerankerScore: item.rerankScore >= 0.72,
+        supportingEvidence,
+      },
+    },
+    {
+      path: "facilities_rescue",
+      gates: {
+        facilityIntent,
+        vectorScore: item.score >= 0.55,
+        rerankerScore: item.rerankScore >= 0.68,
+        supportingEvidence,
+      },
+    },
+    {
+      path: "normal_threshold",
+      gates: {
+        vectorScore: item.score >= NORMAL_VECTOR_THRESHOLD,
+        rerankerScore: item.rerankScore >= NORMAL_RERANK_THRESHOLD,
+      },
+    },
+    {
+      path: "exact_phrase_rescue",
+      gates: {
+        exactPhraseMatch: item.exactPhraseMatch,
+        vectorScore: item.score >= EXACT_PHRASE_VECTOR_THRESHOLD,
+        rerankerScore: item.rerankScore >= EXACT_PHRASE_RERANK_THRESHOLD,
+      },
+    },
+    {
+      path: "semantic_rescue",
+      gates: {
+        vectorScore: item.score >= SEMANTIC_RESCUE_VECTOR_THRESHOLD,
+        rerankerScore: item.rerankScore >= SEMANTIC_RESCUE_RERANK_THRESHOLD,
+      },
+    },
+    {
+      path: "supported_rescue",
+      gates: {
+        vectorScore: item.score >= SUPPORTED_RESCUE_VECTOR_THRESHOLD,
+        rerankerScore: item.rerankScore >= SUPPORTED_RESCUE_RERANK_THRESHOLD,
+        supportingEvidence,
+      },
+    },
+  ];
+
+  return paths.map(({ path, gates }) => {
+    const failedGates = Object.entries(gates)
+      .filter(([, passed]) => !passed)
+      .map(([gate]) => gate);
+    return {
+      path,
+      passed: failedGates.length === 0,
+      failedGates,
+    };
+  });
 }
 
 /*
@@ -4545,6 +4809,8 @@ export function selectKnowledgeForAnswer(
   analysisQuestion:
     string =
       question,
+
+  workerVersion?: WorkerVersionIdentity,
 ):
 
   {
@@ -4626,6 +4892,49 @@ export function selectKnowledgeForAnswer(
       ranked,
     );
 
+  const retrievalAnalysis = analyzeKnowledgeQuery(question);
+  const entityTerms = extractQueryEntityTerms(
+    question,
+    retrievalAnalysis,
+    analysisQuestion,
+    analysis,
+  );
+  const attributeEntityTerms = extractEntityTerms(
+    analysisQuestion,
+    analysis.intents,
+  );
+  const normalEligibilityPaths = new Map(
+    ranked.map((item) => [
+      item,
+      buildNormalEligibilityPathDiagnostics(
+        item,
+        analysis.intents,
+        analysis.intents.includes("services") && entityTerms.length === 0,
+      ),
+    ]),
+  );
+
+  const hasMismatchedBranchServiceEntity = (
+    item: RankedKnowledgeItem,
+  ): boolean => {
+    if (
+      !analysis.intents.includes("services") ||
+      entityTerms.length === 0 ||
+      item.entityMatch ||
+      item.fallbackLike ||
+      !/\b(?:branch|outlet|location)\b/i.test(item.title)
+    ) {
+      return false;
+    }
+
+    const documentEntityTerms = extractEntityTerms(
+      `${item.title} ${item.content}`,
+      analysis.intents,
+    );
+    return documentEntityTerms.length > 0 &&
+      !documentEntityTerms.some((term) => entityTerms.includes(term));
+  };
+
   /*
    * ------------------------------------------------
    * Eligibility
@@ -4666,6 +4975,10 @@ export function selectKnowledgeForAnswer(
             item,
             "empty_content",
           );
+        }
+
+        if (hasMismatchedBranchServiceEntity(item)) {
+          return rejectCandidate(item, "different_branch_entity");
         }
 
         /*
@@ -4840,6 +5153,12 @@ export function selectKnowledgeForAnswer(
           return true;
         }
 
+        if (normalEligibilityPaths.get(item)?.find(
+          (path) => path.path === "tenant_wide_service",
+        )?.passed) {
+          return true;
+        }
+
         /*
          * Facilities / amenity rescue.
          *
@@ -4851,19 +5170,9 @@ export function selectKnowledgeForAnswer(
          */
 
         if (
-            analysis.intents.includes(
-              "facilities",
-            ) &&
-
-            item.score >=
-              0.55 &&
-
-            item.rerankScore >=
-              0.68 &&
-
-            hasSupportingEvidence(
-              item,
-            )
+            normalEligibilityPaths.get(item)?.find(
+              (path) => path.path === "facilities_rescue",
+            )?.passed
           ) {
             return true;
           }
@@ -4878,19 +5187,9 @@ export function selectKnowledgeForAnswer(
 
 
 
-        if (
-
-          item.score >=
-
-            NORMAL_VECTOR_THRESHOLD &&
-
-
-
-          item.rerankScore >=
-
-            NORMAL_RERANK_THRESHOLD
-
-        ) {
+        if (normalEligibilityPaths.get(item)?.find(
+          (path) => path.path === "normal_threshold",
+        )?.passed) {
 
 
 
@@ -4908,23 +5207,9 @@ export function selectKnowledgeForAnswer(
 
 
 
-        if (
-
-          item.exactPhraseMatch &&
-
-
-
-          item.score >=
-
-            EXACT_PHRASE_VECTOR_THRESHOLD &&
-
-
-
-          item.rerankScore >=
-
-            EXACT_PHRASE_RERANK_THRESHOLD
-
-        ) {
+        if (normalEligibilityPaths.get(item)?.find(
+          (path) => path.path === "exact_phrase_rescue",
+        )?.passed) {
 
 
 
@@ -4942,19 +5227,9 @@ export function selectKnowledgeForAnswer(
 
 
 
-        if (
-
-          item.score >=
-
-            SEMANTIC_RESCUE_VECTOR_THRESHOLD &&
-
-
-
-          item.rerankScore >=
-
-            SEMANTIC_RESCUE_RERANK_THRESHOLD
-
-        ) {
+        if (normalEligibilityPaths.get(item)?.find(
+          (path) => path.path === "semantic_rescue",
+        )?.passed) {
 
 
 
@@ -4966,17 +5241,9 @@ export function selectKnowledgeForAnswer(
          * Supported weaker rescue.
          */
 
-        if (
-          item.score >=
-            SUPPORTED_RESCUE_VECTOR_THRESHOLD &&
-
-          item.rerankScore >=
-            SUPPORTED_RESCUE_RERANK_THRESHOLD &&
-
-          hasSupportingEvidence(
-            item,
-          )
-        ) {
+        if (normalEligibilityPaths.get(item)?.find(
+          (path) => path.path === "supported_rescue",
+        )?.passed) {
           return true;
         }
 
@@ -5323,18 +5590,15 @@ if (
     selected,
       );
 
-  const entityTerms =
-  extractEntityTerms(
-    analysisQuestion,
-    analysis.intents,
-  );
-
+  const requestedAttributeQuery =
+    [question, analysisQuestion].join(" ");
 
   const attributeCoverage =
     getKnowledgeAttributeCoverage(
       analysis.intents,
-      entityTerms,
+      attributeEntityTerms,
       selected,
+      requestedAttributeQuery,
     );
 
   console.log(
@@ -5428,6 +5692,37 @@ console.log(
     focusPhraseMatch: item.focusPhraseMatch,
     exactPhraseMatch: item.exactPhraseMatch,
     matchedTerms: item.matchedTerms.slice(0, 8),
+    entityTermCount: item.entityTermCount,
+    entityTokenOverlapCount: item.entityTermMatches.length,
+    requestedAttributeSupport: analysis.intents
+      .filter((intent) => intent !== "general")
+      .map((intent) => {
+        const requirement = {
+          intent,
+          attribute: getPrimaryAttributeForIntent(intent, requestedAttributeQuery),
+        };
+        const attributeEvidence = hasRequestedAttributeEvidence(
+          item,
+          requirement,
+          requestedAttributeQuery,
+        );
+        const entityEvidence = attributeEntityTerms.length === 0 || item.entityMatch;
+        return {
+          ...requirement,
+          attributeEvidence,
+          entityEvidence,
+          supported: supportsRequestedAttribute(
+            item,
+            requirement,
+            attributeEntityTerms,
+            requestedAttributeQuery,
+          ),
+        };
+      }),
+    eligibilityPaths:
+      !analysis.highRisk && item.retrievalMethod !== "lexical"
+        ? normalEligibilityPaths.get(item) ?? []
+        : [],
 
     decision: selectedSet.has(item)
       ? "selected"
@@ -5442,14 +5737,22 @@ console.log(
   console.log(
     "AI KNOWLEDGE SELECTION DIAGNOSTICS",
     {
+      ...(workerVersion ?? {}),
       intent: analysis.intent,
       intents: analysis.intents,
       highRisk: analysis.highRisk,
-      focusPhrases: analysis.focusPhrases,
+      focusPhraseCount: analysis.focusPhrases.length,
 
+      retrievedCount: knowledge.length,
       candidateCount: ranked.length,
       eligibleCount: eligible.length,
       selectedCount: selected.length,
+      rejectedCount: candidateDiagnostics.filter(
+        (item) => item.decision === "rejected",
+      ).length,
+      entityTermCount: entityTerms.length,
+      requestedAttributesSupportedBySelectedEvidence:
+        attributeCoverage.missing.length === 0,
 
       selectedSourceKeys: selected
         .map(
@@ -5462,7 +5765,6 @@ console.log(
       candidates: ranked.slice(0, 10).map(
         (item, index) => ({
           rank: index + 1,
-          title: item.title,
           sourceType: item.sourceType,
 
           sourceKey:
@@ -5508,12 +5810,18 @@ console.log(
             item.rerankerRank ?? null,
 
           entityMatch: item.entityMatch,
+          entityTermCount: item.entityTermCount,
+          entityTitleOverlapCount: item.entityTitleOverlapCount,
+          entityContentOverlapCount: item.entityContentOverlapCount,
           fallbackLike: item.fallbackLike,
           intentMatch: item.intentMatch,
           focusPhraseMatch: item.focusPhraseMatch,
           exactPhraseMatch: item.exactPhraseMatch,
-
-          matchedTerms: item.matchedTerms.slice(0, 8),
+          matchedTermCount: item.matchedTerms.length,
+          requestedAttributeSupport:
+            candidateDiagnostics[index]?.requestedAttributeSupport ?? [],
+          eligibilityPaths:
+            candidateDiagnostics[index]?.eligibilityPaths ?? [],
 
           decision: selectedSet.has(item)
             ? "selected"

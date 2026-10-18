@@ -13,15 +13,12 @@ export interface CRMPreviewResult {
 }
 
 export interface CRMOnboarding {
-
   preview(
-    apiKey: string,
-    locationId: string,
+    context: RequestContext,
   ): Promise<CRMPreviewResult>;
 
   configure(
-    apiKey: string,
-    locationId: string,
+    context: RequestContext,
     pipelineId: string,
     providerOptions?: Record<string, unknown>,
   ): Promise<IntegrationConfiguration>;

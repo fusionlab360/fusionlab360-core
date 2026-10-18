@@ -1,42 +1,76 @@
 import { prompt, closePrompt } from "../utils/prompt";
 import { title, success } from "../utils/output";
-import { executeSql } from "../utils/wrangler";
 import { CLI_CONFIG } from "../config";
+
+import {
+  parsePermissionScopes,
+} from "../../clients/permissions";
 
 import {
   createTenant,
 } from "../services/tenant-service";
 
-export async function createTenantCommand() {
+import {
+  executeSqlForSelectedEnvironment,
+} from "../utils/execute-targeted-sql";
 
-  title("FusionLab360 Tenant Creator");
+export async function createTenantCommand(): Promise<void> {
+  title("FusionLab360 Tenant Creator — OAuth-first");
 
-  const tenantId = await prompt("Tenant ID: ");
-  const tenantName = await prompt("Tenant Name: ");
+  try {
+    const tenantId = await prompt("Tenant ID: ");
+    const tenantName = await prompt("Tenant Name: ");
+    const companyId = await prompt("GoHighLevel Company ID: ");
+    const locationId = await prompt("GoHighLevel Location ID: ");
 
-  const provider = CLI_CONFIG.defaultProvider;
+    const permissionsInput = await prompt(
+      "FusionLab360 client permission scopes (comma-separated): ",
+    );
 
-  const apiKey = await prompt("PIT API Key: ");
-  const locationId = await prompt("Location ID: ");
+    if (
+      !tenantId ||
+      !tenantName ||
+      !companyId ||
+      !locationId
+    ) {
+      throw new Error(
+        "Tenant ID, name, Company ID, and Location ID are required.",
+      );
+    }
 
-  const result = await createTenant({
-    tenantId,
-    tenantName,
-    provider,
-    apiKey,
-    locationId,
-  });
+    const permissions = parsePermissionScopes(
+      permissionsInput
+        .split(",")
+        .map((scope) => scope.trim())
+        .filter(Boolean),
+    );
 
-  executeSql(result.sql);
+    const result = await createTenant({
+      tenantId,
+      tenantName,
+      provider: CLI_CONFIG.defaultProvider,
+      companyId,
+      locationId,
+      permissions,
+    });
 
-  success("Tenant created.");
+    const target = await executeSqlForSelectedEnvironment(
+      result.sql,
+      `CREATE TENANT ${tenantId}`,
+    );
 
-  console.log("");
-  console.log("================================");
-  console.log("SAVE THIS API KEY");
-  console.log("================================");
-  console.log(result.apiKey);
-  console.log("================================");
-
-  await closePrompt();
+    success(`Pending OAuth tenant created in ${target}.`);
+    console.log(
+      "The tenant and GHL integration remain inactive until OAuth credential sync is completed.",
+    );
+    console.log(
+      "No PIT was collected or stored. Use this client key only with POST /oauth/gohighlevel/authorize; ordinary tenant APIs remain unavailable until OAuth completes.",
+    );
+    console.log(
+      "Save the new FusionLab360 client API key securely. Do not paste it into chat:",
+    );
+    console.log(result.apiKey);
+  } finally {
+    await closePrompt();
+  }
 }

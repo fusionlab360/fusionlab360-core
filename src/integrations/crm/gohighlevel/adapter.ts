@@ -391,7 +391,7 @@ async function resolveGHLEventConfiguration(
 
   const discovered =
     await discoverGHLEventConfiguration(
-      credentials.apiKey,
+      context,
       credentials.locationId,
       schemaKey,
       dateFieldKey,

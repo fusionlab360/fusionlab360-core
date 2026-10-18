@@ -3,6 +3,8 @@ import { logger } from "../../../core/logger";
 import { getPipelines } from "./opportunities/pipelines";
 import { getCustomFields } from "./customfields";
 
+import type { RequestContext } from "../../../context";
+
 export interface GHLPipelineMetadata {
   id: string;
   name: string;
@@ -28,7 +30,7 @@ export interface GHLMetadata {
 }
 
 export async function resolveMetadata(
-  apiKey: string,
+  context: RequestContext,
   locationId: string,
 ): Promise<GHLMetadata> {
   logger.info("Resolving GoHighLevel metadata", {
@@ -38,13 +40,13 @@ export async function resolveMetadata(
   logger.debug("Loading pipelines");
 
   const pipelineResponse = await getPipelines(
-    apiKey,
+    context,
     locationId,
   );
 
   if (
     !pipelineResponse ||
-    !Array.isArray((pipelineResponse as any).pipelines)
+    !Array.isArray(pipelineResponse.pipelines)
   ) {
     throw new Error(
       `Invalid pipeline response:\n${JSON.stringify(
@@ -55,8 +57,7 @@ export async function resolveMetadata(
     );
   }
 
-  const pipelines = (pipelineResponse as any).pipelines;
-
+  const pipelines = pipelineResponse.pipelines;
   const pipelineMetadata: GHLPipelineMetadata[] =
     pipelines.map((pipeline: any) => ({
       id: pipeline.id,
@@ -90,8 +91,8 @@ export async function resolveMetadata(
   try {
     logger.debug("Loading contact custom fields");
 
-    const contactFields = await getCustomFields(
-  apiKey,
+  const contactFields = await getCustomFields(
+  context,
   locationId,
   "contact",
 );
@@ -122,8 +123,8 @@ logger.info("Contact custom fields fetched", {
 
     logger.debug("Loading opportunity custom fields");
 
-    const opportunityFields = await getCustomFields(
-  apiKey,
+  const opportunityFields = await getCustomFields(
+  context,
   locationId,
   "opportunity",
 );

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Hono } from "hono";
+import type {
+  D1Database,
+  D1PreparedStatement,
+} from "@cloudflare/workers-types";
 
 import type { AppBindings, AppVariables } from "../../../config/app";
 import { ghlOAuthCallbackController } from "../../../domain/integration/oauth-controller";
 import {
+  buildGHLAuthorizationUrl,
   exchangeGHLAuthorizationCode,
   GHLInvalidGrantError,
   isGHLInvalidGrantError,
@@ -16,6 +21,83 @@ import {
 const stagingRedirectUri = "https://staging.example.test/oauth/gohighlevel/callback";
 const productionRedirectUri = "https://api.fusionlab360.com/oauth/gohighlevel/callback";
 const sensitiveProviderText = "OAUTH_PROVIDER_PRIVATE_SENTINEL";
+
+function callbackDatabase(): D1Database {
+  const stateRow = {
+    tenant_id: "tenant-fixture",
+    integration_id: "integration-fixture",
+    provider: "gohighlevel",
+    purpose: "connect",
+    context_json: JSON.stringify({
+      companyId: "company-fixture",
+      locationId: "location-fixture",
+    }),
+    expires_at: Date.now() + 60_000,
+  };
+
+  return {
+    prepare(sql: string) {
+      const statement = {
+        bind: () => statement,
+        run: async () => ({ meta: { changes: 1 } }),
+        first: async <T>() => {
+          if (sql.includes("FROM oauth_authorization_states")) {
+            return stateRow as T;
+          }
+          if (sql.includes("FROM tenants t")) {
+            return {
+              tenant_status: "inactive",
+              integration_id: "integration-fixture",
+              provider: "gohighlevel",
+              integration_enabled: 0,
+              credential_auth_type: "oauth2",
+              credential_has_token: 0,
+              location_id: "location-fixture",
+              credential_metadata: JSON.stringify({
+                accountType: "location",
+                companyId: "company-fixture",
+                locationId: "location-fixture",
+                connectionStatus: "pending_oauth",
+              }),
+            } as T;
+          }
+          return null;
+        },
+      };
+      return statement as unknown as D1PreparedStatement;
+    },
+  } as unknown as D1Database;
+}
+
+test("authorization URL uses the configured app, callback, scopes, and state", () => {
+  const state = "a".repeat(64);
+  const url = new URL(buildGHLAuthorizationUrl({
+    GHL_OAUTH_CLIENT_ID: "client-fixture",
+    GHL_OAUTH_REDIRECT_URI: stagingRedirectUri,
+    GHL_OAUTH_SCOPES: "contacts.readonly, conversations/message.readonly",
+  }, state));
+
+  assert.equal(url.origin, "https://marketplace.gohighlevel.com");
+  assert.equal(url.pathname, "/v2/oauth/chooselocation");
+  assert.equal(url.searchParams.get("response_type"), "code");
+  assert.equal(url.searchParams.get("client_id"), "client-fixture");
+  assert.equal(url.searchParams.get("redirect_uri"), stagingRedirectUri);
+  assert.equal(
+    url.searchParams.get("scope"),
+    "contacts.readonly conversations/message.readonly",
+  );
+  assert.equal(url.searchParams.get("state"), state);
+});
+
+test("authorization URL generation fails closed without explicit scopes", () => {
+  assert.throws(
+    () => buildGHLAuthorizationUrl({
+      GHL_OAUTH_CLIENT_ID: "client-fixture",
+      GHL_OAUTH_REDIRECT_URI: stagingRedirectUri,
+    }, "a".repeat(64)),
+    /GHL_OAUTH_SCOPES is not configured/,
+  );
+});
 
 function tokenResponse(overrides: Record<string, unknown> = {}): Response {
   return Response.json({
@@ -223,9 +305,9 @@ test("OAuth denial callback does not echo provider-controlled error details", as
   app.get("/callback", ghlOAuthCallbackController);
 
   const response = await app.request(
-    `/callback?error=access_denied&error_description=${encodeURIComponent(sensitiveProviderText)}`,
+    `/callback?error=access_denied&error_description=${encodeURIComponent(sensitiveProviderText)}&state=${"a".repeat(64)}`,
     {},
-    {} as AppBindings,
+    { DB: callbackDatabase() } as AppBindings,
   );
   const responseText = await response.text();
 
@@ -252,10 +334,10 @@ test("OAuth callback failure logs and returns a safe classification", async () =
 
   try {
     const response = await app.request(
-      "/callback?code=code-fixture",
+      `/callback?code=code-fixture&state=${"b".repeat(64)}`,
       {},
       {
-        DB: {} as D1Database,
+        DB: callbackDatabase(),
         GHL_OAUTH_CLIENT_ID: "client-fixture",
         GHL_OAUTH_CLIENT_SECRET: "secret-fixture",
         GHL_OAUTH_REDIRECT_URI: stagingRedirectUri,

@@ -139,6 +139,57 @@ function getGHLRedirectUri(
   return parsed.toString();
 }
 
+/**
+ * Build the HighLevel Marketplace authorization URL from explicitly
+ * configured app scopes. Scopes are deliberately not inferred by Core.
+ */
+export function buildGHLAuthorizationUrl(
+  env: {
+    GHL_OAUTH_CLIENT_ID?: string;
+    GHL_OAUTH_REDIRECT_URI?: string;
+    GHL_OAUTH_SCOPES?: string;
+  },
+  state: string,
+): string {
+  const clientId = getRequiredBinding(
+    env.GHL_OAUTH_CLIENT_ID,
+    "GHL_OAUTH_CLIENT_ID",
+  );
+  const redirectUri = getGHLRedirectUri(
+    env.GHL_OAUTH_REDIRECT_URI,
+  );
+  const configuredScopes = getRequiredBinding(
+    env.GHL_OAUTH_SCOPES,
+    "GHL_OAUTH_SCOPES",
+  );
+
+  if (!/^[a-f0-9]{64}$/i.test(state)) {
+    throw new Error("OAuth state must be a 32-byte hexadecimal token.");
+  }
+
+  const scopes = configuredScopes
+    .split(/[\s,]+/)
+    .filter(Boolean);
+
+  if (
+    scopes.length === 0 ||
+    scopes.some((scope) => !/^[a-zA-Z0-9._:/-]+$/.test(scope))
+  ) {
+    throw new Error("GHL_OAUTH_SCOPES is invalid.");
+  }
+
+  const authorizationUrl = new URL(
+    "https://marketplace.gohighlevel.com/v2/oauth/chooselocation",
+  );
+  authorizationUrl.searchParams.set("response_type", "code");
+  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizationUrl.searchParams.set("client_id", clientId);
+  authorizationUrl.searchParams.set("scope", [...new Set(scopes)].join(" "));
+  authorizationUrl.searchParams.set("state", state);
+
+  return authorizationUrl.toString();
+}
+
 
 /*
  * --------------------------------------------------
@@ -1444,6 +1495,19 @@ export async function exchangeGHLCompanyTokenForLocationToken(
     await parseOAuthTokenResponse(
       response,
     );
+
+  if (
+    toStringOrUndefined(token.companyId) !== normalizedCompanyId ||
+    toStringOrUndefined(token.locationId) !== normalizedLocationId ||
+    (
+      token.userType !== undefined &&
+      toStringOrUndefined(token.userType) !== "Location"
+    )
+  ) {
+    throw new Error(
+      "HighLevel Location token response did not match the requested Company and Location.",
+    );
+  }
 
 
   return mapLocationOAuthToken(

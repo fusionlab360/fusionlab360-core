@@ -2,13 +2,17 @@ import { Hono } from "hono";
 
 import type {
   AppBindings,
+  AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   discoverIntegrationController,
   previewIntegrationController,
   configureIntegrationController,
   previewGHLContactEventsController,
+  getGHLRentalsBookingPageController,
+  updateGHLRentalsBookingPageController,
 } from "./controller";
 
 import {
@@ -24,26 +28,48 @@ const integrationRoutes =
   new Hono<{
     Bindings:
       AppBindings;
+  Variables:
+    AppVariables;
   }>();
 
 
 integrationRoutes.post(
   "/preview",
+  requirePermission("integrations:read"),
   previewIntegrationController,
 );
 
 
 integrationRoutes.post(
   "/discover",
+  requirePermission("integrations:read"),
   discoverIntegrationController,
 );
 
 
 integrationRoutes.post(
   "/configure",
+  requirePermission("integrations:write"),
   configureIntegrationController,
 );
 
+integrationRoutes.get(
+  "/gohighlevel/rentals/booking-page",
+  requirePermission("integrations:read"),
+  getGHLRentalsBookingPageController,
+);
+
+integrationRoutes.patch(
+  "/gohighlevel/rentals/booking-page",
+  requirePermission("integrations:write"),
+  updateGHLRentalsBookingPageController,
+);
+
+
+export const integrationTestRoutes = new Hono<{
+  Bindings: AppBindings;
+  Variables: AppVariables;
+}>();
 
 /*
  * --------------------------------------------------
@@ -57,6 +83,7 @@ integrationRoutes.post(
 
 integrationRoutes.post(
   "/gohighlevel/events/preview",
+  requirePermission("integrations:read"),
   previewGHLContactEventsController,
 );
 
@@ -88,8 +115,9 @@ integrationRoutes.post(
  * }
  */
 
-integrationRoutes.post(
+integrationTestRoutes.post(
   "/gohighlevel/company/refresh-test",
+  requirePermission("integrations:test"),
 
   async (
     c,

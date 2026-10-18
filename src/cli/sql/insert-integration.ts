@@ -1,27 +1,29 @@
+import { sqlLiteral } from "./literal";
 
 export interface InsertIntegrationInput {
   id: string;
   tenantId: string;
   provider: string;
+  enabled?: boolean;
 }
 
 export function buildInsertIntegrationSql(
   input: InsertIntegrationInput,
 ): string {
+  const enabled = input.enabled === false ? 0 : 1;
 
   return `
 INSERT INTO integrations (
-    id,
-    tenant_id,
-    provider,
-    enabled
+  id,
+  tenant_id,
+  provider,
+  enabled
 )
 VALUES (
-    '${input.id}',
-    '${input.tenantId}',
-    '${input.provider}',
-    1
+  ${sqlLiteral(input.id)},
+  ${sqlLiteral(input.tenantId)},
+  ${sqlLiteral(input.provider)},
+  ${enabled}
 );
 `;
-
 }

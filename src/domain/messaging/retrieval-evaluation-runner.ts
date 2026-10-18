@@ -3,7 +3,10 @@ import {
   type KnowledgeContextItem,
   type KnowledgeSelectionCandidateDiagnostic,
 } from "./knowledge-intelligence";
-
+import {
+  getKnowledgeQueryContextSourceKind,
+  resolveKnowledgeQuery,
+} from "./knowledge-query-context";
 
 import {
   RETRIEVAL_EVALUATION_CASES,
@@ -55,6 +58,8 @@ export interface RetrievalEvaluationCaseResult {
   reviewStatus: "draft" | "verified";
   expectedAnswerable: boolean;
   highRisk: boolean;
+  contextUsed: boolean;
+  contextSourceKind: ReturnType<typeof getKnowledgeQueryContextSourceKind>;
 
   retrievedSourceKeys: string[];
   selectedSourceKeys: string[];
@@ -306,9 +311,34 @@ export async function runRetrievalEvaluation(
   const results: RetrievalEvaluationCaseResult[] = [];
 
   for (const testCase of cases) {
+    const history = testCase.history ?? [];
+    const currentQueryAt = testCase.currentQueryAt;
+    let context;
+    if (history.length > 0) {
+      if (!currentQueryAt) {
+        throw new Error(
+          `Contextual evaluation case ${testCase.id} requires currentQueryAt.`,
+        );
+      }
+      context = resolveKnowledgeQuery(
+        testCase.question,
+        history,
+        currentQueryAt,
+      );
+    } else {
+      context = {
+        originalQuery: testCase.question,
+        retrievalQuery: testCase.question,
+        contextUsed: false,
+        contextSource: null,
+      };
+    }
+
     const retrieved = await options.retriever.search(
-      testCase.question,
-      testCase.question,
+      context.retrievalQuery,
+      context.clarificationResolved
+        ? context.retrievalQuery
+        : testCase.question,
     );
 
     const rankedSources = mapEvidenceKeys(
@@ -317,9 +347,9 @@ export async function runRetrievalEvaluation(
     );
 
     const selection = selectKnowledgeForAnswer(
-      testCase.question,
+      context.retrievalQuery,
       retrieved,
-      testCase.question,
+      context.analysisQuery ?? testCase.question,
     );
 
     const selectedSources = mapEvidenceKeys(
@@ -344,6 +374,10 @@ export async function runRetrievalEvaluation(
       reviewStatus: testCase.reviewStatus,
       expectedAnswerable: testCase.expectedAnswerable,
       highRisk: selection.analysis.highRisk,
+      contextUsed: context.contextUsed,
+      contextSourceKind: getKnowledgeQueryContextSourceKind(
+        context.contextSource,
+      ),
 
       retrievedSourceKeys: rankedSources.keys,
       selectedSourceKeys: selectedSources.keys,

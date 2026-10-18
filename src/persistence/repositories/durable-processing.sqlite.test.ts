@@ -14,7 +14,15 @@ import type { MessagingProvider } from "../../core/messaging";
 import { IntegrationEventService } from "../../core/events/service";
 import { MessagingOutboundDeliveryRepository } from "./messaging-outbound-delivery-repository";
 import { IntegrationEventRepository } from "./integration-event-repository";
+import { IntegrationEventDeadLetterRepository } from "./integration-event-dead-letter-repository";
 import { withDurableOutboundDelivery } from "../../domain/messaging/outbound-delivery";
+import { enqueuePersistedKnowledgeEvent } from "../../domain/knowledge/queue-dispatch";
+import type { GHLInboundQueueEnvelope } from "../../domain/messaging/inbound-queue-contract";
+import {
+  inspectIntegrationEventReplay,
+  replayDeadLetterIntegrationEvent,
+} from "../../core/events/replay";
+import { processKnowledgeEventWithLease } from "../../domain/knowledge/queue-processing";
 
 class SqliteD1Database {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -395,5 +403,162 @@ test("legacy event IDs and tenant-scoped createIfAbsent callers remain compatibl
   assert.equal(await repository.createIfAbsent({ ...knowledgeEvent, tenantId: "tenant-a" }), true);
   assert.equal(await repository.createIfAbsent({ ...knowledgeEvent, tenantId: "tenant-a" }), false);
   assert.equal(await repository.createIfAbsent({ ...knowledgeEvent, tenantId: "tenant-b" }), true);
+  database.sqlite.close();
+});
+
+test("persisted knowledge event dispatches by identity and completes through the event lease", async () => {
+  const database = createDatabase();
+  const repository = new IntegrationEventRepository(database as unknown as D1Database);
+  const inserted = await repository.createIfAbsent({
+    eventId: "provider-knowledge-event",
+    externalEventId: "provider-knowledge-event",
+    tenantId: "tenant-a",
+    eventType: "KnowledgeBaseRichTextChange",
+    aggregateType: "knowledge_document",
+    aggregateId: "base:rich_text:document",
+    provider: "gohighlevel",
+    occurredAt: "2026-10-16T00:00:00.000Z",
+    receivedAt: "2026-10-16T00:00:01.000Z",
+    payload: JSON.stringify({ type: "KnowledgeBaseRichTextChange", locationId: "location-a" }),
+  });
+  assert.equal(inserted, true);
+
+  const messages: GHLInboundQueueEnvelope[] = [];
+  const queue = { async send(message: GHLInboundQueueEnvelope) { messages.push(message); } };
+  assert.equal(await enqueuePersistedKnowledgeEvent(
+    queue as unknown as Queue<GHLInboundQueueEnvelope>,
+    repository,
+    "tenant-a",
+    "provider-knowledge-event",
+  ), true);
+  const storedEventId = await repository.findByExternalIdentity(
+    "tenant-a",
+    "gohighlevel",
+    "provider-knowledge-event",
+  );
+  assert.ok(storedEventId);
+  assert.deepEqual(messages, [{
+    version: 1,
+    kind: "knowledge",
+    tenantId: "tenant-a",
+    provider: "gohighlevel",
+    sourceEventId: storedEventId,
+  }]);
+  assert.equal("payload" in messages[0], false);
+
+  const service = new IntegrationEventService(repository);
+  const queuedId = messages[0].kind === "knowledge" ? messages[0].sourceEventId : "";
+  const claim = await service.claimForProcessing("tenant-a", queuedId);
+  assert.equal(claim.state, "claimed");
+  if (claim.state !== "claimed") throw new Error("Expected queued knowledge event claim.");
+  assert.equal(await service.markProcessed("tenant-a", queuedId, claim.leaseToken), true);
+  assert.equal(await enqueuePersistedKnowledgeEvent(
+    queue as unknown as Queue<GHLInboundQueueEnvelope>,
+    repository,
+    "tenant-a",
+    "provider-knowledge-event",
+  ), false);
+  assert.equal(messages.length, 1);
+  assert.equal((await repository.find("tenant-a", queuedId))?.processingStatus, "processed");
+  database.sqlite.close();
+});
+
+function seedDeadLetterEvent(database: SqliteD1Database, status = "dead_letter"): void {
+  database.sqlite.prepare(`
+    INSERT INTO integration_events (
+      event_id, tenant_id, event_type, aggregate_type, aggregate_id,
+      provider, occurred_at, received_at, payload, external_event_id,
+      processing_status, processing_attempts, last_error_code, last_error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "replay-event", "tenant-a", "KnowledgeBaseRichTextChange", "knowledge_document",
+    "doc-1", "gohighlevel", "2026-10-16", "2026-10-16",
+    JSON.stringify({ type: "KnowledgeBaseRichTextChange", locationId: "location-a" }),
+    "external-replay-event", status, 5, "UNKNOWN", "Private failure details",
+  );
+  database.sqlite.prepare(`
+    INSERT INTO integration_event_dead_letters (
+      event_id, tenant_id, error_code, error_message, retryable, attempts, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run("replay-event", "tenant-a", "UNKNOWN", "Private failure details", 0, 5, "private payload");
+}
+
+test("dead-letter replay submits only persisted identity and duplicate Queue delivery has one effect", async () => {
+  const database = createDatabase();
+  seedDeadLetterEvent(database);
+  const db = database as unknown as D1Database;
+  const events = new IntegrationEventRepository(db);
+  const deadLetters = new IntegrationEventDeadLetterRepository(db);
+  const messages: GHLInboundQueueEnvelope[] = [];
+  const queue = { async send(message: GHLInboundQueueEnvelope) { messages.push(message); } } as unknown as Queue<GHLInboundQueueEnvelope>;
+
+  const preview = await inspectIntegrationEventReplay(events, deadLetters, "tenant-a", "replay-event");
+  assert.equal(preview?.eligible, true);
+  await replayDeadLetterIntegrationEvent(queue, events, deadLetters, "tenant-a", "replay-event");
+  assert.deepEqual(messages, [{
+    version: 1,
+    kind: "event_replay",
+    tenantId: "tenant-a",
+    provider: "gohighlevel",
+    sourceEventId: "replay-event",
+  }]);
+  assert.equal("payload" in messages[0], false);
+  const service = new IntegrationEventService(events);
+  let businessEffects = 0;
+  const processDelivery = () => processKnowledgeEventWithLease(
+    { tenantId: "tenant-a", eventId: "replay-event" },
+    service,
+    async () => { businessEffects += 1; },
+  );
+  await Promise.all([processDelivery(), processDelivery()]);
+  assert.equal(businessEffects, 1);
+  assert.equal((await events.find("tenant-a", "replay-event"))?.processingStatus, "processed");
+  database.sqlite.close();
+});
+
+test("replay rejects unknown, cross-tenant, processed, and actively leased events", async () => {
+  const database = createDatabase();
+  seedDeadLetterEvent(database);
+  const db = database as unknown as D1Database;
+  const events = new IntegrationEventRepository(db);
+  const deadLetters = new IntegrationEventDeadLetterRepository(db);
+  assert.equal(await inspectIntegrationEventReplay(events, deadLetters, "tenant-b", "replay-event"), null);
+  assert.equal(await inspectIntegrationEventReplay(events, deadLetters, "tenant-a", "missing"), null);
+  database.sqlite.prepare("UPDATE integration_events SET processing_status = 'processed' WHERE event_id = ?").run("replay-event");
+  assert.equal((await inspectIntegrationEventReplay(events, deadLetters, "tenant-a", "replay-event"))?.reason, "already_processed");
+  database.sqlite.prepare("UPDATE integration_events SET processing_status = 'processing' WHERE event_id = ?").run("replay-event");
+  assert.equal((await inspectIntegrationEventReplay(events, deadLetters, "tenant-a", "replay-event"))?.reason, "currently_processing");
+  database.sqlite.close();
+});
+
+test("concurrent replay attempts publish once and Queue failure leaves explicit recovery state", async () => {
+  const database = createDatabase();
+  seedDeadLetterEvent(database);
+  const db = database as unknown as D1Database;
+  const events = new IntegrationEventRepository(db);
+  const deadLetters = new IntegrationEventDeadLetterRepository(db);
+  const messages: GHLInboundQueueEnvelope[] = [];
+  const queue = { async send(message: GHLInboundQueueEnvelope) { messages.push(message); } } as unknown as Queue<GHLInboundQueueEnvelope>;
+  const attempts = await Promise.allSettled([
+    replayDeadLetterIntegrationEvent(queue, events, deadLetters, "tenant-a", "replay-event"),
+    replayDeadLetterIntegrationEvent(queue, events, deadLetters, "tenant-a", "replay-event"),
+  ]);
+  assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+  assert.equal(messages.length, 1);
+
+  database.sqlite.prepare(`
+    UPDATE integration_events
+    SET processing_status = 'dead_letter', processing_attempts = 5,
+        last_error_code = 'UNKNOWN', last_error_message = 'Private failure details'
+    WHERE event_id = ? AND tenant_id = ?
+  `).run("replay-event", "tenant-a");
+  const failedQueue = { async send() { throw new Error("Queue unavailable"); } } as unknown as Queue<GHLInboundQueueEnvelope>;
+  await assert.rejects(
+    replayDeadLetterIntegrationEvent(failedQueue, events, deadLetters, "tenant-a", "replay-event"),
+    /remains recoverable/,
+  );
+  assert.equal((await events.find("tenant-a", "replay-event"))?.lastErrorCode, "OPERATOR_REPLAY_ENQUEUE_FAILED");
+  await replayDeadLetterIntegrationEvent(queue, events, deadLetters, "tenant-a", "replay-event");
+  assert.equal(messages.length, 2);
   database.sqlite.close();
 });

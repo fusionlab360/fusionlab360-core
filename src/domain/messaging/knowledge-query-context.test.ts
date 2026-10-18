@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  getKnowledgeQueryContextSourceKind,
   resolveKnowledgeQuery,
 } from "./knowledge-query-context";
 
@@ -10,6 +11,19 @@ import type {
 } from "./knowledge-query-context";
 
 const currentQueryAt = "2026-10-11T15:01:00.000Z";
+
+test("context source diagnostics categorize entity-bearing source strings safely", () => {
+  assert.equal(
+    getKnowledgeQueryContextSourceKind("resolved_branch_clarification"),
+    "resolved_branch_clarification",
+  );
+  assert.equal(
+    getKnowledgeQueryContextSourceKind("resolved_branch_address:Sensitive Location"),
+    "resolved_branch_address",
+  );
+  assert.equal(getKnowledgeQueryContextSourceKind("Sensitive Location"), "conversation_context");
+  assert.equal(getKnowledgeQueryContextSourceKind(null), null);
+});
 
 const previousBranchQuestion: KnowledgeQueryHistoryItem = {
   role: "customer",
@@ -93,6 +107,147 @@ test(
 );
 
 test(
+  "resolves a generic address follow-up to the uniquely established branch",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "Can I know the address?",
+      [
+        {
+          role: "customer",
+          text: "Can you tell me the address for Kota Kemuning branch?",
+          timestamp: "2026-10-11T15:00:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(result.retrievalQuery, /Kota Kemuning/i);
+    assert.match(result.retrievalQuery, /address/i);
+    assert.equal(result.clarificationQuestion, undefined);
+  },
+);
+
+test(
+  "clarifies address follow-ups when branch context is missing, ambiguous, or only in assistant history",
+  () => {
+    const query = "Can I know the address?";
+    const missing = resolveKnowledgeQuery(query, [], currentQueryAt);
+    const ambiguous = resolveKnowledgeQuery(
+      query,
+      [
+        {
+          role: "customer",
+          text: "Tell me about Kota Kemuning branch.",
+          timestamp: "2026-10-11T14:58:00.000Z",
+        },
+        {
+          role: "customer",
+          text: "What about Alam Impian branch?",
+          timestamp: "2026-10-11T14:59:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+    const assistantOnly = resolveKnowledgeQuery(
+      query,
+      [
+        {
+          role: "ai",
+          text: "The Kota Kemuning branch is at 12 Jalan Anggerik.",
+          timestamp: "2026-10-11T15:00:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.ok(missing.clarificationQuestion);
+    assert.ok(ambiguous.clarificationQuestion);
+    assert.match(ambiguous.clarificationQuestion ?? "", /Which branch/i);
+    assert.ok(assistantOnly.clarificationQuestion);
+    assert.equal(missing.contextUsed, false);
+    assert.equal(ambiguous.contextUsed, false);
+    assert.equal(assistantOnly.contextUsed, false);
+  },
+);
+
+test("asks for clarification when 'that branch' has no unique customer-established location", () => {
+  const missing = resolveKnowledgeQuery(
+    "What about that branch?",
+    [],
+    currentQueryAt,
+  );
+  const ambiguous = resolveKnowledgeQuery(
+    "What about that branch?",
+    [
+      {
+        role: "customer",
+        text: "Can I get the address for Kota Kemuning branch?",
+        timestamp: "2026-10-11T14:58:00.000Z",
+      },
+      {
+        role: "customer",
+        text: "Can I get the address for Alam Impian branch?",
+        timestamp: "2026-10-11T14:59:00.000Z",
+      },
+    ],
+    currentQueryAt,
+  );
+
+  assert.ok(missing.clarificationQuestion);
+  assert.match(ambiguous.clarificationQuestion ?? "", /Which branch/i);
+  assert.equal(missing.contextUsed, false);
+  assert.equal(ambiguous.contextUsed, false);
+});
+
+test("uses an explicit branch name supplied in response to a branch clarification", () => {
+  const result = resolveKnowledgeQuery(
+    "Can I know the address?",
+    [
+      {
+        role: "ai",
+        text: "Which branch do you mean? Please name its location.",
+        timestamp: "2026-10-11T14:59:00.000Z",
+      },
+      {
+        role: "customer",
+        text: "Kota Kemuning",
+        timestamp: "2026-10-11T15:00:00.000Z",
+      },
+    ],
+    currentQueryAt,
+  );
+
+  assert.equal(result.contextUsed, true);
+  assert.match(result.retrievalQuery, /Kota Kemuning/i);
+  assert.equal(result.clarificationQuestion, undefined);
+});
+
+test("a branch answer after address clarification retains the pending address request", () => {
+  const result = resolveKnowledgeQuery(
+    "Kota Kemuning",
+    [
+      {
+        role: "customer",
+        text: "Can I know the address?",
+        timestamp: "2026-10-11T14:58:00.000Z",
+      },
+      {
+        role: "ai",
+        text: "Do you mean the general business address, or a specific branch? If it’s a branch, please tell me which location.",
+        timestamp: "2026-10-11T14:59:00.000Z",
+      },
+    ],
+    currentQueryAt,
+  );
+
+  assert.equal(result.contextUsed, true);
+  assert.equal(result.clarificationResolved, true);
+  assert.match(result.retrievalQuery, /Kota Kemuning/i);
+  assert.match(result.retrievalQuery, /address/i);
+});
+
+test(
   "resolves Google location without the word link",
   () => {
     const result = resolveKnowledgeQuery(
@@ -109,6 +264,56 @@ test(
   },
 );
 
+
+
+test(
+  "resolves a day-only follow-up against the established branch opening-hours topic",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "What about Sunday?",
+      [
+        {
+          role: "customer",
+          text: "What are the Northside branch opening hours?",
+          timestamp: "2026-10-11T15:00:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(result.retrievalQuery, /Northside/i);
+    assert.match(result.retrievalQuery, /Sunday/i);
+    assert.equal(result.clarificationQuestion, undefined);
+  },
+);
+
+
+test(
+  "does not carry the previous branch into an explicit different-branch Sunday follow-up",
+  () => {
+    const query = "What about Alam Impian on Sunday?";
+
+    const result = resolveKnowledgeQuery(
+      query,
+      [
+        {
+          role: "customer",
+          text: "What are the Northside branch opening hours?",
+          timestamp: "2026-10-11T15:00:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, false);
+    assert.equal(result.retrievalQuery, query);
+    assert.doesNotMatch(result.retrievalQuery, /Northside/i);
+  },
+);
+
+
+
 test(
   "uses branch context for an opening-hours follow-up",
   () => {
@@ -123,6 +328,79 @@ test(
       result.retrievalQuery,
       /Kota Kemuning/i,
     );
+  },
+);
+
+test(
+  "resolves an opening-hours follow-up that omits the branch name",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "What are the opening hours?",
+      [previousBranchQuestion],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(result.retrievalQuery, /Kota Kemuning/i);
+    assert.match(result.retrievalQuery, /opening hours/i);
+    assert.equal(result.clarificationQuestion, undefined);
+  },
+);
+
+test(
+  "resolves a contextual price follow-up to the established service subject",
+  () => {
+    const result = resolveKnowledgeQuery(
+      "How much does it cost?",
+      [
+        {
+          role: "customer",
+          text: "Does the Northside branch offer massage therapy?",
+          timestamp: "2026-10-11T15:00:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.equal(result.contextUsed, true);
+    assert.match(result.retrievalQuery, /Northside/i);
+    assert.match(result.retrievalQuery, /massage therapy/i);
+    assert.match(result.retrievalQuery, /cost/i);
+    assert.equal(result.clarificationQuestion, undefined);
+  },
+);
+
+test(
+  "clarifies an unspecified branch reference when context is missing or ambiguous",
+  () => {
+    const missing = resolveKnowledgeQuery(
+      "What are the opening hours for that branch?",
+      [],
+      currentQueryAt,
+    );
+    const ambiguous = resolveKnowledgeQuery(
+      "What are the opening hours for that branch?",
+      [
+        {
+          role: "customer",
+          text: "Tell me about Kota Kemuning branch.",
+          timestamp: "2026-10-11T14:58:00.000Z",
+        },
+        {
+          role: "customer",
+          text: "What about Alam Impian branch?",
+          timestamp: "2026-10-11T14:59:00.000Z",
+        },
+      ],
+      currentQueryAt,
+    );
+
+    assert.ok(missing.clarificationQuestion);
+    assert.ok(ambiguous.clarificationQuestion);
+    assert.match(ambiguous.clarificationQuestion ?? "", /Which branch/i);
+    assert.equal(missing.contextUsed, false);
+    assert.equal(ambiguous.contextUsed, false);
+    assert.equal(ambiguous.retrievalQuery, "What are the opening hours for that branch?");
   },
 );
 

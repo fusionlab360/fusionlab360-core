@@ -6,6 +6,7 @@ import type {
   AppBindings,
   AppVariables,
 } from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
 
 import {
   testAIController,
@@ -28,12 +29,14 @@ const aiTestRoutes =
 
 aiTestRoutes.post(
   "/chat",
+  requirePermission("ai:test"),
   testAIController,
 );
 
 
 aiTestRoutes.post(
   "/session",
+  requirePermission("ai:test"),
   testAISessionController,
 );
 
