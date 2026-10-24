@@ -55,7 +55,7 @@ Date: 2026-10-24
 | 0037_console_service_contract.sql | 811B5BF2…624A2 | Creates service idempotency and tenant grants | **Pending** | Authorization data |
 | 0038_console_service_identity.sql | 2EFBC649…54F244 | Creates dedicated Console service identity marker | **Pending** | Authorization data |
 | 0039_console_messaging_send_grants.sql | B428AE6B…66735 | Rebuilds grants to add `messaging:send` | **Pending** | Table rebuild/permission preservation |
-| 0040_tenant_ai_auto_reply.sql | F53D1F00…D26B | Inserts `ai_auto_reply=1` for missing rows | **Pending** | **Unsafe without prior OFF initialization** |
+| 0040_tenant_ai_auto_reply.sql | F53D1F00…D26B | Inserts `ai_auto_reply=0` for missing rows | **Pending** | Historical data only; runtime uses `ai_chat` |
 | 0041_console_feature_grants.sql | FEAC7635…330F1 | Rebuilds grants to add feature scopes | **Pending** | Table rebuild/permission preservation |
 
 Hashes are shown with an abbreviated suffix for readability; the complete hashes were captured from `Get-FileHash` during this audit.

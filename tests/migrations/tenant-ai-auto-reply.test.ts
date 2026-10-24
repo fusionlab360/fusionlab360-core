@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-test("migration 0040 preserves explicit AI states and defaults missing state off", () => {
+test("historical migration 0040 preserves explicit auto-reply states and defaults missing state off", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL);

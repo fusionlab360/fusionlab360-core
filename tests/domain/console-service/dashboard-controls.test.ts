@@ -43,6 +43,7 @@ async function fixture(): Promise<{ db: LocalD1; key: string }> {
     INSERT INTO client_tenant_grants(client_id,tenant_id,grant_scope) VALUES ('console-client','tenant-a','messaging:send');
     INSERT INTO client_tenant_grants(client_id,tenant_id,grant_scope) VALUES ('console-client','tenant-a','features:read');
     INSERT INTO client_tenant_grants(client_id,tenant_id,grant_scope) VALUES ('console-client','tenant-a','features:write');
+    INSERT INTO tenant_feature_settings(tenant_id,feature_key,enabled) VALUES ('tenant-a','ai_auto_reply',0);
   `);
   return { db, key };
 }
@@ -66,13 +67,18 @@ test("conversation contact is resolved by verified provider contact ID", async (
   } finally { globalThis.fetch = originalFetch; db.sqlite.close(); }
 });
 
-test("AI auto-reply defaults off for a new tenant and is admin-service controlled", async () => {
+test("legacy AI auto-reply endpoint aliases the tenant AI Chat setting", async () => {
   const { db, key } = await fixture();
   try {
     const get = () => app().request("/internal/console/tenants/tenant-a/ai-auto-reply", { headers: { Authorization: `Bearer ${key}` } }, env(db));
-    assert.equal((await (await get()).json() as { enabled: boolean }).enabled, false);
+    assert.equal((await (await get()).json() as { enabled: boolean }).enabled, true);
     const update = await app().request("/internal/console/tenants/tenant-a/ai-auto-reply", { method: "PATCH", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) }, env(db));
     assert.equal(update.status, 200);
     assert.equal((await (await get()).json() as { enabled: boolean }).enabled, true);
+    const canonicalSetting = db.sqlite
+      .prepare("SELECT feature_key, enabled FROM tenant_feature_settings WHERE tenant_id = ? AND feature_key = ?")
+      .get("tenant-a", "ai_chat") as { feature_key: string; enabled: number };
+    assert.equal(canonicalSetting.feature_key, "ai_chat");
+    assert.equal(canonicalSetting.enabled, 1);
   } finally { db.sqlite.close(); }
 });

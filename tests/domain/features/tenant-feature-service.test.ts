@@ -131,15 +131,6 @@ test("registered features use their declared defaults", async () => {
     await isTenantFeatureEnabled(
       db,
       "tenant-a",
-      "ai_auto_reply",
-    ),
-    false,
-  );
-
-    assert.equal(
-    await isTenantFeatureEnabled(
-      db,
-      "tenant-a",
       "booking_appointment",
     ),
     true,
@@ -174,10 +165,6 @@ test("registered features use their declared defaults", async () => {
     true,
   );
 
-  assert.equal(
-    TENANT_FEATURES.ai_auto_reply.defaultEnabled,
-    false,
-  );
 });
 
 test("AI Chat and AI Booking settings are independent", async () => {
@@ -264,5 +251,6 @@ test("one tenant's settings do not affect another tenant", async () => {
 test("feature key validation accepts registered keys only", () => {
   assert.equal(isTenantFeatureKey("ai_chat"), true);
   assert.equal(isTenantFeatureKey("ai_booking"), true);
+  assert.equal(isTenantFeatureKey("ai_auto_reply"), false);
   assert.equal(isTenantFeatureKey("unknown_feature"), false);
 });

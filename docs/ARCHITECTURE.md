@@ -152,6 +152,20 @@ Clearly distinguish current implementation, approved future plans, known limitat
 
 Do not document intended behavior as implemented behavior.
 
+## 8.1 Tenant AI Chat control
+
+`ai_chat` is the sole tenant-level feature control for automatic AI chat
+responses. Inbound processing checks it before any automatic AI-generated
+send and rechecks it immediately before delivery. A missing `ai_chat` row
+uses the centrally registered feature default.
+
+`ai_auto_reply` is a deprecated historical setting. Migration 0040 and its
+rows are retained for migration history and data preservation, but they are
+not an independent runtime authorization gate. The legacy Console
+`/tenants/:tenantId/ai-auto-reply` routes remain compatibility aliases for
+the `ai_chat` setting and retain their existing feature permission and
+tenant-grant checks.
+
 ## 9. Explicitly distinguish:
 
 Existing architectural principles and intended extension points.

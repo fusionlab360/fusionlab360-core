@@ -1015,7 +1015,6 @@ try {
   }
 
   let tenantAIChatEnabled = false;
-  let tenantAIAutoReplyEnabled = false;
 
     try {
       tenantAIChatEnabled = await runInboundProcessingOperation(
@@ -1038,41 +1037,16 @@ try {
       );
     }
 
-    try {
-      tenantAIAutoReplyEnabled = await runInboundProcessingOperation(
-        "ai_auto_reply_feature",
-        correlationId,
-        () => isTenantFeatureEnabled(
-          db,
-          context.tenant.id,
-          "ai_auto_reply",
-        ),
-      );
-    } catch (error: unknown) {
-      console.error(
-        "Failed to load tenant AI auto-reply setting.",
-        {
-          tenantId: context.tenant.id,
-          error: getErrorClassification(error),
-        },
-      );
-    }
-
-  const aiAutoReplyEnabled =
-    tenantAIChatEnabled && tenantAIAutoReplyEnabled;
-
   const isAIResponseEnabled = async (): Promise<boolean> => {
     try {
       return await runInboundProcessingOperation(
-        "ai_auto_reply_recheck",
+        "ai_chat_recheck",
         correlationId,
-        async () =>
-          (await isTenantFeatureEnabled(db, context.tenant.id, "ai_chat")) &&
-          (await isTenantFeatureEnabled(db, context.tenant.id, "ai_auto_reply")),
+        () => isTenantFeatureEnabled(db, context.tenant.id, "ai_chat"),
       );
     } catch (error: unknown) {
       console.error(
-        "Failed to recheck tenant AI auto-reply setting.",
+        "Failed to recheck tenant AI Chat setting.",
         {
           tenantId: context.tenant.id,
           error: getErrorClassification(error),
@@ -1581,7 +1555,7 @@ try {
  */
 
   if (
-      aiAutoReplyEnabled &&
+      tenantAIChatEnabled &&
       tenantBookingEnabled &&
       !clarificationResolved &&
       shouldRunBookingIntentExtraction({
@@ -1957,7 +1931,7 @@ try {
 
 
 
-  if (!aiAutoReplyEnabled) {
+  if (!tenantAIChatEnabled) {
     console.info(
       "Normal AI response skipped because AI Chat is disabled or its setting could not be verified.",
       {
@@ -2575,7 +2549,7 @@ console.log(
   try {
 
     if (!(await isAIResponseEnabled())) {
-      console.info("AI response skipped because tenant auto-reply is disabled.", {
+      console.info("AI response skipped because tenant AI Chat is disabled.", {
         tenantId: context.tenant.id,
         conversationId: message.conversationId,
       });

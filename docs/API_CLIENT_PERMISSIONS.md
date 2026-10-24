@@ -49,6 +49,12 @@ This tool does not assign scopes automatically, verify business ownership of an 
 | `features:read` | `GET /features` |
 | `features:write` | `PATCH /features/:featureKey` |
 
+The legacy internal Console routes `GET` and `PATCH`
+`/internal/console/tenants/:tenantId/ai-auto-reply` continue to require
+`features:read` and `features:write`, respectively, plus the corresponding
+tenant grant. They are compatibility aliases for `ai_chat`; they do not
+authorize an independent `ai_auto_reply` feature.
+
 Inbound GoHighLevel webhooks retain provider signature validation rather than API-client bearer scopes. OAuth routes retain their existing OAuth state/callback controls. Browser-extension behavior has no separately scoped route in the current protected route matrix; do not grant an unrelated scope on that assumption.
 
 OAuth onboarding also requires the provider's exact registered scopes in the `GHL_OAUTH_SCOPES` Worker binding, alongside the existing OAuth client and callback configuration. Core does not infer or default provider scopes; initiation fails closed when the binding is missing or malformed. Configure it from the registered Marketplace app before enabling onboarding in an environment.
