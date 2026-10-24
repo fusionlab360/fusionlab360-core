@@ -12,6 +12,7 @@ import type {
 import {
   createIntegrationContext,
 } from "../../context/integration";
+import { createPatientIdentityGateway } from "../contact/patient-identity";
 
 
 import {
@@ -128,6 +129,7 @@ export async function testAIBookingController(
       .provider,
 
     requestContext.integrationRuntime,
+    createPatientIdentityGateway(requestContext),
   );
 
 

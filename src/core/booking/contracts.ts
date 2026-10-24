@@ -23,6 +23,52 @@ export type BookingType =
   | "appointment"
   | "accommodation";
 
+export interface PatientIdentity {
+  fullName: string | null;
+  identityNumber: string | null;
+  phone: string | null;
+  identityType?: string | null;
+}
+
+export interface PatientIdentityGateway {
+  load(customerId: string): Promise<PatientIdentity>;
+  update(customerId: string, identity: PatientIdentity): Promise<PatientIdentity>;
+}
+
+export type BookingField =
+  | "customer.fullName"
+  | "customer.identityNumber"
+  | "customer.phone";
+
+export type BookingPersistenceMode =
+  | "none"
+  | "optional"
+  | "required";
+
+export interface BookingOfferingFieldPolicy {
+  requiredFields: BookingField[];
+  persistence: {
+    target?: "crm.contact" | "none";
+    mode: BookingPersistenceMode;
+  };
+}
+
+/**
+ * Legacy appointment field requirements retained only for compatibility with
+ * previously stored provider configuration. New code should use the generic
+ * offering policy above.
+ */
+export type AppointmentPatientField =
+  | "full_name"
+  | "identity_number"
+  | "phone";
+
+export interface AppointmentPatientFieldRequirements {
+  fields: AppointmentPatientField[];
+  persistToContact?: boolean;
+  requirePersistence?: boolean;
+}
+
 
 /*
  * --------------------------------------------------

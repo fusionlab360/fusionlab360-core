@@ -13,6 +13,7 @@
   "APP_ENVIRONMENT": "production",
   "AI_BOOKING_ENABLED": "true",
   "GHL_INBOUND_QUEUE_ENABLED": "true",
+  "NEW_QUEUE_ENVELOPES_ENABLED": "false",
   "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback",
   "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write"
 },
@@ -22,7 +23,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "fusionlab360",
+      "database_name": "fusionlab360-db",
       "database_id": "e80f1a85-3b37-4fc7-aa68-e4aab4fd7ec4",
       "remote": true
     }
@@ -70,6 +71,8 @@
         "APP_ENVIRONMENT": "staging",
         "AI_BOOKING_ENABLED": "false",
         "GHL_INBOUND_QUEUE_ENABLED": "false",
+        "NEW_QUEUE_ENVELOPES_ENABLED": "false",
+        "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
         "GHL_OAUTH_REDIRECT_URI": "https://fusionlab360-core-staging.fusionlab360-official.workers.dev/oauth/gohighlevel/callback",
         "AI_PIPELINE_V2_TENANT_ALLOWLIST": "",
         "JWT_ISSUER": "fusionlab360-core-staging",

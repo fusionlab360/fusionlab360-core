@@ -5,6 +5,7 @@ import type {
 import type {
   IntegrationRuntime,
 } from "../core/integration/runtime";
+import type { PatientIdentityGateway } from "../core/booking";
 
 
 export interface IntegrationContext {
@@ -23,6 +24,8 @@ export interface IntegrationContext {
 
   integrationRuntime:
     IntegrationRuntime;
+
+  patientIdentity?: PatientIdentityGateway;
 }
 
 
@@ -35,6 +38,7 @@ export function createIntegrationContext(
 
   integrationRuntime:
     IntegrationRuntime,
+  patientIdentity?: PatientIdentityGateway,
 ): IntegrationContext {
 
   return {
@@ -49,5 +53,6 @@ export function createIntegrationContext(
       new Date(),
 
     integrationRuntime,
+    patientIdentity,
   };
 }

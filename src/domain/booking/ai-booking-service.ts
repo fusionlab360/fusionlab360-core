@@ -14,9 +14,14 @@ import type {
 
 
 import type {
+  AppointmentPatientField,
+  AppointmentPatientFieldRequirements,
   BookingAvailabilitySlot,
+  BookingOfferingFieldPolicy,
   BookingType,
+  PatientIdentity,
 } from "../../core/booking";
+import { normalizeInternationalPhoneNumber, normalizePhoneNumber } from "../../core/crm";
 
 
 import {
@@ -54,6 +59,39 @@ import type {
 import {
   getConfiguredGHLRentalsBookingPageUrl,
 } from "./rentals-booking-page";
+import { parseAppointmentPreference, appointmentLocalTimeToISO } from "./appointment-preference";
+import { logger } from "../../core/logger";
+
+function logCancellationStage(
+  stage: "pre_get" | "mutation" | "post_get",
+  input: ProcessAIBookingInput,
+  appointmentId: string,
+  result?: { bookingId: string; offeringId: string; customerId: string; metadata?: Record<string, unknown> },
+  error?: unknown,
+): void {
+  const errorRecord = error && typeof error === "object" ? error as Record<string, unknown> : null;
+  const diagnostics = errorRecord?.diagnostics && typeof errorRecord.diagnostics === "object"
+    ? errorRecord.diagnostics as Record<string, unknown>
+    : null;
+  (error ? logger.warn : logger.info)("AI booking cancellation stage diagnostics", {
+    stage,
+    correlationId: input.context.requestId,
+    appointmentReference: appointmentId,
+    httpStatus: typeof errorRecord?.status === "number" ? errorRecord.status : null,
+    envelopeType: diagnostics?.envelopeType ?? (result ? "normalized" : null),
+    requiredFields: diagnostics?.requiredFields ?? (result ? {
+      id: Boolean(result.bookingId),
+      calendarId: Boolean(result.offeringId),
+      locationId: typeof result.metadata?.locationId === "string" && result.metadata.locationId.length > 0,
+      contactId: Boolean(result.customerId),
+      startTime: true,
+      title: true,
+    } : null),
+    normalizationFailureCategory: diagnostics?.failureCategory ?? (
+      errorRecord?.status ? "transport_or_api_failure" : error ? "unknown_failure" : null
+    ),
+  });
+}
 
 /*
  * --------------------------------------------------
@@ -93,6 +131,195 @@ export interface ProcessAIBookingInput {
   
 }
 
+function extractPatientIdentity(history: MessagingMessage[], currentMessage: string): PatientIdentity {
+  const text = [...history.map(item => item.text), currentMessage].join(" ");
+  const nameMatch = text.match(/\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm)\s+([A-Za-z][A-Za-z'’-]+(?:\s+[A-Za-z][A-Za-z'’-]+){1,4})/i);
+  const identityMatch = text.match(/\b(?:ic|passport|identity)(?:\s+(?:number|no\.?|id))?\s*(?:is|:)?\s*([A-Za-z0-9][A-Za-z0-9-]{4,24})\b/i);
+  const fullName = nameMatch?.[1]?.trim() ?? null;
+  const identityNumber = identityMatch?.[1]?.trim() ?? null;
+  const phone = extractInternationalPhone(text);
+  return {
+    fullName: fullName && !/^(?:guest|unknown|contact|customer)$/i.test(fullName) ? fullName : null,
+    identityNumber,
+    phone,
+    identityType: identityMatch ? (/\bpassport\b/i.test(identityMatch[0]) ? "passport" : "identity") : null,
+  };
+}
+
+function extractInternationalPhone(value: string): string | null {
+  const direct = normalizeInternationalPhoneNumber(value);
+  if (direct) return direct;
+  const matches = value.match(/(?:\+|00)\s*\d[\d\s().-]{5,}\d/g) ?? [];
+  for (const match of matches) {
+    const normalized = normalizeInternationalPhoneNumber(match);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function getAppointmentPatientRequirements(
+  metadata: Record<string, unknown> | undefined,
+): AppointmentPatientFieldRequirements | null {
+  const value = metadata?.bookingFieldPolicy as BookingOfferingFieldPolicy | undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!Array.isArray(value.requiredFields) || !value.persistence || typeof value.persistence !== "object") return null;
+  const fields = value.requiredFields.map((field) =>
+    field === "customer.fullName" ? "full_name" : field === "customer.identityNumber" ? "identity_number" : field === "customer.phone" ? "phone" : null,
+  );
+  if (fields.some((field) => field === null) || new Set(fields).size !== fields.length) return null;
+  const mode = value.persistence.mode;
+  if (mode !== "none" && mode !== "optional" && mode !== "required") return null;
+  return {
+    fields: fields as AppointmentPatientField[],
+    persistToContact: mode !== "none",
+    requirePersistence: mode === "required",
+  };
+}
+
+type AppointmentCalendarResolutionIssue =
+  | "calendar_not_found"
+  | "calendar_policy_missing"
+  | "calendar_policy_invalid"
+  | "calendar_resolution_failed";
+
+function logCalendarResolutionIssue(
+  input: ProcessAIBookingInput,
+  calendarId: string | null,
+  reason: AppointmentCalendarResolutionIssue,
+): void {
+  console.log("AI BOOKING CALENDAR RESOLUTION", {
+    tenantId: input.context.tenant.id,
+    provider: input.context.provider,
+    conversationId: input.conversationId,
+    calendarId,
+    reason,
+  });
+}
+
+function getAppointmentPolicyIssue(
+  metadata: Record<string, unknown> | undefined,
+): "calendar_policy_missing" | "calendar_policy_invalid" {
+  if (metadata?.bookingFieldPolicyStatus === "invalid") return "calendar_policy_invalid";
+  return "calendar_policy_missing";
+}
+
+function extractBookingPatientIdentity(
+  history: MessagingMessage[],
+  currentMessage: string,
+  collectionStartedAt: string,
+  pendingField?: AppointmentPatientField,
+  requiredFields: readonly AppointmentPatientField[] = [],
+): PatientIdentity {
+  const messages = history.filter((message) =>
+    message.direction === "inbound" &&
+    message.timestamp >= collectionStartedAt,
+  );
+  const identity: PatientIdentity = {
+    fullName: null,
+    identityNumber: null,
+    phone: null,
+    identityType: null,
+  };
+  for (const text of [...messages.map((message) => message.text), currentMessage]) {
+    const extracted = extractPatientIdentity([], text);
+    identity.fullName ??= extracted.fullName;
+    identity.identityNumber ??= extracted.identityNumber;
+    identity.phone ??= extracted.phone;
+    identity.identityType ??= extracted.identityType;
+
+    // Standalone identity values carry no label, so recognize them only
+    // during a calendar policy that explicitly requires an identity number.
+    if (!identity.identityNumber && requiredFields.includes("identity_number")) {
+      const candidate = text.trim();
+      if (/^(?=.*\d)[A-Za-z0-9-]{5,25}$/.test(candidate)) {
+        identity.identityNumber = candidate;
+        identity.identityType = /[A-Za-z]/.test(candidate) ? "passport" : "identity";
+      }
+    }
+  }
+  if ((pendingField === "identity_number" || (!pendingField && identity.fullName && !identity.identityNumber)) && !identity.identityNumber) {
+    const candidate = currentMessage.trim();
+    if (requiredFields.includes("identity_number") && /^(?=.*\d)[A-Za-z0-9-]{5,25}$/.test(candidate)) {
+      identity.identityNumber = candidate;
+      identity.identityType = /[A-Za-z]/.test(candidate) ? "passport" : "identity";
+    }
+  }
+  if (pendingField === "phone" && !identity.phone) {
+    identity.phone = extractInternationalPhone(currentMessage);
+  }
+  return identity;
+}
+
+function missingPatientFields(
+  requirements: AppointmentPatientFieldRequirements,
+  identity: PatientIdentity,
+): AppointmentPatientField[] {
+  const required = new Set(requirements.fields);
+  const ordered: AppointmentPatientField[] = ["full_name", "identity_number", "phone"];
+  return ordered.filter((field) => required.has(field) && (
+    field === "full_name" ? !identity.fullName : field === "identity_number" ? !identity.identityNumber : !identity.phone
+  ));
+}
+
+async function enrichPatientIdentityFromContact(
+  input: ProcessAIBookingInput,
+  requirements: AppointmentPatientFieldRequirements,
+  identity: PatientIdentity,
+): Promise<PatientIdentity> {
+  const needsExistingIdentityNumber =
+    requirements.fields.includes("identity_number") && !identity.identityNumber;
+  if (!input.context.patientIdentity || !needsExistingIdentityNumber) {
+    return identity;
+  }
+  try {
+    const existing = await input.context.patientIdentity.load(input.customerId);
+    return {
+      // A new appointment must collect the customer's name in the current
+      // booking, even when the linked CRM contact already has one.
+      fullName: identity.fullName,
+      identityNumber: identity.identityNumber ?? existing.identityNumber,
+      // Phone is intentionally collected from the customer for every new
+      // appointment, even when the linked contact already has one.
+      phone: identity.phone,
+      identityType: identity.identityType ?? existing.identityType,
+    };
+  } catch {
+    return identity;
+  }
+}
+
+function buildPatientDetailsPrompt(field: AppointmentPatientField, invalid = false): string {
+  const label = field === "full_name" ? "full name" : field === "identity_number" ? "IC or passport number" : "mobile number with country code";
+  if (field === "identity_number" && invalid) {
+    return "I couldn't validate that IC or passport number. Please provide the number again using at least 5 letters or digits.";
+  }
+  if (field === "phone") {
+    return invalid
+      ? "I couldn't validate that mobile number. Please provide it with an international country code, for example +60 12-345 6789 for Malaysia."
+      : "Please share your mobile number with country code (e.g., +60 12-345 6789 for Malaysia).";
+  }
+  return `Before I confirm the appointment, please provide your ${label}.`;
+}
+
+function looksLikeIdentityResponse(value: string): boolean {
+  const trimmed = value.trim();
+  return /\b(?:ic|passport|identity)\b/i.test(trimmed) || /^(?=.*\d)[A-Za-z0-9-]{1,25}$/.test(trimmed);
+}
+
+function looksLikePhoneResponse(value: string): boolean {
+  return /(?:\+|00)?\s*\d[\d\s().-]{5,}\d/.test(value.trim());
+}
+
+function maskIdentityNumber(value: string): string {
+  const visible = value.slice(-4);
+  return `${"*".repeat(Math.max(0, value.length - visible.length))}${visible}`;
+}
+
+function maskPhoneNumber(value: string): string {
+  const normalized = normalizePhoneNumber(value) ?? value;
+  return `${"*".repeat(Math.max(0, normalized.length - 4))}${normalized.slice(-4)}`;
+}
+
 
 /*
  * --------------------------------------------------
@@ -125,7 +352,8 @@ export interface AIBookingResult {
   actionResult?:
     | "none"
     | "success"
-    | "failed";
+    | "failed"
+    | "uncertain";
 
   booking?:
     Awaited<
@@ -133,6 +361,47 @@ export interface AIBookingResult {
         typeof createBooking
       >
     >;
+}
+
+type BookingReadbackOutcome = "confirmed" | "pending" | "failed";
+
+function normalizeReadbackTimestamp(value: string): number | null {
+  // Provider readback must carry an explicit UTC or numeric offset. A
+  // timezone-less value is deliberately rejected instead of being interpreted
+  // using the Worker timezone.
+  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value.trim())) return null;
+  const epoch = Date.parse(value);
+  return Number.isFinite(epoch) ? epoch : null;
+}
+
+/** Require both confirmed status and an exact match to the submitted booking. */
+export function classifyBookingReadback(
+  expected: {
+    bookingId: string;
+    offeringId: string;
+    customerId: string;
+    start: string;
+    end: string;
+  },
+  actual: Awaited<ReturnType<typeof getBooking>>,
+): BookingReadbackOutcome {
+  const expectedStart = normalizeReadbackTimestamp(expected.start);
+  const expectedEnd = normalizeReadbackTimestamp(expected.end);
+  const actualStart = normalizeReadbackTimestamp(actual.start);
+  const actualEnd = normalizeReadbackTimestamp(actual.end);
+  const identityMatches =
+    actual.bookingId === expected.bookingId &&
+    actual.offeringId === expected.offeringId &&
+    actual.customerId === expected.customerId &&
+    expectedStart !== null && expectedEnd !== null &&
+    actualStart !== null && actualEnd !== null &&
+    actualStart === expectedStart &&
+    actualEnd === expectedEnd;
+
+  if (!identityMatches) return "failed";
+  if (actual.status === "confirmed") return "confirmed";
+  if (actual.status === "pending") return "pending";
+  return "failed";
 }
 
 
@@ -200,6 +469,28 @@ function readSessionData(
 
 
   return {};
+}
+
+function logConfirmationBranch(
+  input: ProcessAIBookingInput,
+  branch: string,
+  statusBefore: AIBookingSessionStatus | null,
+  statusAfter: AIBookingSessionStatus | null,
+  prerequisiteOutcome: string,
+  providerCreationAttempted: boolean,
+  transitionPersisted: boolean,
+  nonProgressReason: string | null = null,
+): void {
+  console.log("AI BOOKING CONFIRMATION BRANCH", {
+    correlationId: input.context.requestId,
+    branch,
+    statusBefore,
+    statusAfter,
+    prerequisiteOutcome,
+    providerCreationAttempted,
+    transitionPersisted,
+    nonProgressReason,
+  });
 }
 
 
@@ -1367,6 +1658,45 @@ function buildAvailabilityMessage(
   );
 }
 
+function localSlotDate(slot: BookingAvailabilitySlot, timezone: string): string | null {
+  const timestamp = Date.parse(slot.start);
+  if (!Number.isFinite(timestamp)) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function selectAlternativeSlots(
+  slots: BookingAvailabilitySlot[],
+  requestedStart: string,
+  requestedDate: string,
+  timezone: string,
+  offeringId: string,
+): BookingAvailabilitySlot[] {
+  const requestedTimestamp = Date.parse(requestedStart);
+  return slots
+    .filter((slot) => slot.available !== false && slot.offeringId === offeringId && localSlotDate(slot, timezone) === requestedDate)
+    .filter((slot) => {
+      const start = Date.parse(slot.start);
+      const end = Date.parse(slot.end);
+      return Number.isFinite(start) && Number.isFinite(end) && end > start && start !== requestedTimestamp;
+    })
+    .sort((left, right) => {
+      const distance = Math.abs(Date.parse(left.start) - requestedTimestamp) - Math.abs(Date.parse(right.start) - requestedTimestamp);
+      return distance || Date.parse(left.start) - Date.parse(right.start) || Date.parse(left.end) - Date.parse(right.end);
+    })
+    .slice(0, 3);
+}
+
+function shiftCalendarDate(date: string, days: number): string {
+  const shifted = new Date(`${date}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
 
 /*
  * --------------------------------------------------
@@ -1636,6 +1966,33 @@ function buildConfirmationMessage(
   );
 }
 
+function buildAppointmentConfirmationMessage(
+  offeringName: string,
+  slot: BookingAvailabilitySlot,
+  timezone: string,
+  identity: PatientIdentity,
+): string {
+  const date = new Intl.DateTimeFormat("en-MY", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(slot.start));
+  const patientLines = [
+    identity.fullName ? `Patient: ${identity.fullName}` : null,
+    identity.identityNumber ? `IC/Passport: ${maskIdentityNumber(identity.identityNumber)}` : null,
+    identity.phone ? `Phone: ${maskPhoneNumber(identity.phone)}` : null,
+  ].filter((value): value is string => value !== null);
+  return [
+    "Please confirm your appointment:",
+    `Service: ${offeringName}`,
+    `Date: ${date}`,
+    `Time: ${formatSlot(slot, timezone)}`,
+    ...patientLines,
+    "Shall I confirm your appointment?",
+  ].join("\n");
+}
+
 /*
  * --------------------------------------------------
  * Deterministic offering selection
@@ -1665,10 +2022,17 @@ function resolveOfferingSelection(
     string,
 ) {
 
+  const compact = (value: string) => value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
   const normalized =
     message
       .trim()
-      .toLowerCase();
+      .toLowerCase()
+      .replace(/^(?:i\s+(?:want|need|would like)(?:\s+to\s+book)?|book|please book)\s+/i, "")
+      .replace(/[.!?]+$/, "");
 
 
   if (
@@ -1686,17 +2050,22 @@ function resolveOfferingSelection(
    * "2"
    * "3"
    */
-  if (
-    /^\d+$/.test(
-      normalized,
-    )
-  ) {
+  const numericSelection = normalized.match(/^(?:option|choice)\s*(\d+)$/)?.[1] ??
+    normalized.match(/^the\s+(first|second|third)(?:\s+one)?$/)?.[1];
+  const numericIndex = numericSelection === "first"
+    ? 1
+    : numericSelection === "second"
+      ? 2
+      : numericSelection === "third"
+        ? 3
+        : numericSelection
+          ? Number(numericSelection)
+          : /^\d+$/.test(normalized)
+            ? Number(normalized)
+            : null;
 
-    const index =
-      Number(
-        normalized,
-      ) -
-      1;
+  if (numericIndex !== null) {
+    const index = numericIndex - 1;
 
 
     if (
@@ -1731,6 +2100,15 @@ function resolveOfferingSelection(
   ) {
 
     return exact[0];
+  }
+
+  // Accept an unambiguous compact form such as "woundcare" for
+  // a displayed offering named "Wound Care".
+  const compactMatches = offerings.filter(
+    (offering) => compact(offering.name) === compact(normalized),
+  );
+  if (compactMatches.length === 1) {
+    return compactMatches[0];
   }
 
 
@@ -2408,17 +2786,22 @@ function resolvePendingSlotSelection(
   /*
    * Numeric selection.
    */
-  if (
-    /^\d+$/.test(
-      normalized,
-    )
-  ) {
+  const numericSelection = normalized.match(/^(?:option|choice)\s*(\d+)$/)?.[1] ??
+    normalized.match(/^the\s+(first|second|third)(?:\s+one)?$/)?.[1];
+  const numericIndex = numericSelection === "first"
+    ? 1
+    : numericSelection === "second"
+      ? 2
+      : numericSelection === "third"
+        ? 3
+        : numericSelection
+          ? Number(numericSelection)
+          : /^\d+$/.test(normalized)
+            ? Number(normalized)
+            : null;
 
-    const index =
-      Number(
-        normalized,
-      ) -
-      1;
+  if (numericIndex !== null) {
+    const index = numericIndex - 1;
 
 
     if (
@@ -2670,18 +3053,14 @@ async function isBookingStillAvailable(
       );
 
 
-    const range =
-      buildDayRange(
-        date,
-        timezone,
-      );
-
-
-    availabilityStart =
-      range.start;
-
-    availabilityEnd =
-      range.end;
+    if (Date.parse(startAt) <= Date.now()) return false;
+    const nextDate = new Date(`${date}T00:00:00Z`);
+    nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+    const localStart = appointmentLocalTimeToISO(date, "00:00", timezone);
+    const localEnd = appointmentLocalTimeToISO(nextDate.toISOString().slice(0, 10), "00:00", timezone);
+    if (!localStart || !localEnd) return false;
+    availabilityStart = localStart;
+    availabilityEnd = localEnd;
   }
 
   /*
@@ -2811,6 +3190,55 @@ export async function processAIBooking(
       input.conversationId,
     );
 
+  const storedAppointmentTimezone = getStoredString(session, "appointmentTimezone");
+  if (session?.bookingType === "appointment" && storedAppointmentTimezone) {
+    input = { ...input, timezone: storedAppointmentTimezone };
+  }
+
+  const priorBookingData = readSessionData(session);
+  const priorCreationStatus = priorBookingData.bookingCreationStatus;
+  if (
+    session &&
+    (priorCreationStatus === "in_progress" ||
+      priorCreationStatus === "pending" ||
+      priorCreationStatus === "uncertain" ||
+      priorCreationStatus === "failed")
+  ) {
+    logConfirmationBranch(input, "prior_creation_fence", session.status, session.status,
+      "unresolved_provider_outcome", false, false, "prior_creation_unresolved");
+    const priorBookingId =
+      typeof priorBookingData.bookingId === "string"
+        ? priorBookingData.bookingId
+        : null;
+    return {
+      handled: true,
+      state: "awaiting_confirmation",
+      intent: {
+        action: "none",
+        bookingType: session.bookingType,
+        offeringQuery: getStoredString(session, "offeringQuery"),
+        branchQuery: getStoredString(session, "branchQuery"),
+        resourceQuery: getStoredString(session, "resourceQuery"),
+        date: getStoredString(session, "date"),
+        time: getStoredString(session, "time"),
+        start: session.startAt,
+        end: session.endAt,
+        adults: session.adults,
+        children: session.children,
+        quantity: session.quantity,
+        slotNumber: null,
+        confidence: 1,
+        reason: "A previous provider booking attempt is unresolved.",
+      },
+      message: priorBookingId
+        ? `Your appointment request is awaiting confirmation from our booking system. The provider reference is ${priorBookingId}. Our team can verify the status before another booking is attempted.`
+        : "Your appointment request is still being checked by our booking system. Our team will verify the outcome before another booking is attempted.",
+      session,
+      actionExecuted: false,
+      actionResult: "uncertain",
+    };
+  }
+
 /*
  * --------------------------------------------------
  * Confirmed booking protection
@@ -2830,6 +3258,11 @@ if (
   readSessionData(
     session,
   ).pendingRescheduleConfirmation !==
+    true &&
+
+  readSessionData(
+    session,
+  ).pendingCancellation !==
     true &&
 
   !isExplicitNewBookingMessage(
@@ -2864,9 +3297,6 @@ if (
 
       conversationId:
         input.conversationId,
-
-      message:
-        input.currentMessage,
 
       bookingId:
         existingBookingId,
@@ -2979,6 +3409,28 @@ if (
       session,
     );
 
+    /*
+     * A cancelled session no longer represents an active provider
+     * appointment.  Start a fresh session for the next booking intent so
+     * the cancelled appointment reference cannot reach the create guard.
+     * Keep this limited to an actual booking action; ordinary conversation
+     * after cancellation must not create a new booking implicitly.
+     */
+    const cancelledSessionBookingType =
+      intent.bookingType ?? session?.bookingType ?? null;
+    if (
+      session?.status === "cancelled" &&
+      intent.action !== "none" &&
+      intent.action !== "cancel" &&
+      (cancelledSessionBookingType === "appointment" || cancelledSessionBookingType === "accommodation")
+    ) {
+      session = createFreshSession(
+        input.context,
+        input.conversationId,
+        cancelledSessionBookingType,
+      );
+    }
+
    
  const availabilityRefinementRequested =
     isAvailabilityRefinementMessage(
@@ -3080,9 +3532,6 @@ if (
 
       bookingId:
         confirmedBookingId,
-
-      message:
-        input.currentMessage,
 
       date:
         intent.date,
@@ -3197,9 +3646,6 @@ if (
 
         bookingId:
           existingBookingId,
-
-        message:
-          input.currentMessage,
       },
     );
 
@@ -3290,12 +3736,14 @@ if (
 
   try {
 
-    const currentBooking =
-      await getBooking(
-        input.context,
-
-        existingBookingId,
-      );
+    let currentBooking: Awaited<ReturnType<typeof getBooking>>;
+    try {
+      currentBooking = await getBooking(input.context, existingBookingId);
+      logCancellationStage("pre_get", input, existingBookingId, currentBooking);
+    } catch (error) {
+      logCancellationStage("pre_get", input, existingBookingId, undefined, error);
+      throw error;
+    }
 
 
     /*
@@ -3357,6 +3805,18 @@ if (
       };
     }
 
+    if (existingSessionData.cancellationResult === "unresolved") {
+      return {
+        handled: true,
+        state: "confirmed",
+        intent,
+        message: "I couldn't verify the cancellation yet. Please contact our team before trying again.",
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+
 
     /*
      * ------------------------------------------
@@ -3364,12 +3824,14 @@ if (
      * ------------------------------------------
      */
 
-    const cancellationResult =
-      await cancelBooking(
-        input.context,
-
-        existingBookingId,
-      );
+    let cancellationResult: Awaited<ReturnType<typeof cancelBooking>>;
+    try {
+      cancellationResult = await cancelBooking(input.context, existingBookingId);
+      logCancellationStage("mutation", input, existingBookingId, cancellationResult);
+    } catch (error) {
+      logCancellationStage("mutation", input, existingBookingId, undefined, error);
+      throw error;
+    }
 
 
     /*
@@ -3378,10 +3840,29 @@ if (
      * ------------------------------------------
      */
 
-    if (
-      cancellationResult.status !==
-        "cancelled"
-    ) {
+    let cancellationReadback: Awaited<ReturnType<typeof getBooking>>;
+    try {
+      cancellationReadback = await getBooking(input.context, existingBookingId);
+      logCancellationStage("post_get", input, existingBookingId, cancellationReadback);
+    } catch (error) {
+      logCancellationStage("post_get", input, existingBookingId, undefined, error);
+      cancellationReadback = {
+        ...cancellationResult,
+        status: "pending",
+      };
+    }
+
+    const cancellationVerified =
+      cancellationResult.status === "cancelled" &&
+      cancellationReadback.status === "cancelled" &&
+      cancellationReadback.bookingId === existingBookingId &&
+      cancellationReadback.customerId === currentBooking.customerId &&
+      cancellationReadback.offeringId === currentBooking.offeringId &&
+      typeof currentBooking.metadata?.locationId === "string" &&
+      currentBooking.metadata.locationId.length > 0 &&
+      cancellationReadback.metadata?.locationId === currentBooking.metadata.locationId;
+
+    if (!cancellationVerified) {
 
       console.error(
         "AI BOOKING CANCELLATION FAILED: provider did not confirm cancellation",
@@ -3405,10 +3886,10 @@ if (
 
 
       existingSessionData.pendingCancellation =
-        false;
+        true;
 
       existingSessionData.cancellationResult =
-        "failed";
+        "unresolved";
 
       session.dataJson =
         JSON.stringify(
@@ -3599,10 +4080,10 @@ if (
 
 
     existingSessionData.pendingCancellation =
-      false;
+      true;
 
     existingSessionData.cancellationResult =
-      "failed";
+      "unresolved";
 
     session.dataJson =
       JSON.stringify(
@@ -3630,7 +4111,7 @@ if (
       intent,
 
       message:
-        "I couldn't cancel the appointment right now. Please try again or contact our team.",
+        "I couldn't verify the cancellation with our booking system. Please contact our team before trying again.",
 
       session,
 
@@ -5575,96 +6056,40 @@ if (
     };
   }
 }
- 
-/*
- * --------------------------------------------------
- * Active booking session takes priority
- * --------------------------------------------------
- *
- * When we are already inside a booking flow,
- * short replies such as "1", "2", or a calendar
- * name are selections, not ordinary conversation.
- *
- * This must run BEFORE the generic "action === none"
- * exit.
- */
 
+/* Resolve selections against the menu actually shown to this conversation. */
 if (
-  session &&
-
-  session.status !==
-    "confirmed" &&
-
-  session.status !==
-    "cancelled" &&
-
-  session.bookingType ===
-    "appointment" &&
-
-  !session.offeringId
+  session?.bookingType === "appointment" &&
+  session.status !== "confirmed" && session.status !== "cancelled" &&
+  intent.action !== "cancel"
 ) {
-
-  const offerings =
-    await listBookingOfferings(
-      input.context,
-
-      "appointment",
-    );
-
-
-  const selectedOffering =
-    resolveOfferingSelection(
-      offerings,
-
-      input.currentMessage,
-    );
-
-
-  if (
-    selectedOffering
-  ) {
-
-    console.log(
-      "AI BOOKING OFFERING SELECTED DETERMINISTICALLY",
-      {
-        tenantId:
-          input.context.tenant.id,
-
-        conversationId:
-          input.conversationId,
-
-        message:
-          input.currentMessage,
-
-        offeringId:
-          selectedOffering.id,
-
-        offeringName:
-          selectedOffering.name,
-      },
-    );
-
-
-    intent = {
-
-      ...intent,
-
-      action:
-        "continue",
-
-      bookingType:
-        "appointment",
-
-      offeringQuery:
-        selectedOffering.name,
-
-      confidence:
-        1,
-
-      reason:
-        "Selected from active booking offerings.",
-    };
+  if (!session.offeringId && await isTenantFeatureEnabled(input.db, input.context.tenant.id, "booking_appointment")) {
+    const offerings = await listBookingOfferings(input.context, "appointment");
+    const data = readSessionData(session);
+    const displayedIds = Array.isArray(data.displayedOfferingIds)
+      ? data.displayedOfferingIds.filter((id): id is string => typeof id === "string")
+      : [];
+    const numeric = /^\d+$/.test(input.currentMessage.trim());
+    const selected = numeric
+      ? offerings.find(offering => offering.id === displayedIds[Number(input.currentMessage.trim()) - 1])
+      : resolveOfferingSelection(offerings, input.currentMessage);
+    if (selected) {
+      session.offeringId = selected.id;
+      data.offeringQuery = selected.name;
+      session.dataJson = JSON.stringify(data);
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      intent = { ...intent, offeringQuery: selected.name };
+    } else {
+      // An ambiguous reply must not be replaced by a model-invented selection.
+      intent = { ...intent, offeringQuery: null };
+    }
   }
+  intent = {
+    ...intent,
+    action: intent.action === "confirm" ? "confirm" : "continue",
+    bookingType: "appointment",
+  };
 }
 
 /*
@@ -5695,6 +6120,61 @@ if (
   if (
     selectedSlot
   ) {
+
+    if (!session.offeringId) {
+      return {
+        handled: true,
+        state: "awaiting_slot_selection",
+        intent,
+        message: "I couldn't verify the selected appointment service. Please choose an available service again.",
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+
+    let selectedAlternativeAvailable: boolean;
+    try {
+      selectedAlternativeAvailable = await isBookingStillAvailable(
+        input.context,
+        "appointment",
+        session.offeringId,
+        selectedSlot.start,
+        selectedSlot.end,
+        input.timezone ?? DEFAULT_TIMEZONE,
+        session.adults,
+        session.children,
+        session.quantity,
+      );
+    } catch {
+      return {
+        handled: true,
+        state: "awaiting_slot_selection",
+        intent,
+        message: "I couldn't verify that alternative time just now. Please choose an offered time again or send another preferred date and time.",
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+
+    if (!selectedAlternativeAvailable) {
+      session.status = "collecting";
+      session.pendingSlotsJson = null;
+      session.startAt = null;
+      session.endAt = null;
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      return {
+        handled: true,
+        state: "collecting",
+        intent,
+        message: "That offered appointment time is no longer available. What other date and time would you prefer?",
+        session,
+        actionExecuted: false,
+        actionResult: "none",
+      };
+    }
 
     const selectedDate =
       new Intl.DateTimeFormat(
@@ -5738,9 +6218,6 @@ if (
         conversationId:
           input.conversationId,
 
-        message:
-          input.currentMessage,
-
         slotStart:
           selectedSlot.start,
 
@@ -5782,6 +6259,19 @@ if (
       reason:
         "Selected from active pending availability slots.",
     };
+
+    const selectedData = readSessionData(session);
+    selectedData.preferredDate = selectedDate;
+    selectedData.preferredTime = selectedTime;
+    selectedData.date = selectedDate;
+    selectedData.time = selectedTime;
+    session.dataJson = JSON.stringify(selectedData);
+    session.status = "collecting";
+    session.startAt = selectedSlot.start;
+    session.endAt = selectedSlot.end;
+    session.pendingSlotsJson = null;
+    session.updatedAt = input.occurredAt;
+    await saveSession(repository, session);
   }
 }
 
@@ -5845,9 +6335,6 @@ if (
       {
         conversationId:
           input.conversationId,
-
-        message:
-          input.currentMessage,
 
         pendingSlotCount:
           pendingSlots.length,
@@ -5976,6 +6463,9 @@ if (
     session,
   );
 
+  logConfirmationBranch(input, "availability_recheck", "awaiting_confirmation", session.status,
+    "slot_unavailable", false, true, "requested_slot_unavailable");
+
   return {
     handled:
       true,
@@ -5986,7 +6476,7 @@ if (
     intent,
 
     message:
-      "That appointment time is no longer available. Let’s check the available times again.",
+      "That appointment time is no longer available. What other date and time would you prefer?",
 
     session,
   };
@@ -6000,9 +6490,6 @@ if (
 
       conversationId:
         input.conversationId,
-
-      message:
-        input.currentMessage,
 
       offeringId:
         session.offeringId,
@@ -6156,9 +6643,6 @@ if (
 
       conversationId:
         input.conversationId,
-
-      message:
-        input.currentMessage,
 
       bookingType:
         intent.bookingType,
@@ -6671,8 +7155,10 @@ if (
 
 
   const offeringQuery =
-    intent.offeringQuery ??
-    storedOfferingQuery;
+    bookingType === "appointment" && !session.offeringId &&
+    Array.isArray(readSessionData(session).displayedOfferingIds)
+      ? null
+      : intent.offeringQuery ?? storedOfferingQuery;
 
 
   const branchQuery =
@@ -6680,18 +7166,23 @@ if (
     storedBranchQuery;
 
 
-  const resolved =
-    await resolveOffering(
-
-      input.context,
-
-      bookingType,
-
-      offeringQuery,
-
-      branchQuery,
-    );
-
+  let resolved: Awaited<ReturnType<typeof resolveOffering>>;
+  let calendarResolutionIssue: AppointmentCalendarResolutionIssue | null = null;
+  try {
+    resolved = session.offeringId && bookingType === "appointment"
+      ? await (async () => {
+          const offerings = await listBookingOfferings(input.context, bookingType);
+          return { offering: offerings.find(offering => offering.id === session.offeringId) ?? null, offerings };
+        })()
+      : bookingType === "appointment" && Array.isArray(readSessionData(session).displayedOfferingIds)
+        ? { offering: null, offerings: await listBookingOfferings(input.context, bookingType) }
+        : await resolveOffering(input.context, bookingType, offeringQuery, branchQuery);
+  } catch {
+    calendarResolutionIssue = bookingType === "appointment"
+      ? "calendar_resolution_failed"
+      : null;
+    resolved = { offering: null, offerings: [] };
+  }
 
   /*
    * ----------------------------------------------
@@ -6702,6 +7193,44 @@ if (
   if (
     !resolved.offering
   ) {
+
+    if (bookingType === "appointment" && (session.offeringId || calendarResolutionIssue)) {
+      session.status = "collecting";
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      const reason = calendarResolutionIssue ?? "calendar_not_found";
+      logCalendarResolutionIssue(input, session.offeringId, reason);
+      const message = reason === "calendar_resolution_failed"
+        ? "I couldn't verify that appointment calendar right now. Your selected date and time are preserved. Please try again shortly or contact our team."
+        : resolved.offerings.length > 0
+          ? `That appointment calendar is no longer available for booking. Please choose one of these available calendars:\n${buildOfferingPrompt(resolved.offerings, bookingType)}`
+          : "That appointment calendar is no longer available for booking. Please contact our team.";
+      return {
+        handled: true,
+        state: "collecting",
+        intent,
+        message,
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+
+    const menuData = readSessionData(session);
+    const menuWasShown = Array.isArray(menuData.displayedOfferingIds);
+    if (bookingType === "appointment") {
+      if (!menuWasShown) {
+        menuData.displayedOfferingIds = resolved.offerings.slice(0, 10).map(offering => offering.id);
+      }
+      const preference = parseAppointmentPreference(
+        input.currentMessage, input.occurredAt, input.timezone ?? DEFAULT_TIMEZONE,
+      );
+      if (!preference.error) {
+        if (preference.date) menuData.preferredDate = preference.date;
+        if (preference.time) menuData.preferredTime = preference.time;
+      }
+      session.dataJson = JSON.stringify(menuData);
+    }
 
     session.status =
       "collecting";
@@ -6729,11 +7258,9 @@ if (
       intent,
 
       message:
-        buildOfferingPrompt(
-          resolved.offerings,
-
-          bookingType,
-        ),
+        bookingType === "appointment" && menuWasShown
+          ? "Which service do you mean? Please use the service name or its number from the list I shared."
+          : buildOfferingPrompt(resolved.offerings, bookingType),
 
       session,
     };
@@ -6748,6 +7275,266 @@ if (
 
   session.offeringId =
     resolved.offering.id;
+
+  let appointmentPatientRequirements: AppointmentPatientFieldRequirements | null = null;
+  if (bookingType === "appointment") {
+    const data = readSessionData(session);
+    if (resolved.offering.metadata?.calendarDetailsStatus === "unavailable") {
+      session.status = "collecting";
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      logCalendarResolutionIssue(input, resolved.offering.id, "calendar_resolution_failed");
+      return {
+        handled: true,
+        state: "collecting",
+        intent,
+        message: "I couldn't verify that appointment calendar right now. Your selected date and time are preserved. Please try again shortly or contact our team.",
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+    appointmentPatientRequirements = getAppointmentPatientRequirements(
+      resolved.offering.metadata,
+    );
+    if (!appointmentPatientRequirements) {
+      session.status = "collecting";
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      const reason = getAppointmentPolicyIssue(resolved.offering.metadata);
+      logCalendarResolutionIssue(input, resolved.offering.id, reason);
+      return {
+        handled: true,
+        state: "collecting",
+        intent,
+        message: reason === "calendar_policy_invalid"
+          ? "This appointment calendar has unavailable patient-information configuration. Please contact our team to arrange the appointment."
+          : "This appointment calendar is missing its required patient-information configuration. Please contact our team to arrange the appointment.",
+        session,
+        actionExecuted: false,
+        actionResult: "failed",
+      };
+    }
+    data.offeringQuery = resolved.offering.name;
+    data.requiredPatientFields = appointmentPatientRequirements.fields;
+    if (typeof data.patientCollectionStartedAt !== "string") {
+      data.patientCollectionStartedAt = input.occurredAt;
+    }
+    const configuredTimezone = resolved.offering.metadata?.timezone ?? input.timezone ?? DEFAULT_TIMEZONE;
+    const timezone = typeof configuredTimezone === "string" ? configuredTimezone : DEFAULT_TIMEZONE;
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timezone });
+    } catch {
+      return { handled: true, state: "collecting", intent, message: "I couldn't verify the calendar timezone. Please contact our team to arrange the appointment.", session };
+    }
+    data.appointmentTimezone = timezone;
+    session.dataJson = JSON.stringify(data);
+    session.updatedAt = input.occurredAt;
+    input = { ...input, timezone };
+    await saveSession(repository, session);
+  }
+
+  /*
+   * Appointment patient details are collected for every new session. Raw
+   * values remain in the provider conversation and request memory; session
+   * data records only collection and persistence status.
+   */
+  if (
+    bookingType === "appointment" &&
+    appointmentPatientRequirements &&
+    session.startAt &&
+    session.endAt
+  ) {
+    const data = readSessionData(session);
+    const collectionStartedAt =
+      typeof data.patientCollectionStartedAt === "string"
+        ? data.patientCollectionStartedAt
+        : input.occurredAt;
+    const pendingField = data.patientDetailsNextField === "full_name" ||
+      data.patientDetailsNextField === "identity_number" ||
+      data.patientDetailsNextField === "phone"
+      ? data.patientDetailsNextField
+      : undefined;
+    const extractedIdentity = extractBookingPatientIdentity(
+      input.history,
+      input.currentMessage,
+      collectionStartedAt,
+      pendingField,
+      appointmentPatientRequirements.fields,
+    );
+    const identity = await enrichPatientIdentityFromContact(
+      input,
+      appointmentPatientRequirements,
+      extractedIdentity,
+    );
+    const missing = missingPatientFields(appointmentPatientRequirements, identity);
+    const detailsCollected = data.patientDetailsStatus === "collected";
+    const confirmationRequested =
+      session.status === "awaiting_confirmation" &&
+      isBookingConfirmationMessage(input.currentMessage);
+
+    const inboundHistory = input.history.filter((message) => message.direction === "inbound");
+    const eligibleInboundHistory = inboundHistory.filter((message) =>
+      message.timestamp >= collectionStartedAt,
+    );
+    const fieldStatus = appointmentPatientRequirements.fields.map((field) => {
+      const present = field === "full_name"
+        ? identity.fullName !== null
+        : field === "identity_number"
+          ? identity.identityNumber !== null
+          : identity.phone !== null;
+      return {
+        field: field === "full_name"
+          ? "customer.fullName"
+          : field === "identity_number"
+            ? "customer.identityNumber"
+            : "customer.phone",
+        present,
+        valid: present,
+      };
+    });
+    const diagnosticReason = eligibleInboundHistory.length === 0
+      ? "missing_eligible_history"
+      : data.patientDetailsStatus === undefined
+        ? "missing_persisted_status"
+        : missing.length > 0
+          ? "required_fields_missing"
+          : "fields_present_status_not_collected";
+    console.log("AI BOOKING PATIENT DETAILS DIAGNOSTIC", {
+      correlationId: input.context.requestId,
+      bookingSessionStatus: session.status,
+      patientDetailsStatus: typeof data.patientDetailsStatus === "string"
+        ? data.patientDetailsStatus
+        : null,
+      requiredFields: appointmentPatientRequirements.fields.map((field) =>
+        field === "full_name"
+          ? "customer.fullName"
+          : field === "identity_number"
+            ? "customer.identityNumber"
+            : "customer.phone",
+      ),
+      fieldStatus,
+      inboundHistoryCount: inboundHistory.length,
+      eligibleInboundHistoryCount: eligibleInboundHistory.length,
+      affirmativeConfirmation: confirmationRequested,
+      patientCollectionStarted: typeof data.patientCollectionStartedAt === "string",
+      sessionCreatedAt: session.createdAt ?? null,
+      sessionUpdatedAt: session.updatedAt ?? null,
+      reason: diagnosticReason,
+    });
+
+    if (!detailsCollected) {
+      if (missing.length > 0) {
+        data.patientDetailsStatus = "awaiting_details";
+        data.patientDetailsNextField = missing[0];
+        session.dataJson = JSON.stringify(data);
+        session.status = "collecting";
+        session.updatedAt = input.occurredAt;
+        await saveSession(repository, session);
+        logConfirmationBranch(input, "patient_details", "awaiting_confirmation", session.status,
+          "missing_required_fields", false, true, "patient_details_missing");
+        return {
+          handled: true,
+          state: "collecting",
+          intent,
+          message: buildPatientDetailsPrompt(
+            missing[0],
+            (missing[0] === "identity_number" && !identity.identityNumber && looksLikeIdentityResponse(input.currentMessage)) ||
+              (missing[0] === "phone" && !identity.phone && looksLikePhoneResponse(input.currentMessage)),
+          ),
+          session,
+          actionExecuted: false,
+          actionResult: "none",
+        };
+      }
+
+      if (
+        appointmentPatientRequirements.persistToContact &&
+        !(data.patientDetailsPersistenceStatus === "failed" && !appointmentPatientRequirements.requirePersistence)
+      ) {
+        const gateway = input.context.patientIdentity;
+        if (!gateway) {
+          data.patientDetailsStatus = "persistence_failed";
+          data.patientDetailsPersistenceStatus = "failed";
+          session.dataJson = JSON.stringify(data);
+          session.status = "collecting";
+          session.updatedAt = input.occurredAt;
+          await saveSession(repository, session);
+          if (appointmentPatientRequirements.requirePersistence) {
+            return {
+              handled: true, state: "collecting", intent,
+              message: "This appointment calendar requires patient-information persistence, but it is not configured. Please contact our team.",
+              session, actionExecuted: false, actionResult: "failed",
+            };
+          }
+        }
+        if (gateway) try {
+          await gateway.update(input.customerId, identity);
+          data.patientDetailsPersistenceStatus = "verified";
+        } catch {
+          data.patientDetailsPersistenceStatus = "failed";
+          if (appointmentPatientRequirements.requirePersistence) {
+            data.patientDetailsStatus = "persistence_failed";
+            session.dataJson = JSON.stringify(data);
+            session.status = "collecting";
+            session.updatedAt = input.occurredAt;
+            await saveSession(repository, session);
+            logConfirmationBranch(input, "patient_details", "awaiting_confirmation", session.status,
+              "required_persistence_failed", false, true, "patient_persistence_failed");
+            return {
+              handled: true, state: "collecting", intent,
+              message: "I couldn't save the required patient information to the linked contact. Please contact our team before booking.",
+              session, actionExecuted: false, actionResult: "failed",
+            };
+          }
+        }
+      }
+
+      data.patientDetailsStatus = "collected";
+      delete data.patientDetailsNextField;
+      delete data.confirmationBlockReason;
+      session.dataJson = JSON.stringify(data);
+      session.status = "awaiting_confirmation";
+      session.updatedAt = input.occurredAt;
+      await saveSession(repository, session);
+      logConfirmationBranch(input, "patient_details", "collecting", session.status,
+        "collected", false, true);
+      return {
+        handled: true,
+        state: "awaiting_confirmation",
+        intent,
+        message: buildAppointmentConfirmationMessage(
+          resolved.offering.name,
+          { start: session.startAt, end: session.endAt, available: true, offeringId: session.offeringId },
+          input.timezone ?? DEFAULT_TIMEZONE,
+          identity,
+        ),
+        session,
+        actionExecuted: false,
+        actionResult: "none",
+      };
+    }
+
+    if (!confirmationRequested) {
+      const revisedPreference = parseAppointmentPreference(
+        input.currentMessage,
+        input.occurredAt,
+        input.timezone ?? DEFAULT_TIMEZONE,
+      );
+      if (!revisedPreference.date && !revisedPreference.time && !revisedPreference.error) {
+        return {
+          handled: true,
+          state: "awaiting_confirmation",
+          intent,
+          message: "Your appointment details are ready. Please reply yes to confirm, or tell me what you would like to change.",
+          session,
+          actionExecuted: false,
+          actionResult: "none",
+        };
+      }
+    }
+  }
+
 
 /*
  * --------------------------------------------------
@@ -6774,7 +7561,7 @@ if (
   )
 ) {
 
- 
+
 
   /*
    * Existing appointment execution continues below.
@@ -6827,6 +7614,8 @@ if (
       session,
     );
 
+    logConfirmationBranch(input, "validated_slot", "awaiting_confirmation", session.status,
+      "missing_slot", false, true, "validated_slot_missing");
 
     return {
 
@@ -6867,9 +7656,6 @@ if (
       offeringId:
         session.offeringId,
 
-      customerId:
-        input.customerId,
-
       startAt:
         session.startAt,
 
@@ -6892,52 +7678,25 @@ const existingBookingId =
 if (
   existingBookingId
 ) {
+  const previouslyConfirmed =
+    existingBookingData.bookingCreationStatus === "confirmed" ||
+    session.status === "confirmed";
 
-  session.status =
-    "confirmed";
-
-  session.updatedAt =
-    input.occurredAt;
-
-  await saveSession(
-    repository,
-    session,
-  );
-
-  console.log(
-    "AI BOOKING EXECUTION ALREADY COMPLETED",
-    {
-      tenantId:
-        input.context.tenant.id,
-
-      conversationId:
-        input.conversationId,
-
-      bookingId:
-        existingBookingId,
-    },
-  );
+  logConfirmationBranch(input, "existing_booking_reference", session.status, session.status,
+    previouslyConfirmed ? "already_confirmed" : "unresolved_provider_outcome",
+    false, false, previouslyConfirmed ? null : "existing_booking_reference");
 
   return {
-      handled:
-        true,
-
-      state:
-        "confirmed",
-
-      intent,
-
-      message:
-        `Your appointment is already confirmed. Your booking reference is ${existingBookingId}.`,
-
-      session,
-
-      actionExecuted:
-        false,
-
-      actionResult:
-        "none",
-    };
+    handled: true,
+    state: previouslyConfirmed ? "confirmed" : "awaiting_confirmation",
+    intent,
+    message: previouslyConfirmed
+      ? `Your appointment is already confirmed. Your booking reference is ${existingBookingId}.`
+      : `Your appointment request is awaiting confirmation from our booking system. The provider reference is ${existingBookingId}. Our team can verify the status before another booking is attempted.`,
+    session,
+    actionExecuted: false,
+    actionResult: previouslyConfirmed ? "none" : "uncertain",
+  };
 }
 
 const executionClaimId =
@@ -6954,6 +7713,9 @@ const executionClaimed =
 if (
   !executionClaimed
 ) {
+
+  logConfirmationBranch(input, "execution_claim", session.status, session.status,
+    "already_processing", false, false, "concurrent_execution");
 
   console.log(
     "AI BOOKING EXECUTION CLAIMED BY ANOTHER REQUEST",
@@ -6991,9 +7753,37 @@ if (
   };
 }
 
+const creationAttemptMarked =
+  await repository.markBookingCreationAttempt(
+    input.context.tenant.id,
+    input.context.provider,
+    input.conversationId,
+    executionClaimId,
+    input.occurredAt,
+  );
 
-  const booking =
-      await createBooking(
+if (!creationAttemptMarked) {
+  logConfirmationBranch(input, "creation_attempt_fence", session.status, session.status,
+    "claim_not_current", false, false, "creation_fence_rejected");
+  return {
+    handled: true,
+    state: "awaiting_confirmation",
+    intent,
+    message: "Your booking request is already being processed. Please wait while our team verifies it.",
+    session,
+    actionExecuted: false,
+    actionResult: "uncertain",
+  };
+}
+
+const creationAttemptData = readSessionData(session);
+creationAttemptData.bookingCreationStatus = "in_progress";
+creationAttemptData.bookingCreationAttemptedAt = input.occurredAt;
+session.dataJson = JSON.stringify(creationAttemptData);
+
+  let booking: Awaited<ReturnType<typeof createBooking>>;
+  try {
+    booking = await createBooking(
         input.context,
         {
           type:
@@ -7040,6 +7830,24 @@ if (
             },
         },
       );
+  } catch {
+    creationAttemptData.bookingCreationStatus = "uncertain";
+    session.dataJson = JSON.stringify(creationAttemptData);
+    session.status = "awaiting_confirmation";
+    session.updatedAt = input.occurredAt;
+    await saveSession(repository, session);
+    logConfirmationBranch(input, "provider_create", "awaiting_confirmation", session.status,
+      "outcome_uncertain", true, true, "provider_create_uncertain");
+    return {
+      handled: true,
+      state: "awaiting_confirmation",
+      intent,
+      message: "I couldn't confirm whether the booking system completed your appointment request. Our team will verify the outcome before another booking is attempted.",
+      session,
+      actionExecuted: true,
+      actionResult: "uncertain",
+    };
+  }
 
     if (
   !booking?.bookingId
@@ -7068,12 +7876,9 @@ if (
     },
   );
 
-  session.status =
-    "collecting";
-
-  session.pendingSlotsJson =
-    null;
-
+  creationAttemptData.bookingCreationStatus = "uncertain";
+  session.dataJson = JSON.stringify(creationAttemptData);
+  session.status = "awaiting_confirmation";
   session.updatedAt =
     input.occurredAt;
 
@@ -7082,17 +7887,20 @@ if (
     session,
   );
 
+  logConfirmationBranch(input, "provider_create", "awaiting_confirmation", session.status,
+    "missing_booking_reference", true, true, "provider_create_uncertain");
+
   return {
     handled:
       true,
 
     state:
-      "collecting",
+      "awaiting_confirmation",
 
     intent,
 
-    message:
-      "I couldn't confirm the appointment with our booking system. Please try again.",
+      message:
+      "Your appointment request may have reached our booking system, but no reference was returned. Our team will verify it before another booking is attempted.",
 
     session,
 
@@ -7100,7 +7908,7 @@ if (
         false,
 
       actionResult:
-        "failed",
+        "uncertain",
   };
 }
 
@@ -7124,37 +7932,62 @@ if (
  * ----------------------------------------------
  */
 
-const verifiedCreatedBooking =
-  await getBooking(
-    input.context,
+creationAttemptData.bookingId = booking.bookingId;
+creationAttemptData.bookingCreationStatus = "pending";
+session.dataJson = JSON.stringify(creationAttemptData);
+session.status = "awaiting_confirmation";
+session.updatedAt = input.occurredAt;
+await saveSession(repository, session);
 
+let verifiedCreatedBooking: Awaited<ReturnType<typeof getBooking>>;
+try {
+  verifiedCreatedBooking = await getBooking(
+    input.context,
     booking.bookingId,
   );
+} catch {
+  creationAttemptData.bookingCreationStatus = "uncertain";
+  session.dataJson = JSON.stringify(creationAttemptData);
+  session.status = "awaiting_confirmation";
+  session.updatedAt = input.occurredAt;
+  await saveSession(repository, session);
+  logConfirmationBranch(input, "provider_readback", "awaiting_confirmation", session.status,
+    "readback_failed", true, true, "provider_outcome_uncertain");
+  return {
+    handled: true,
+    state: "awaiting_confirmation",
+    intent,
+    message: `Your appointment request is awaiting confirmation from our booking system. The provider reference is ${booking.bookingId}. Our team will verify the status before another booking is attempted.`,
+    session,
+    actionExecuted: true,
+    actionResult: "uncertain",
+    booking,
+  };
+}
 
 
-const providerBookingVerified =
-  verifiedCreatedBooking.bookingId ===
-    booking.bookingId &&
+const readbackOutcome = classifyBookingReadback(
+  {
+    bookingId: booking.bookingId,
+    offeringId: session.offeringId,
+    customerId: input.customerId,
+    start: session.startAt,
+    end: session.endAt,
+  },
+  verifiedCreatedBooking,
+);
 
-  verifiedCreatedBooking.status !==
-    "cancelled" &&
-
-  verifiedCreatedBooking.offeringId ===
-    session.offeringId &&
-
-  verifiedCreatedBooking.start ===
-    session.startAt &&
-
-  verifiedCreatedBooking.end ===
-    session.endAt;
+const providerBookingVerified = readbackOutcome === "confirmed";
 
 
 if (
   !providerBookingVerified
 ) {
 
+  const readbackIsPending = readbackOutcome === "pending";
+
   console.error(
-    "AI BOOKING CREATE VERIFICATION FAILED",
+      "AI BOOKING CREATE VERIFICATION DID NOT CONFIRM",
     {
       tenantId:
         input.context.tenant.id,
@@ -7192,29 +8025,12 @@ if (
   );
 
 
-  const failedBookingData =
-    readSessionData(
-      session,
-    );
-
-
-  failedBookingData.bookingVerification =
-    "failed";
-
-  failedBookingData.bookingVerificationAt =
-    input.occurredAt;
-
-
-  session.dataJson =
-    JSON.stringify(
-      failedBookingData,
-    );
-
-  session.status =
-    "collecting";
-
-  session.pendingSlotsJson =
-    null;
+  creationAttemptData.bookingId = booking.bookingId;
+  creationAttemptData.bookingCreationStatus =
+    readbackIsPending ? "pending" : "failed";
+  creationAttemptData.bookingVerificationAt = input.occurredAt;
+  session.dataJson = JSON.stringify(creationAttemptData);
+  session.status = "awaiting_confirmation";
 
   session.updatedAt =
     input.occurredAt;
@@ -7226,18 +8042,24 @@ if (
     session,
   );
 
+  logConfirmationBranch(input, "provider_readback", "awaiting_confirmation", session.status,
+    readbackIsPending ? "pending" : "verification_failed", true, true,
+    readbackIsPending ? "provider_pending" : "provider_verification_failed");
+
 
   return {
     handled:
       true,
 
     state:
-      "collecting",
+      "awaiting_confirmation",
 
     intent,
 
     message:
-      "I couldn't verify the appointment with our booking system. Please contact our team before trying again.",
+      readbackIsPending
+        ? `Your appointment request is awaiting confirmation from our booking system. The provider reference is ${booking.bookingId}.`
+        : `I couldn't verify a confirmed appointment. The provider reference is ${booking.bookingId}. Please contact our team to verify its status before another booking is attempted.`,
 
     session,
 
@@ -7245,7 +8067,7 @@ if (
       true,
 
     actionResult:
-      "failed",
+      readbackIsPending ? "uncertain" : "failed",
 
     booking,
   };
@@ -7265,6 +8087,8 @@ if (
 
   bookingData.bookingId =
   verifiedCreatedBooking.bookingId;
+
+  bookingData.bookingCreationStatus = "confirmed";
 
   bookingData.confirmationCode =
     verifiedCreatedBooking.confirmationCode ??
@@ -7362,6 +8186,9 @@ if (
         booking.end,
     },
   );
+
+  logConfirmationBranch(input, "provider_readback", "awaiting_confirmation", session.status,
+    "confirmed", true, true);
 
 
   /*
@@ -8013,824 +8840,188 @@ if (
   };
 }
 
-  /*
-   * ----------------------------------------------
-   * Determine date.
-   * ----------------------------------------------
-   */
-
-  const storedDate =
-    getStoredString(
-      session,
-
-      "date",
-    );
-
-
-  const appointmentDate =
-    intent.date ??
-    storedDate;
-
-
-  if (
-    !appointmentDate
-  ) {
-
-    session.status =
-      "collecting";
-
-
-    session.updatedAt =
-      input.occurredAt;
-
-
-    await saveSession(
-      repository,
-
-      session,
-    );
-
-
-    return {
-
-      handled:
-        true,
-
-      state:
-        "collecting",
-
-      intent,
-
-      message:
-        buildDatePrompt(),
-
-      session,
-    };
-  }
-
-
-  /*
-   * ----------------------------------------------
-   * Determine requested time.
-   * ----------------------------------------------
-   */
-
-  const storedTime =
-    getStoredString(
-      session,
-
-      "time",
-    );
-
-
-  const appointmentTime =
-  availabilityRefinementRequested
-    ? null
-    : intent.time ??
-      storedTime;
-
-
-  /*
-   * ----------------------------------------------
-   * If an explicit start/end was extracted, use it.
-   * ----------------------------------------------
-   */
-
-  let requestedStart =
-  availabilityRefinementRequested
-    ? null
-    : intent.start ??
-      session.startAt ??
-      null;
-
-
-let requestedEnd =
-  availabilityRefinementRequested
-    ? null
-    : intent.end ??
-      session.endAt ??
-      null;
-
-
-  /*
-   * ----------------------------------------------
-   * Build requested time.
-   * ----------------------------------------------
-   */
-
-  if (
-    !requestedStart &&
-    appointmentTime
-  ) {
-
-    requestedStart =
-      localDateTimeToISO(
-
-        appointmentDate,
-
-        appointmentTime,
-
-        input.timezone ??
-          DEFAULT_TIMEZONE,
-      );
-  }
-
-
-  /*
-   * ----------------------------------------------
-   * We still need a time.
-   * ----------------------------------------------
-   */
-
-  if (
-    !requestedStart
-  ) {
-
-    session.status =
-      "collecting";
-
-
-    session.updatedAt =
-      input.occurredAt;
-
-
-    await saveSession(
-      repository,
-
-      session,
-    );
-
-
-    return {
-
-      handled:
-        true,
-
-      state:
-        "collecting",
-
-      intent,
-
-      message:
-        buildTimePrompt(),
-
-      session,
-    };
-  }
-
-
-  /*
-   * ----------------------------------------------
-   * Make sure an end exists.
-   *
-   * The provider may return the final duration when
-   * the customer has not provided one.
-   *
-   * We deliberately query availability without
-   * forcing a duration so GHL's configured calendar
-   * duration is used.
-   * ----------------------------------------------
-   */
-
-
-
-
-  /*
-   * ----------------------------------------------
-   * Availability range.
-   * ----------------------------------------------
-   */
-
-  const range =
-    buildDayRange(
-
-      appointmentDate,
-
-      input.timezone ??
-        DEFAULT_TIMEZONE,
-    );
-
-
-  const availability =
-    await getBookingAvailability(
-
-      input.context,
-
-      {
-
-        type:
-          "appointment",
-
-        offeringId:
-          resolved.offering.id,
-
-        start:
-          range.start,
-
-        end:
-          range.end,
-
-        timezone:
-          input.timezone ??
-          DEFAULT_TIMEZONE,
-      },
-    );
-
-
-
-  /*
-   * ----------------------------------------------
-   * Customer selected a slot from previous options.
-   * ----------------------------------------------
-   */
-
-  if (
-    intent.action ===
-      "select_slot" &&
-
-    session.status ===
-      "awaiting_slot_selection"
-  ) {
-
-    const selected =
-      resolveSelectedSlot(
-
-        session,
-
-        intent,
-
-        input.timezone ??
-          DEFAULT_TIMEZONE,
-      );
-
-
-    if (
-      !selected
-    ) {
-
-      session.updatedAt =
-        input.occurredAt;
-
-
-      await saveSession(
-        repository,
-
-        session,
-      );
-
-
-      return {
-
-        handled:
-          true,
-
-        state:
-          "awaiting_slot_selection",
-
-        intent,
-
-        message:
-          "I couldn't match that selection to one of the available times. Please choose one of the displayed options.",
-
-        session,
-      };
-    }
-
-
-    requestedStart =
-      selected.start;
-
-
-    requestedEnd =
-      selected.end;
-
-    session.startAt =
-      selected.start;
-
-
-    session.endAt =
-      selected.end;
-
-   const selectedBookingData =
-  readSessionData(
-    session,
-  );
-
-
-selectedBookingData.date =
-  new Intl.DateTimeFormat(
-    "en-CA",
-    {
-      timeZone:
-        input.timezone ??
-        DEFAULT_TIMEZONE,
-
-      year:
-        "numeric",
-
-      month:
-        "2-digit",
-
-      day:
-        "2-digit",
-    },
-  ).format(
-    new Date(
-      selected.start,
-    ),
-  );
-
-
-selectedBookingData.time =
-  formatSlot(
-    selected,
-
-    input.timezone ??
-      DEFAULT_TIMEZONE,
-  );
-
-
-selectedBookingData.start =
-  selected.start;
-
-
-selectedBookingData.end =
-  selected.end;
-
-
-session.dataJson =
-  JSON.stringify(
-    selectedBookingData,
-  );
-
-
-    session.pendingSlotsJson =
-      JSON.stringify(
-        [selected],
-      );
-
-
-    session.status =
-      "awaiting_confirmation";
-
-
-    session.updatedAt =
-      input.occurredAt;
-
-
-    await saveSession(
-      repository,
-
-      session,
-    );
-
-
-    return {
-
-      handled:
-        true,
-
-      state:
-        "awaiting_confirmation",
-
-      intent,
-
-      message:
-        buildConfirmationMessage(
-
-          resolved.offering.name,
-
-          selected,
-
-          input.timezone ??
-            DEFAULT_TIMEZONE,
-        ),
-
-      session,
-    };
-  }
-
-
-  /*
- * ----------------------------------------------
- * Customer gave a direct time.
- *
- * Match it against real provider availability.
- * ----------------------------------------------
- */
-
-if (
-  appointmentTime
-) {
-
-  const selected =
-    resolveSelectedSlotFromAvailability(
-      availability,
-
-      appointmentTime,
-
-      input.timezone ??
-        DEFAULT_TIMEZONE,
-    );
-
-    
-
-
-  /*
-   * ----------------------------------------------
-   * Requested time is unavailable.
-   *
-   * Do not display a list of slots.
-   * Find only the next available slot.
-   * ----------------------------------------------
-   */
-
-  if (
-    !selected
-  ) {
-
-    const requestedTimestamp =
-      new Date(
-        requestedStart,
-      ).getTime();
-
-
-    const nextAvailableSlot =
-      availability
-        .filter(
-          (
-            slot,
-          ) =>
-            slot.available !==
-              false &&
-
-            !Number.isNaN(
-              new Date(
-                slot.start,
-              ).getTime(),
-            ) &&
-
-            new Date(
-              slot.start,
-            ).getTime() >
-              requestedTimestamp,
-        )
-        .sort(
-          (
-            a,
-            b,
-          ) =>
-            new Date(
-              a.start,
-            ).getTime() -
-            new Date(
-              b.start,
-            ).getTime(),
-        )[0] ??
-      null;
-
-
-    /*
-     * --------------------------------------------
-     * No later slot exists on this date.
-     * --------------------------------------------
-     */
-
-    if (
-      !nextAvailableSlot
-    ) {
-
-      const bookingData =
-        readSessionData(
-          session,
-        );
-
-
-      delete bookingData.time;
-
-      delete bookingData.start;
-
-      delete bookingData.end;
-
-
-      session.startAt =
-        null;
-
-      session.endAt =
-        null;
-
-      session.pendingSlotsJson =
-        null;
-
-      session.dataJson =
-        JSON.stringify(
-          bookingData,
-        );
-
-      session.status =
-        "collecting";
-
-      session.updatedAt =
-        input.occurredAt;
-
-
-      await saveSession(
-        repository,
-
-        session,
-      );
-
-
-      return {
-        handled:
-          true,
-
-        state:
-          "collecting",
-
-        intent,
-
-        message:
-          `That time isn't available on ${appointmentDate}, and there are no later available times on that date. Please choose another time or date.`,
-
-        session,
-      };
-    }
-
-
-    /*
-     * --------------------------------------------
-     * Store only the next available slot.
-     * --------------------------------------------
-     */
-
-    requestedStart =
-      nextAvailableSlot.start;
-
-
-    requestedEnd =
-      nextAvailableSlot.end;
-
-
-    session.startAt =
-      nextAvailableSlot.start;
-
-
-    session.endAt =
-      nextAvailableSlot.end;
-
-
-    const bookingData =
-      readSessionData(
-        session,
-      );
-
-
-    bookingData.time =
-      formatSlot(
-        nextAvailableSlot,
-
-        input.timezone ??
-          DEFAULT_TIMEZONE,
-      );
-
-
-    bookingData.start =
-      nextAvailableSlot.start;
-
-
-    bookingData.end =
-      nextAvailableSlot.end;
-
-
-    session.dataJson =
-      JSON.stringify(
-        bookingData,
-      );
-
-
-    session.pendingSlotsJson =
-      JSON.stringify(
-        [
-          nextAvailableSlot,
-        ],
-      );
-
-
-    session.status =
-      "awaiting_confirmation";
-
-
-    session.updatedAt =
-      input.occurredAt;
-
-
-    await saveSession(
-      repository,
-
-      session,
-    );
-
-
-    console.log(
-      "AI BOOKING REQUESTED TIME UNAVAILABLE",
-      {
-        tenantId:
-          input.context.tenant.id,
-
-        provider:
-          input.context.provider,
-
-        conversationId:
-          input.conversationId,
-
-        requestedTime:
-          appointmentTime,
-
-        requestedStart,
-
-        nextAvailableStart:
-          nextAvailableSlot.start,
-
-        nextAvailableEnd:
-          nextAvailableSlot.end,
-      },
-    );
-
-
-    return {
-      handled:
-        true,
-
-      state:
-        "awaiting_confirmation",
-
-      intent,
-
-      message:
-        `That time isn't available on ${appointmentDate}. The next available time is ${formatSlot(
-          nextAvailableSlot,
-          input.timezone ??
-            DEFAULT_TIMEZONE,
-        )}. Would you like me to book that time?`,
-
-      session,
-    };
-  }
-
-
-    /*
-   * ----------------------------------------------
-   * Exact requested time is available.
-   * ----------------------------------------------
-   */
-
-  requestedStart =
-    selected.start;
-
-  requestedEnd =
-    selected.end;
-
-  session.startAt =
-    selected.start;
-
-  session.endAt =
-    selected.end;
-
-  const selectedBookingData =
-    readSessionData(
-      session,
-    );
-
-  selectedBookingData.date =
-    new Intl.DateTimeFormat(
-      "en-CA",
-      {
-        timeZone:
-          input.timezone ??
-          DEFAULT_TIMEZONE,
-
-        year:
-          "numeric",
-
-        month:
-          "2-digit",
-
-        day:
-          "2-digit",
-      },
-    ).format(
-      new Date(
-        selected.start,
-      ),
-    );
-
-  selectedBookingData.time =
-    formatSlot(
-      selected,
-
-      input.timezone ??
-        DEFAULT_TIMEZONE,
-    );
-
-  selectedBookingData.start =
-    selected.start;
-
-  selectedBookingData.end =
-    selected.end;
-
-  session.dataJson =
-    JSON.stringify(
-      selectedBookingData,
-    );
-
-  session.pendingSlotsJson =
-    JSON.stringify(
-      [
-        selected,
-      ],
-    );
-
-  session.status =
-    "awaiting_confirmation";
-
-  session.updatedAt =
-    input.occurredAt;
-
-  await saveSession(
-    repository,
-
-    session,
-  );
-
-  return {
-    handled:
-      true,
-
-    state:
-      "awaiting_confirmation",
-
-    intent,
-
-    message:
-      buildConfirmationMessage(
-        resolved.offering.name,
-
-        selected,
-
-        input.timezone ??
-          DEFAULT_TIMEZONE,
-      ),
-
-    session,
+  // Appointment preferences are patient supplied; model-proposed dates and slots are not authoritative.
+  const appointmentOffering = resolved.offering;
+  const timezone = input.timezone ?? DEFAULT_TIMEZONE;
+  const preference = parseAppointmentPreference(input.currentMessage, input.occurredAt, timezone);
+  const data = readSessionData(session);
+  if (preference.date) data.preferredDate = preference.date;
+  if (preference.time) data.preferredTime = preference.time;
+  const date = typeof data.preferredDate === "string" ? data.preferredDate : null;
+  const time = typeof data.preferredTime === "string" ? data.preferredTime : null;
+  session.status = "collecting";
+  session.startAt = null;
+  session.endAt = null;
+  session.pendingSlotsJson = null;
+  session.updatedAt = input.occurredAt;
+
+  const persistPreference = async (message: string): Promise<AIBookingResult> => {
+    session.dataJson = JSON.stringify(data);
+    await saveSession(repository, session);
+    return { handled: true, state: session.status, intent, message, session };
   };
-}
 
+  if (preference.error) return persistPreference(preference.error);
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date(Math.max(Date.now(), Date.parse(input.occurredAt))));
+  if (date && date < today) {
+    delete data.preferredDate;
+    delete data.preferredTime;
+    return persistPreference("Please provide a future date and time for your appointment.");
+  }
+  if (!date || !time) {
+    return persistPreference(!date && !time
+      ? `What date and time would you prefer for ${resolved.offering.name}?`
+      : !date ? `What date would you prefer for ${resolved.offering.name}?`
+      : `What time would you prefer for ${resolved.offering.name}?`);
+  }
+  const requestedStart = appointmentLocalTimeToISO(date, time, timezone);
+  if (!requestedStart || Date.parse(requestedStart) <= Math.max(Date.now(), Date.parse(input.occurredAt))) {
+    delete data.preferredDate;
+    delete data.preferredTime;
+    return persistPreference("Please provide a future, unambiguous date and time for your appointment.");
+  }
+  const nextDate = new Date(`${date}T00:00:00Z`);
+  nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+  const rangeStart = appointmentLocalTimeToISO(date, "00:00", timezone);
+  const rangeEnd = appointmentLocalTimeToISO(nextDate.toISOString().slice(0, 10), "00:00", timezone);
+  if (!rangeStart || !rangeEnd) return persistPreference("Please clarify the appointment date and timezone with our team.");
+  let availability: BookingAvailabilitySlot[];
+  try {
+    availability = await getBookingAvailability(input.context, {
+      type: "appointment", offeringId: resolved.offering.id,
+      start: rangeStart, end: rangeEnd, timezone,
+    });
+  } catch {
+    return persistPreference("I couldn't verify appointment availability right now. What other date and time would you prefer?");
+  }
+  const selected = availability.find(slot =>
+    slot.available !== false && slot.offeringId === appointmentOffering.id &&
+    Date.parse(slot.start) === Date.parse(requestedStart) &&
+    Date.parse(slot.end) > Date.parse(slot.start),
+  );
+  if (!selected) {
+    const alternatives = selectAlternativeSlots(
+      availability,
+      requestedStart,
+      date,
+      timezone,
+      appointmentOffering.id,
+    );
+    let lookupFailed = false;
+    if (alternatives.length === 0) {
+      for (const offset of [-1, 1, -2, 2]) {
+        try {
+          const nearbyDate = shiftCalendarDate(date, offset);
+          const nearbyRange = buildDayRange(nearbyDate, timezone);
+          const nearbyAvailability = await getBookingAvailability(input.context, {
+            type: "appointment",
+            offeringId: appointmentOffering.id,
+            start: nearbyRange.start,
+            end: nearbyRange.end,
+            timezone,
+          });
+          alternatives.push(...selectAlternativeSlots(
+            nearbyAvailability,
+            requestedStart,
+            nearbyDate,
+            timezone,
+            appointmentOffering.id,
+          ));
+          if (alternatives.length >= 3) break;
+        } catch {
+          lookupFailed = true;
+        }
+      }
+      alternatives.splice(3);
+    }
+    if (alternatives.length === 0) {
+      return persistPreference(
+        lookupFailed
+          ? "I couldn't verify alternative appointment times right now. What other date and time would you prefer?"
+          : "I couldn't find another verified appointment time nearby. What other date and time would you prefer?",
+      );
+    }
+    session.pendingSlotsJson = JSON.stringify(alternatives);
+    session.startAt = null;
+    session.endAt = null;
+    session.status = "awaiting_slot_selection";
+    return persistPreference(buildAvailabilityMessage(alternatives, timezone));
+  }
+  data.date = date;
+  data.time = time;
+  data.start = selected.start;
+  data.end = selected.end;
+  session.startAt = selected.start;
+  session.endAt = selected.end;
+  session.pendingSlotsJson = JSON.stringify([selected]);
+  const requirements = appointmentPatientRequirements;
+  if (!requirements) {
+    return persistPreference("This appointment calendar is missing its required patient-information configuration. Please contact our team to arrange the appointment.");
+  }
+  const collectionStartedAt = typeof data.patientCollectionStartedAt === "string"
+    ? data.patientCollectionStartedAt
+    : input.occurredAt;
+  const pendingField = data.patientDetailsNextField === "full_name" ||
+    data.patientDetailsNextField === "identity_number" ||
+    data.patientDetailsNextField === "phone"
+    ? data.patientDetailsNextField
+    : undefined;
+  const extractedIdentity = extractBookingPatientIdentity(
+    input.history,
+    input.currentMessage,
+    collectionStartedAt,
+    pendingField,
+    requirements.fields,
+  );
+  const identity = await enrichPatientIdentityFromContact(
+    input,
+    requirements,
+    extractedIdentity,
+  );
+  const missing = missingPatientFields(requirements, identity);
+  if (missing.length > 0) {
+    data.patientDetailsStatus = "awaiting_details";
+    data.patientDetailsNextField = missing[0];
+    session.status = "collecting";
+    return persistPreference(buildPatientDetailsPrompt(
+      missing[0],
+      (missing[0] === "identity_number" && !identity.identityNumber && looksLikeIdentityResponse(input.currentMessage)) ||
+        (missing[0] === "phone" && !identity.phone && looksLikePhoneResponse(input.currentMessage)),
+    ));
+  }
+  if (requirements.persistToContact) {
+    const gateway = input.context.patientIdentity;
+    if (!gateway && requirements.requirePersistence) {
+      data.patientDetailsStatus = "persistence_failed";
+      session.status = "collecting";
+      return persistPreference("This appointment calendar requires patient-information persistence, but it is not configured. Please contact our team.");
+    }
+    if (gateway) {
+      try {
+        await gateway.update(input.customerId, identity);
+        data.patientDetailsPersistenceStatus = "verified";
+      } catch {
+        data.patientDetailsPersistenceStatus = "failed";
+        if (requirements.requirePersistence) {
+          data.patientDetailsStatus = "persistence_failed";
+          session.status = "collecting";
+          return persistPreference("I couldn't save the required patient information to the linked contact. Please contact our team before booking.");
+        }
+      }
+    }
+  }
+  data.patientDetailsStatus = "collected";
+  delete data.patientDetailsNextField;
+  session.status = "awaiting_confirmation";
+  return persistPreference(buildAppointmentConfirmationMessage(
+    resolved.offering.name,
+    selected,
+    timezone,
+    identity,
+  ));
 
-/*
- * ----------------------------------------------
- * No direct time was provided.
- *
- * Ask the customer for the time instead of
- * suggesting available appointment slots.
- * ----------------------------------------------
- */
-
-session.startAt =
-  null;
-
-session.endAt =
-  null;
-
-session.pendingSlotsJson =
-  null;
-
-session.status =
-  "collecting";
-
-session.updatedAt =
-  input.occurredAt;
-
-await saveSession(
-  repository,
-
-  session,
-);
-
-return {
-  handled:
-    true,
-
-  state:
-    "collecting",
-
-  intent,
-
-  message:
-    buildTimePrompt(),
-
-  session,
-};
 }
 
 

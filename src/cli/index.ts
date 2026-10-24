@@ -6,6 +6,7 @@ import { integrationEventReplayCommand } from "./commands/integration-event-repl
 import {
   createStagingEvaluationClientCommand,
 } from "./commands/create-staging-evaluation-client";
+import { createLocalClientCommand } from "./commands/create-local-client";
 
 // Future commands
 // import { createTenantCommand } from "./commands/create-tenant";
@@ -19,6 +20,10 @@ async function main() {
   switch (command) {
     case "client:create":
       await createClientCommand();
+      break;
+
+    case "client:create-local":
+      await createLocalClientCommand();
       break;
 
     case "client:permissions":
@@ -61,6 +66,7 @@ FusionLab360 CLI
 Available commands
 
   client:create
+  client:create-local --local --tenant <id> --client <id> --name <name> --persist-to <path> --write-console-api-dev-vars <path>
   client:permissions <inspect|grant|revoke>
   integration-event:replay <inspect|replay>
   client:list

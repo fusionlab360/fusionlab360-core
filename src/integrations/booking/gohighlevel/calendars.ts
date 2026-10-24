@@ -13,6 +13,108 @@ import {
 import type {
   GHLCalendarDetails,
 } from "./calendar-details";
+import type {
+  BookingOfferingFieldPolicy,
+  BookingField,
+  AppointmentPatientField,
+} from "../../../core/booking";
+
+type AppointmentPatientPolicyResolution = {
+  policy: BookingOfferingFieldPolicy | null;
+  status: "valid" | "missing" | "invalid";
+};
+
+const LEGACY_FIELD_MAP: Record<Exclude<AppointmentPatientField, "phone">, BookingField> = {
+  full_name: "customer.fullName",
+  identity_number: "customer.identityNumber",
+};
+
+function resolveAppointmentPatientFields(
+  context: IntegrationContext,
+  calendarId: string,
+): AppointmentPatientPolicyResolution {
+  const providerConfiguration =
+    context.tenant.integrations.crm.configuration?.providerConfiguration;
+  if (!providerConfiguration || typeof providerConfiguration !== "object" || Array.isArray(providerConfiguration)) {
+    return { policy: null, status: "missing" };
+  }
+  const providerRecord = providerConfiguration as Record<string, unknown>;
+  const configuredCalendars = providerRecord.appointmentPatientFieldsByCalendar;
+  const genericBooking = providerRecord.booking;
+  const genericBookingRecord = genericBooking && typeof genericBooking === "object" && !Array.isArray(genericBooking)
+    ? genericBooking as Record<string, unknown>
+    : null;
+  const genericOfferings = genericBookingRecord?.offerings;
+  const genericOfferingsRecord = genericOfferings && typeof genericOfferings === "object" && !Array.isArray(genericOfferings)
+    ? genericOfferings as Record<string, unknown>
+    : null;
+  const genericPolicy = genericOfferingsRecord?.[calendarId];
+  if (genericBooking !== undefined) {
+    if (!genericBookingRecord || !genericOfferingsRecord) {
+      return { policy: null, status: "invalid" };
+    }
+    if (genericPolicy === undefined) return { policy: null, status: "missing" };
+    if (typeof genericPolicy !== "object" || genericPolicy === null || Array.isArray(genericPolicy)) {
+      return { policy: null, status: "invalid" };
+    }
+    const record = genericPolicy as Record<string, unknown>;
+    const persistence = record.persistence;
+    if (!Array.isArray(record.requiredFields) || !persistence || typeof persistence !== "object" || Array.isArray(persistence)) {
+      return { policy: null, status: "invalid" };
+    }
+    const fields = record.requiredFields;
+    if (!fields.every((field): field is BookingField => field === "customer.fullName" || field === "customer.identityNumber" || field === "customer.phone") || new Set(fields).size !== fields.length) {
+      return { policy: null, status: "invalid" };
+    }
+    const persistenceRecord = persistence as Record<string, unknown>;
+    const mode = persistenceRecord.mode;
+    const target = persistenceRecord.target;
+    if (mode !== "none" && mode !== "optional" && mode !== "required") {
+      return { policy: null, status: "invalid" };
+    }
+    if (target !== undefined && target !== "crm.contact" && target !== "none") {
+      return { policy: null, status: "invalid" };
+    }
+    if (mode !== "none" && target !== "crm.contact") {
+      return { policy: null, status: "invalid" };
+    }
+    return {
+      policy: {
+        requiredFields: [...fields],
+        persistence: { target: target as "crm.contact" | "none" | undefined, mode },
+      },
+      status: "valid",
+    };
+  }
+  if (!configuredCalendars || typeof configuredCalendars !== "object" || Array.isArray(configuredCalendars)) {
+    return { policy: null, status: "missing" };
+  }
+  const configured = (configuredCalendars as Record<string, unknown>)[calendarId];
+  if (!configured || typeof configured !== "object" || Array.isArray(configured)) {
+    return { policy: null, status: "missing" };
+  }
+  const record = configured as Record<string, unknown>;
+  if (!Array.isArray(record.fields)) return { policy: null, status: "invalid" };
+  const fields = record.fields.filter(
+    (field): field is Exclude<AppointmentPatientField, "phone"> => field === "full_name" || field === "identity_number",
+  );
+  if (fields.length !== record.fields.length || new Set(fields).size !== fields.length) {
+    return { policy: null, status: "invalid" };
+  }
+  const persistToContact = record.persistToContact === true;
+  const requirePersistence = record.requirePersistence === true;
+  if (requirePersistence && !persistToContact) return { policy: null, status: "invalid" };
+  return {
+    policy: {
+      requiredFields: fields.map((field) => LEGACY_FIELD_MAP[field]),
+      persistence: {
+        target: persistToContact ? "crm.contact" : "none",
+        mode: requirePersistence ? "required" : persistToContact ? "optional" : "none",
+      },
+    },
+    status: "valid",
+  };
+}
 
 
 /*
@@ -172,11 +274,16 @@ export async function getGHLCalendarOfferings(
     const calendar of
       calendars
   ) {
+    const locationId = context.tenant.integrations.crm.credentials.locationId;
+    if (calendar.isActive === false || (calendar.locationId && calendar.locationId !== locationId)) {
+      continue;
+    }
 
     let details:
       GHLCalendarDetails |
       null =
       null;
+    let detailsResolution: "loaded" | "unavailable" = "loaded";
 
 
     /*
@@ -203,6 +310,7 @@ export async function getGHLCalendarOfferings(
       error:
         unknown
     ) {
+      detailsResolution = "unavailable";
 
       console.error(
         "Failed to load GHL calendar details",
@@ -228,6 +336,11 @@ export async function getGHLCalendarOfferings(
      * ------------------------------------------------
      */
 
+    if (details && (details.locationId !== locationId || details.isActive === false)) {
+      continue;
+    }
+
+    const patientPolicy = resolveAppointmentPatientFields(context, calendar.id);
     offerings.push({
 
       id:
@@ -341,6 +454,11 @@ export async function getGHLCalendarOfferings(
         teamMembers:
           details?.teamMembers ??
           [],
+
+        bookingFieldPolicy:
+          patientPolicy.policy,
+        bookingFieldPolicyStatus: patientPolicy.status,
+        calendarDetailsStatus: detailsResolution,
       },
     });
   }

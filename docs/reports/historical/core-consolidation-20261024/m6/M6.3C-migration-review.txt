@@ -1,0 +1,78 @@
+# Migration files
+0001_create_tenants.sql
+0002_create_clients.sql
+0003_create_integrations.sql
+0004_create_integration_credentials.sql
+0005_seed_fusionlab360.sql
+0006_reservation_links.sql
+0007_reservation_link_identity.sql
+0008_integration_events.sql
+0009_integration_event_revision.sql
+0010_integration_event_dead_letters.sql
+0011_reservation_records.sql
+0012_reservation_link_crm_nullable.sql
+0013_ai_conversation_sessions.sql
+0014_ai_agent_profiles.sql
+0015_gohighlevel_oauth_installations.sql
+0016_oauth_installations.sql
+0017_create_knowledge_sources.sql
+0018_create_knowledge_documents.sql
+0019_ai_conversation_sessions_handoff_pending.sql
+0020_ai_booking_sessions.sql
+0021_integration_credential_auth_lifecycle.sql
+0022_ai_agent_profile_instructions.sql
+0023_integration_event_processing.sql
+0023_knowledge_documents_fts.sql
+0024_create_tenant_feature_settings.sql
+0025_durable_inbound_processing.sql
+0026_create_oauth_authorization_states.sql
+0027_enforce_ghl_location_ownership.sql
+0028_reservation_provider_connection_identity.sql
+
+# Latest migration contents
+
+========== 0027_enforce_ghl_location_ownership.sql ==========
+-- Prerequisite for concurrent tenant provisioning: one owner per GHL Location.
+-- Includes inactive tenants, pending OAuth records and legacy PIT credentials.
+-- Review normalized duplicates before application; do not delete/reassign rows:
+-- SELECT COUNT(*) AS owners FROM integration_credentials
+-- WHERE provider = 'gohighlevel' AND location_id IS NOT NULL
+--   AND TRIM(location_id) <> ''
+-- GROUP BY TRIM(location_id) HAVING COUNT(*) > 1;
+-- Existing duplicates cause index creation to fail without changing credentials.
+CREATE UNIQUE INDEX idx_credentials_ghl_location_owner
+ON integration_credentials (TRIM(location_id))
+WHERE provider = 'gohighlevel'
+  AND location_id IS NOT NULL
+  AND TRIM(location_id) <> '';
+
+========== 0028_reservation_provider_connection_identity.sql ==========
+-- Add provider connection and property boundaries for channel-manager
+-- synchronization. Existing rows remain valid with NULL scope columns.
+ALTER TABLE reservation_records
+ADD COLUMN provider_connection_id TEXT;
+
+ALTER TABLE reservation_records
+ADD COLUMN provider_property_id TEXT
+CHECK (
+  (provider_connection_id IS NULL AND provider_property_id IS NULL)
+  OR (
+    provider_connection_id IS NOT NULL
+    AND length(trim(provider_connection_id)) > 0
+    AND provider_property_id IS NOT NULL
+    AND length(trim(provider_property_id)) > 0
+  )
+);
+
+CREATE UNIQUE INDEX idx_reservation_records_provider_scope
+ON reservation_records (
+  tenant_id,
+  provider,
+  provider_connection_id,
+  provider_property_id,
+  provider_reservation_id
+)
+WHERE provider_connection_id IS NOT NULL
+  AND provider_property_id IS NOT NULL;
+
+# Migration documentation

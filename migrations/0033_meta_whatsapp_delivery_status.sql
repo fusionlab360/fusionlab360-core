@@ -1,0 +1,2 @@
+ALTER TABLE messaging_outbound_deliveries ADD COLUMN provider_delivery_status TEXT;
+CREATE INDEX idx_messaging_outbound_meta_status ON messaging_outbound_deliveries (tenant_id, provider, connection_id, provider_message_id, provider_delivery_status);

@@ -1,5 +1,6 @@
 import type { RequestContext } from "../../context";
 
+import { logger } from "../../core/logger";
 import { resolveCRMAdapter } from "../../core/crm";
 
 import type { CreateContactRequest } from "./schemas";
@@ -9,6 +10,13 @@ import { parseContactEvents } from "./event-parser";
 import type { Contact } from "../../core/crm/models/contact";
 
 import type { ContactEvent } from "./event";
+
+function errorCategory(error: unknown): string {
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof SyntaxError) return "syntax_error";
+  return error instanceof Error ? "error" : "unknown";
+}
 
 /**
  * Create or update a contact.
@@ -20,23 +28,18 @@ export async function createContactService(
 ) {
   const crm = resolveCRMAdapter(context.tenant);
 
- console.log(
-  "CONTACT NOTES RAW",
-  {
-    notes:
-      payload.notes,
-  },
-);
-
 const events =
   parseContactEvents(
     payload.notes,
   );
 
-console.log(
-  "CONTACT EVENTS PARSED",
-  events,
-);
+logger.info("Contact events parsed", {
+  operation: "contact.create",
+  provider: context.tenant.integrations.crm.provider,
+  correlationId: context.requestId,
+  notesProvided: Boolean(payload.notes?.trim()),
+  eventCount: events.length,
+});
 
   const contact: Contact = {
     ...payload,
@@ -49,19 +52,6 @@ console.log(
       contact,
     );
 
-    console.log(
-  "CONTACT EVENT SYNC CALL",
-  {
-    contactId:
-      savedContact.id,
-
-    eventCount:
-      events.length,
-
-    events,
-  },
-);
-
     if (savedContact.id) {
   try {
     await crm.syncContactEvents(
@@ -73,10 +63,13 @@ console.log(
     );
   } 
   catch (error) {
-    console.error(
-      "Contact event synchronization failed:",
-      error,
-    );
+    logger.error("Contact event synchronization failed", {
+      operation: "contact.events.sync",
+      provider: context.tenant.integrations.crm.provider,
+      correlationId: context.requestId,
+      outcome: "failed",
+      errorCategory: errorCategory(error),
+    });
   }
 }
 
@@ -136,14 +129,13 @@ export async function updateContactService(
       payload.notes,
     );
 
-    console.log(
-  "CONTACT EVENTS PARSED ON UPDATE",
-  JSON.stringify(
-    events,
-    null,
-    2,
-  ),
-);
+    logger.info("Contact events parsed", {
+      operation: "contact.update",
+      provider: context.tenant.integrations.crm.provider,
+      correlationId: context.requestId,
+      notesProvided: Boolean(payload.notes?.trim()),
+      eventCount: events.length,
+    });
 
     contactUpdate.events = events;
   }
@@ -165,10 +157,13 @@ export async function updateContactService(
       },
     );
   } catch (error) {
-    console.error(
-      "Contact event synchronization failed:",
-      error,
-    );
+    logger.error("Contact event synchronization failed", {
+      operation: "contact.events.sync",
+      provider: context.tenant.integrations.crm.provider,
+      correlationId: context.requestId,
+      outcome: "failed",
+      errorCategory: errorCategory(error),
+    });
   }
 }
 

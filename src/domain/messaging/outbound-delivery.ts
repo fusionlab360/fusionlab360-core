@@ -50,6 +50,7 @@ export function withDurableOutboundDelivery(
         channel: input.channel ?? "",
         channelProviderId: input.channelProviderId,
         replyMessageId: input.replyMessageId,
+        origin: "ai_agent" as const,
       };
       const reservation = await repository.reserve({
         tenantId: context.tenant.id,

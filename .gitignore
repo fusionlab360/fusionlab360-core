@@ -14,11 +14,18 @@ dist/
 # deps
 node_modules/
 .wrangler
+.local-m3b3/
+.local-fixtures/
+coverage/
+.cache/
 
 # env
 .env
+.env.*
 .env.production
 .dev.vars
+*.sqlite
+*.sqlite-*
 
 # logs
 logs/

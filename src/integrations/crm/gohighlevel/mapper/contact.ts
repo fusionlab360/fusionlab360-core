@@ -5,6 +5,7 @@ import type { GHLContact } from "../types";
 import {
   tryResolveFieldMapping,
 } from "../../../../core/crm/field-mapping";
+import { normalizePhoneNumber } from "../../../../core/crm/phone";
 
 import { ContactFields } from "../../../../canonical/contact";
 
@@ -52,19 +53,7 @@ function cleanEmail(email?: string): string | undefined {
  * Returns a normalized phone number.
  */
 function cleanPhone(phone?: string): string | undefined {
-
-  const value = clean(phone);
-
-  if (!value) {
-    return undefined;
-  }
-
-  const normalized =
-    value.replace(/[^\d+]/g, "");
-
-  return normalized.length > 0
-    ? normalized
-    : undefined;
+  return normalizePhoneNumber(phone) ?? undefined;
 
 }
 
@@ -357,5 +346,3 @@ return field?.value ?? field?.field_value ?? "";
   dob: contact.dateOfBirth ?? "",
 };
 }
-
- 

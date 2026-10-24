@@ -1,6 +1,7 @@
 import type { AppBindings } from "../../config/app";
 import type { IntegrationContext } from "../../context/integration";
 import { createIntegrationContext } from "../../context/integration";
+import { createInternalPatientIdentityContext, createPatientIdentityGateway } from "../contact/patient-identity";
 import { resolveAIProvider } from "../../core/ai";
 import { resolveMessagingProvider } from "../../core/messaging";
 import { createIntegrationRuntime } from "../../application/integration/runtime";
@@ -8,6 +9,8 @@ import { resolveTenantByProviderLocation } from "../../tenants/service";
 import { createTenantKnowledgeRetriever } from "./tenant-knowledge-retriever";
 import {
   classifyInboundProcessingError,
+  getInboundProviderErrorCode,
+  getInboundProviderHTTPStatus,
   processGHLInboundMessage,
   InboundEventLeaseActiveError,
 } from "./inbound-service";
@@ -15,8 +18,13 @@ import type { GHLInboundQueueEnvelope } from "./inbound-queue-contract";
 import type { GHLKnowledgeQueueEnvelope } from "./inbound-queue-contract";
 import type { GHLIntegrationEventReplayEnvelope } from "./inbound-queue-contract";
 import {
+  processReservationIntegrationEvent,
+  type ReservationIntegrationEventConsumer,
+} from "../reservation/integration-event-consumer";
+import {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
+import type { IntegrationEventRecord } from "../../persistence/models/integration-event";
 import { IntegrationEventService } from "../../core/events/service";
 import { IntegrationEventProcessingError } from "../../core/events/errors";
 import {
@@ -46,6 +54,14 @@ function retryDelaySeconds(attempts: number): number {
   return schedule[Math.min(Math.max(attempts - 1, 0), schedule.length - 1)];
 }
 
+/** Provider-neutral durable event handler contract used by Worker composition. */
+export type InboundProviderEventHandler = (
+  event: IntegrationEventRecord,
+  env: AppBindings,
+) => Promise<number | null>;
+
+export type InboundProviderHandlers = ReadonlyMap<string, InboundProviderEventHandler>;
+
 export async function publishGHLInboundQueueEvent(
   queue: Queue<GHLInboundQueueEnvelope> | undefined,
   envelope: GHLInboundQueueEnvelope,
@@ -54,6 +70,17 @@ export async function publishGHLInboundQueueEvent(
     throw new Error("GHL inbound Queue binding is not configured.");
   }
   await queue.send(envelope);
+}
+
+/**
+ * New Queue envelope kinds are fenced independently from legacy GHL events.
+ * This keeps rollback to a legacy Worker safe until the newer consumer is
+ * deliberately activated for an environment.
+ */
+export function areNewQueueEnvelopesEnabled(
+  env: Pick<AppBindings, "NEW_QUEUE_ENVELOPES_ENABLED">,
+): boolean {
+  return env.NEW_QUEUE_ENVELOPES_ENABLED === "true";
 }
 
 export async function handleGHLInboundQueueBatch(
@@ -93,13 +120,32 @@ export async function handleGHLInboundQueueBatch(
       if (correlationId && dispatchStartedAt !== undefined) {
         logInboundCheckpoint("queue_dispatch", "failed", correlationId, dispatchStartedAt, error, undefined, workerVersion);
       }
+      const permanentHistoryRejection =
+        error instanceof IntegrationEventProcessingError &&
+        error.code === "PROVIDER_REQUEST_REJECTED" &&
+        !error.retryable;
       console.error(
         "GHL inbound Queue message processing failed.",
         {
           operation: "queue_consumer",
           classification: classifyInboundProcessingError(error),
+          ...(correlationId ? { correlationId } : {}),
+          attemptCount: message.attempts,
+          ...(getInboundProviderHTTPStatus(error) !== undefined
+            ? { httpStatus: getInboundProviderHTTPStatus(error) }
+            : {}),
+          ...(getInboundProviderErrorCode(error)
+            ? { providerErrorCode: getInboundProviderErrorCode(error) }
+            : {}),
+          retryClassification: permanentHistoryRejection ? "permanent" : "retryable",
+          ...(permanentHistoryRejection
+            ? { queueAction: "retry_for_event_state_reconciliation" }
+            : {}),
         },
       );
+      // Retry the Queue delivery after a terminal provider rejection so the
+      // next claim can observe the persisted dead-letter state and acknowledge.
+      // If recording that state failed, this also keeps the source event recoverable.
       message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });
     }
   }));
@@ -110,8 +156,16 @@ function isQueueEnvelope(value: unknown): value is GHLInboundQueueEnvelope {
   const envelope = value as Record<string, unknown>;
   if (envelope.version !== 1 ||
       typeof envelope.tenantId !== "string" ||
-      envelope.provider !== "gohighlevel" ||
       typeof envelope.sourceEventId !== "string") return false;
+  if (envelope.kind === "reservation") {
+    return !!envelope.tenantId.trim() && !!envelope.sourceEventId.trim() &&
+      Object.keys(envelope).every(key => ["version", "kind", "tenantId", "sourceEventId"].includes(key));
+  }
+  if (envelope.kind === "meta_whatsapp") {
+    return !!envelope.tenantId.trim() && !!envelope.sourceEventId.trim() &&
+      Object.keys(envelope).every(key => ["version", "kind", "tenantId", "sourceEventId"].includes(key));
+  }
+  if (envelope.provider !== "gohighlevel") return false;
   if (envelope.kind === "knowledge" || envelope.kind === "event_replay") return true;
   if (envelope.kind !== undefined && envelope.kind !== "inbound") return false;
   const message = envelope.message;
@@ -314,10 +368,38 @@ async function processEnvelope(
   rawEnvelope: GHLInboundQueueEnvelope,
   env: AppBindings,
   scheduleBackgroundTask?: (task: Promise<unknown>) => void,
+  reservationConsumer?: ReservationIntegrationEventConsumer,
+  providerHandlers?: InboundProviderHandlers,
 ): Promise<number | null> {
 
   if (!isQueueEnvelope(rawEnvelope)) {
     throw new Error("Invalid GHL inbound Queue envelope.");
+  }
+
+  if (rawEnvelope.kind === "reservation") {
+    // Configuration or a Queue body cannot supply this trusted dependency.
+    // Missing composition leaves durable work recoverable without live fallback.
+    if (!reservationConsumer) throw new Error("Reservation mock consumer is not configured.");
+    const repository = new IntegrationEventRepository(env.DB);
+    const event = await repository.find(rawEnvelope.tenantId, rawEnvelope.sourceEventId);
+    if (!event || event.aggregateType !== "reservation" || !reservationConsumer.supports(event.eventType)) {
+      throw new Error("Queued reservation event identity is invalid.");
+    }
+    const outcome = await processReservationIntegrationEvent(
+      event, new IntegrationEventService(repository), reservationConsumer,
+    );
+    return outcome.state === "lease_active" ? outcome.retryAfterSeconds : null;
+  }
+
+  if (rawEnvelope.kind === "meta_whatsapp") {
+    const repository = new IntegrationEventRepository(env.DB);
+    const event = await repository.find(rawEnvelope.tenantId, rawEnvelope.sourceEventId);
+    if (!event || event.provider !== "meta_whatsapp" || !["messaging.meta_whatsapp.inbound", "messaging.meta_whatsapp.status"].includes(event.eventType)) {
+      throw new Error("Queued Meta WhatsApp event identity is invalid.");
+    }
+    const handler = providerHandlers?.get("meta_whatsapp");
+    if (!handler) throw new Error("Meta WhatsApp provider handler is not configured.");
+    return handler(event, env);
   }
 
   if (rawEnvelope.kind === "knowledge") {
@@ -350,6 +432,7 @@ async function processEnvelope(
     tenant,
     "gohighlevel",
     integrationRuntime,
+    createPatientIdentityGateway(createInternalPatientIdentityContext(tenant, integrationRuntime)),
   );
   const ai = resolveAIProvider(env.AI, {
     provider: "hybrid",
@@ -398,11 +481,13 @@ export async function consumeGHLInboundQueue(
   batch: MessageBatch<GHLInboundQueueEnvelope>,
   env: AppBindings,
   scheduleBackgroundTask?: (task: Promise<unknown>) => void,
+  reservationConsumer?: ReservationIntegrationEventConsumer,
+  providerHandlers?: InboundProviderHandlers,
 ): Promise<void> {
   return handleGHLInboundQueueBatch(
     batch,
     (envelope) =>
-      processEnvelope(envelope, env, scheduleBackgroundTask),
+      processEnvelope(envelope, env, scheduleBackgroundTask, reservationConsumer, providerHandlers),
     env.CF_VERSION_METADATA,
   );
 }

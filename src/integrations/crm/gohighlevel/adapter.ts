@@ -4,6 +4,7 @@ import type { RequestContext } from "../../../context";
 import type { ReservationOpportunity } from "../../../domain/reservation/opportunity";
 
 import { logger } from "../../../core/logger";
+import { ApiError } from "../../../core/errors/ApiError";
 
 import { getGHLCredentials } from "./credentials";
 
@@ -67,6 +68,13 @@ import {
 
 const FUSIONLAB_CONTACT_NOTE_TITLE =
   "FusionLab360 Contact Notes";
+
+function safeErrorCategory(error: unknown): string {
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof SyntaxError) return "syntax_error";
+  return error instanceof Error ? "error" : "unknown";
+}
 
 async function syncContactNotes(
   context:
@@ -730,17 +738,17 @@ export const goHighLevelAdapter: CRMAdapter = {
     logger.info(
       "Upserting GHL contact",
       {
+        operation: "contact.upsert",
+        provider: "gohighlevel",
+        correlationId: context.requestId,
         tenantId:
           context.tenant.id,
 
         locationId:
           credentials.locationId,
 
-        email:
-          ghlPayload.email,
-
-        phone:
-          ghlPayload.phone,
+        emailPresent: Boolean(ghlPayload.email),
+        phonePresent: Boolean(ghlPayload.phone),
       },
     );
 
@@ -751,15 +759,6 @@ export const goHighLevelAdapter: CRMAdapter = {
     context,
 
     ghlPayload,
-  );
-
-  console.log(
-    "GHL UPSERT RESPONSE:",
-    JSON.stringify(
-      response,
-      null,
-      2,
-    ),
   );
 
   const contactId =
@@ -802,6 +801,10 @@ if (payload.notes?.trim()) {
 logger.info(
   "GHL contact upsert completed",
   {
+    operation: "contact.upsert",
+    provider: "gohighlevel",
+    correlationId: context.requestId,
+    outcome: "succeeded",
     contactId,
   },
 );
@@ -818,7 +821,20 @@ logger.info(
       logger.error(
         "GHL contact upsert failed",
         {
-          error,
+          operation: "contact.upsert",
+          provider: "gohighlevel",
+          correlationId: context.requestId,
+          outcome: "failed",
+          errorCategory:
+            error instanceof TypeError
+              ? "type_error"
+              : error instanceof RangeError
+                ? "range_error"
+                : error instanceof SyntaxError
+                  ? "syntax_error"
+                  : error instanceof Error
+                    ? "error"
+                    : "unknown",
         },
       );
 
@@ -835,6 +851,13 @@ logger.info(
 
       }
 
+
+      if (error instanceof ApiError) {
+        throw new ApiError(
+          error.status,
+          "GoHighLevel contact upsert failed.",
+        );
+      }
 
       throw error;
 
@@ -1009,7 +1032,7 @@ logger.info(
 
           deletedEventCount,
 
-          error,
+          errorCategory: safeErrorCategory(error),
         },
       );
     }
@@ -1112,16 +1135,7 @@ logger.info(
         contactId:
           input.contactId,
 
-        incomingEvents:
-          input.events.map(
-            (event) => ({
-              date:
-                event.date,
-
-              type:
-                event.type,
-            }),
-          ),
+        incomingEventCount: input.events.length,
       },
     );
 
@@ -1370,10 +1384,7 @@ logger.info(
      * --------------------------------------------------
      */
 
-    for (
-      const event of
-        input.events
-    ) {
+    for (const [eventIndex, event] of input.events.entries()) {
 
       const normalizedDate =
         normalizeEventDate(
@@ -1396,11 +1407,8 @@ logger.info(
             contactId:
               input.contactId,
 
-            eventDate:
-              event.date,
-
-            eventType:
-              event.type,
+            eventIndex,
+            reason: "invalid_event_fields",
           },
         );
 
@@ -1438,11 +1446,7 @@ if (
       eventRecordId:
         primaryRecordId,
 
-      eventDate:
-        event.date,
-
-      eventType:
-        normalizedType,
+      outcome: "kept",
     },
   );
 
@@ -1461,7 +1465,6 @@ if (
         eventRecordId:
           duplicateRecordId,
 
-        eventKey,
       },
     );
 
@@ -1507,7 +1510,6 @@ if (
             eventRecordId:
               duplicateRecordId,
 
-            eventKey,
           },
         );
 
@@ -1534,11 +1536,7 @@ if (
           contactId:
             input.contactId,
 
-          eventDate:
-            event.date,
-
-          eventType:
-            normalizedType,
+          eventIndex,
         },
       );
 
@@ -1657,13 +1655,7 @@ if (
 
       eventRecordId,
 
-      eventDate:
-        normalizedDate,
-
-      eventType:
-        normalizedType,
-
-      error,
+      errorCategory: safeErrorCategory(error),
     },
   );
 
@@ -1687,7 +1679,7 @@ if (
 
         eventRecordId,
 
-        cleanupError,
+        errorCategory: safeErrorCategory(cleanupError),
       },
     );
   }
@@ -1706,11 +1698,7 @@ created++;
 
           eventRecordId,
 
-          eventDate:
-            event.date,
-
-          eventType:
-            normalizedType,
+          eventIndex,
         },
       );
     }
@@ -1751,7 +1739,6 @@ created++;
 
         eventRecordId,
 
-        eventKey,
       },
     );
 
@@ -1798,7 +1785,6 @@ created++;
 
             eventRecordId,
 
-            eventKey,
           },
         );
 

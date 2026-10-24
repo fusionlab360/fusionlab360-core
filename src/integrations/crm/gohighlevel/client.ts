@@ -277,6 +277,7 @@ function buildGHLHeaders(
  */
 
 async function performGHLRequest<T>(
+  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   accessToken:
     string,
 
@@ -322,7 +323,7 @@ async function performGHLRequest<T>(
 
 
   const response =
-    await fetch(
+    await fetcher(
       url,
       {
         ...options,
@@ -387,6 +388,29 @@ export async function ghlFetchAuthenticated<T>(
     RequestInit = {},
 ): Promise<T> {
 
+  const runtime = context.integrationRuntime;
+  const mockMode = runtime.transportMode === "mock";
+  let fetcher: typeof fetch;
+  let credentialResolver = runtime.credentials;
+  if (mockMode) {
+    const mockTransport = runtime.httpTransport;
+    if (
+      !mockTransport ||
+      typeof mockTransport.fetch !== "function" ||
+      !mockTransport.credentials ||
+      typeof mockTransport.credentials.resolve !== "function"
+    ) {
+      throw new Error("GoHighLevel mock transport configuration is invalid.");
+    }
+    fetcher = mockTransport.fetch;
+    credentialResolver = mockTransport.credentials;
+  } else {
+    if (runtime.httpTransport !== undefined) {
+      throw new Error("GoHighLevel HTTP transport requires explicit mock mode.");
+    }
+    fetcher = fetch;
+  }
+
   const provider =
     resolveGHLProvider(
       context,
@@ -427,13 +451,7 @@ export async function ghlFetchAuthenticated<T>(
    * ------------------------------------------------
    */
 
-  let credential =
-    await context
-      .integrationRuntime
-      .credentials
-      .resolve(
-        credentialRequest,
-      );
+  let credential = await credentialResolver.resolve(credentialRequest);
 
 
   /*
@@ -447,6 +465,7 @@ export async function ghlFetchAuthenticated<T>(
     body,
   } =
     await performGHLRequest<T>(
+      fetcher,
       credential.accessToken,
       endpoint,
       options,
@@ -482,10 +501,7 @@ export async function ghlFetchAuthenticated<T>(
 
 
     credential =
-      await context
-        .integrationRuntime
-        .credentials
-        .resolve({
+      await credentialResolver.resolve({
           ...credentialRequest,
 
           forceRefresh:
@@ -498,6 +514,7 @@ export async function ghlFetchAuthenticated<T>(
       body,
     } =
       await performGHLRequest<T>(
+        fetcher,
         credential.accessToken,
         endpoint,
         options,

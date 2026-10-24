@@ -6,6 +6,7 @@ import type {
 } from "../../config/app";
 
 import { logger } from "../../core/logger";
+import { ApiError } from "../../core/errors/ApiError";
 
 import {
   createContactService,
@@ -14,23 +15,66 @@ import {
   deleteContactService,
 } from "./service";
 
+async function runContactOperation<T>(
+  context: AppVariables["context"],
+  operation: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      logger.error("Contact provider operation failed", {
+        operation,
+        provider: context.tenant.integrations.crm.provider,
+        correlationId: context.requestId,
+        outcome: "failed",
+        providerStatus: error.status,
+        errorCategory: "provider_error",
+      });
+
+      throw new ApiError(
+        error.status,
+        "Contact operation failed.",
+      );
+    }
+
+    throw error;
+  }
+}
+
 export async function createContactController(
   c: Context<{
     Bindings: AppBindings;
     Variables: AppVariables;
   }>
 ) {
-  logger.info("Create contact request received");
-
   const body = await c.req.json();
-
-  logger.debug("Create contact payload", body);
 
   const context = c.get("context");
 
-  const result = await createContactService(
+  logger.info("Create contact request received", {
+    operation: "contact.create",
+    provider: context.tenant.integrations.crm.provider,
+    correlationId: context.requestId,
+    suppliedFields: {
+      firstName: Boolean(body.firstName),
+      lastName: Boolean(body.lastName),
+      email: Boolean(body.email),
+      phone: Boolean(body.phone),
+      identityNumber: Boolean(body.identityNumber),
+      notes: Boolean(body.notes),
+      branch: Boolean(body.branch),
+    },
+  });
+
+  const result = await runContactOperation(
     context,
-    body
+    "contact.create",
+    () => createContactService(
+      context,
+      body,
+    ),
   );
 
   logger.info("Contact created successfully");
@@ -53,15 +97,22 @@ export async function getContactController(
     );
   }
 
-  logger.debug("Get contact request", {
-    email,
-  });
-
   const context = c.get("context");
 
-  const result = await getContactService(
+  logger.info("Get contact request received", {
+    operation: "contact.read",
+    provider: context.tenant.integrations.crm.provider,
+    correlationId: context.requestId,
+    emailProvided: Boolean(email),
+  });
+
+  const result = await runContactOperation(
     context,
-    email
+    "contact.read",
+    () => getContactService(
+      context,
+      email,
+    ),
   );
 
   return c.json(result);
@@ -82,15 +133,21 @@ export async function updateContactController(
     );
   }
 
-  logger.debug("Update contact request", {
-    contactId: body.id,
-  });
-
   const context = c.get("context");
 
-  const result = await updateContactService(
+  logger.info("Update contact request received", {
+    operation: "contact.update",
+    provider: context.tenant.integrations.crm.provider,
+    correlationId: context.requestId,
+  });
+
+  const result = await runContactOperation(
     context,
-    body
+    "contact.update",
+    () => updateContactService(
+      context,
+      body,
+    ),
   );
 
   logger.info("Contact updated successfully", {
@@ -118,19 +175,25 @@ export async function deleteContactController(
     );
   }
 
-  logger.debug("Delete contact request", {
-    contactId: body.id,
-    email: body.email,
-  });
-
   const context = c.get("context");
 
-  const result = await deleteContactService(
+  logger.info("Delete contact request received", {
+    operation: "contact.delete",
+    provider: context.tenant.integrations.crm.provider,
+    correlationId: context.requestId,
+    identifierType: body.id ? "contact_id" : "email",
+  });
+
+  const result = await runContactOperation(
     context,
-    {
-      id: body.id,
-      email: body.email,
-    }
+    "contact.delete",
+    () => deleteContactService(
+      context,
+      {
+        id: body.id,
+        email: body.email,
+      },
+    ),
   );
 
   logger.info("Contact deleted successfully");

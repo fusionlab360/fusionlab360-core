@@ -348,6 +348,26 @@ export class AIBookingSessionRepository
       .run();
   }
 
+  /** Record a non-sensitive confirmation blocker without replacing a concurrent create fence. */
+  async recordConfirmationBlock(
+    tenantId: string,
+    provider: string,
+    conversationId: string,
+    reason: string,
+    updatedAt: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE ai_booking_sessions
+      SET data_json = json_set(COALESCE(data_json, '{}'), '$.confirmationBlockReason', ?),
+          updated_at = ?
+      WHERE tenant_id = ? AND provider = ? AND conversation_id = ?
+        AND status = 'awaiting_confirmation'
+        AND json_extract(COALESCE(data_json, '{}'), '$.bookingCreationStatus') IS NULL
+        AND json_extract(COALESCE(data_json, '{}'), '$.executionClaimId') IS NULL
+    `).bind(reason, updatedAt, tenantId, provider, conversationId).run();
+    return result.meta.changes === 1;
+  }
+
 
   /*
    * --------------------------------------------------
@@ -524,6 +544,56 @@ export class AIBookingSessionRepository
     1
   );
 }
+
+  /**
+   * Persist the create-attempt fence together with the
+   * successful execution claim. If the Worker stops after
+   * the provider accepts the request, a later delivery must
+   * not create the appointment again.
+   */
+  async markBookingCreationAttempt(
+    tenantId: string,
+    provider: string,
+    conversationId: string,
+    claimId: string,
+    attemptedAt: string,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `
+        UPDATE ai_booking_sessions
+        SET data_json = json_set(
+              json_set(
+                COALESCE(data_json, '{}'),
+                '$.bookingCreationStatus',
+                'in_progress'
+              ),
+              '$.bookingCreationAttemptedAt',
+              ?
+            ),
+            updated_at = ?
+        WHERE tenant_id = ?
+          AND provider = ?
+          AND conversation_id = ?
+          AND status = 'awaiting_confirmation'
+          AND json_extract(
+                COALESCE(data_json, '{}'),
+                '$.executionClaimId'
+              ) = ?
+        `,
+      )
+      .bind(
+        attemptedAt,
+        attemptedAt,
+        tenantId,
+        provider,
+        conversationId,
+        claimId,
+      )
+      .run();
+
+    return result.meta.changes === 1;
+  }
 
   async delete(
     tenantId:

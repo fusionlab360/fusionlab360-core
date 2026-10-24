@@ -41,6 +41,26 @@ export class IntegrationEventService {
     IntegrationEventRepository,
 ) {}
 
+/** Re-notify bounded durable work. Delivery claims remain the consumer's job. */
+async dispatchPendingReservations(
+  notify: (identity: { tenantId: string; eventId: string }) => Promise<void>,
+  limit = 50,
+): Promise<{ published: number; failed: number }> {
+  const pending = await this.repository.findPendingReservationDispatch(limit);
+  let published = 0;
+  let failed = 0;
+  for (const identity of pending) {
+    try {
+      await notify(identity);
+      published++;
+    } catch {
+      // Do not modify event status: D1 intent survives a failed Queue send.
+      failed++;
+    }
+  }
+  return { published, failed };
+}
+
 
 async claimForProcessing(
   tenantId:

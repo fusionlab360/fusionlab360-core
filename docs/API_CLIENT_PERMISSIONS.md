@@ -36,6 +36,9 @@ This tool does not assign scopes automatically, verify business ownership of an 
 | `integrations:oauth:connect` | `POST /oauth/gohighlevel/authorize` for the authenticated client's own inactive pending integration |
 | `integrations:test` | `POST /integrations/gohighlevel/company/refresh-test` |
 | `messaging:test` | `/messaging-test/*` conversation inspection and test reply routes |
+| `messaging:read` | `GET /messaging/conversations`, `GET /messaging/conversations/:conversationId/messages` |
+| `messaging:send` | Authorized tenant-scoped manual replies through the Console GHL reply contract |
+| `messaging:write` | `POST /messaging/conversations/:conversationId/messages` Meta WhatsApp text replies |
 | `ai:read` | `GET /ai/profile` |
 | `ai:write` | `PUT /ai/profile` |
 | `ai:test` | `/ai-test/chat`, `/ai-test/session` |

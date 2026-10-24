@@ -5,6 +5,7 @@ import {
 import type {
   IntegrationContext,
 } from "../../../context/integration";
+import { logger } from "../../../core/logger";
 
 
 /*
@@ -147,6 +148,22 @@ export interface GHLAppointmentResponse {
     string;
 }
 
+export interface GHLAppointmentNormalizationDiagnostics {
+  envelopeType: "event" | "appointment" | "root" | "invalid";
+  requiredFields: Record<"id" | "calendarId" | "locationId" | "contactId" | "startTime" | "title", boolean>;
+  failureCategory: "invalid_response" | "missing_required_fields" | null;
+}
+
+export class GHLAppointmentNormalizationError extends Error {
+  constructor(
+    message: string,
+    public readonly diagnostics: GHLAppointmentNormalizationDiagnostics,
+  ) {
+    super(message);
+    this.name = "GHLAppointmentNormalizationError";
+  }
+}
+
 
 /*
  * --------------------------------------------------
@@ -200,105 +217,105 @@ function normalizeAppointmentResponse(
       endTime?:
         string;
     },
+  diagnosticContext?: {
+    stage: "pre_get" | "mutation" | "post_get";
+    correlationId: string;
+    appointmentId: string;
+  },
 ):
   GHLAppointmentResponse {
 
-  if (
-    !response ||
-    typeof response !==
-      "object"
-  ) {
+  const envelopeType =
+    response && typeof response === "object"
+      ? (() => {
+          const raw = response as Record<string, unknown>;
+          return raw.event && typeof raw.event === "object"
+            ? "event"
+            : raw.appointment && typeof raw.appointment === "object"
+              ? "appointment"
+              : "root";
+        })()
+      : "invalid";
 
-    throw new Error(
-      "GoHighLevel returned no usable appointment.",
-    );
-  }
-
-
-  const raw =
-    response as Record<
-      string,
-      unknown
-    >;
-
-
-  const candidate =
-  raw.event &&
-  typeof raw.event ===
-    "object"
-    ? raw.event as Record<
-        string,
-        unknown
-      >
-
-    : raw.appointment &&
-        typeof raw.appointment ===
-          "object"
-      ? raw.appointment as Record<
-          string,
-          unknown
-        >
-
+  const raw = response && typeof response === "object"
+    ? response as Record<string, unknown>
+    : null;
+  const candidate = raw && envelopeType === "event"
+    ? raw.event as Record<string, unknown>
+    : raw && envelopeType === "appointment"
+      ? raw.appointment as Record<string, unknown>
       : raw;
+  const requiredFields = {
+    id: typeof candidate?.id === "string",
+    calendarId: typeof candidate?.calendarId === "string",
+    locationId: typeof candidate?.locationId === "string",
+    contactId: typeof candidate?.contactId === "string",
+    startTime: typeof candidate?.startTime === "string" || typeof fallback?.startTime === "string",
+    title: typeof candidate?.title === "string",
+  };
+  const failureCategory = envelopeType === "invalid"
+    ? "invalid_response"
+    : Object.values(requiredFields).every(Boolean)
+      ? null
+      : "missing_required_fields";
 
-
-  if (
-    typeof candidate.id !==
-      "string" ||
-
-    typeof candidate.calendarId !==
-      "string" ||
-
-    typeof candidate.locationId !==
-      "string" ||
-
-    typeof candidate.contactId !==
-      "string" ||
-
-      (
-    typeof candidate.startTime !==
-      "string" &&
-
-    typeof fallback?.startTime !==
-      "string"
-      ) ||
-
-    typeof candidate.title !==
-      "string"
-  ) {
-
-    throw new Error(
-      "GoHighLevel returned no usable appointment.",
-    );
+  if (diagnosticContext) {
+    (failureCategory ? logger.warn : logger.info)("GHL appointment normalization diagnostics", {
+      ...diagnosticContext,
+      httpStatus: null,
+      envelopeType,
+      requiredFields,
+      failureCategory,
+    });
   }
 
+  if (
+    failureCategory === "invalid_response"
+  ) {
+    throw new GHLAppointmentNormalizationError("GoHighLevel returned no usable appointment.", {
+      envelopeType,
+      requiredFields,
+      failureCategory,
+    });
+  }
+
+
+  if (failureCategory === "missing_required_fields") {
+    throw new GHLAppointmentNormalizationError("GoHighLevel returned no usable appointment.", {
+      envelopeType,
+      requiredFields,
+      failureCategory,
+    });
+  }
+
+  const validCandidate = candidate as Record<string, unknown>;
 
   return {
     id:
-      candidate.id,
+      validCandidate.id as string,
 
     calendarId:
-      candidate.calendarId,
+      validCandidate.calendarId as string,
 
     locationId:
-      candidate.locationId,
+      validCandidate.locationId as string,
 
     contactId:
-      candidate.contactId,
+      validCandidate.contactId as string,
 
     startTime:
-      typeof candidate.startTime ===
+      typeof validCandidate.startTime ===
         "string"
-        ? candidate.startTime
+        ? validCandidate.startTime
         : fallback!.startTime,
 
     ...(
-        typeof candidate.endTime ===
+        typeof validCandidate.endTime ===
           "string"
 
           ? {
               endTime:
-                candidate.endTime,
+                validCandidate.endTime as string,
             }
 
           : typeof fallback?.endTime ===
@@ -313,53 +330,53 @@ function normalizeAppointmentResponse(
       ),
 
     title:
-      candidate.title,
+      validCandidate.title as string,
 
-    ...(typeof candidate.appointmentStatus ===
+    ...(typeof validCandidate.appointmentStatus ===
       "string"
       ? {
           appointmentStatus:
-            candidate.appointmentStatus,
+            validCandidate.appointmentStatus,
         }
       : {}),
 
-    ...(typeof candidate.assignedUserId ===
+    ...(typeof validCandidate.assignedUserId ===
       "string"
       ? {
           assignedUserId:
-            candidate.assignedUserId,
+            validCandidate.assignedUserId,
         }
       : {}),
 
-    ...(typeof candidate.description ===
+    ...(typeof validCandidate.description ===
       "string"
       ? {
           description:
-            candidate.description,
+            validCandidate.description,
         }
       : {}),
 
-    ...(typeof candidate.address ===
+    ...(typeof validCandidate.address ===
       "string"
       ? {
           address:
-            candidate.address,
+            validCandidate.address,
         }
       : {}),
 
-    ...(typeof candidate.dateAdded ===
+    ...(typeof validCandidate.dateAdded ===
       "string"
       ? {
           dateAdded:
-            candidate.dateAdded,
+            validCandidate.dateAdded,
         }
       : {}),
 
-    ...(typeof candidate.dateUpdated ===
+    ...(typeof validCandidate.dateUpdated ===
       "string"
       ? {
           dateUpdated:
-            candidate.dateUpdated,
+            validCandidate.dateUpdated,
         }
       : {}),
   };
@@ -639,6 +656,12 @@ export async function updateGHLAppointment(
 
   return normalizeAppointmentResponse(
   response,
+  undefined,
+  {
+    stage: "mutation",
+    correlationId: context.requestId,
+    appointmentId,
+  },
 );
 }
 

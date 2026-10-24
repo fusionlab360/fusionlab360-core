@@ -49,13 +49,26 @@ export class DefaultOnboardingService
 
     const repositories = createRepositories(db);
 
+    const existingConfiguration =
+      await repositories.configurationRepository.getByIntegrationId(
+        context.tenant.integrations.crm.id,
+      );
+
+    const mergedConfiguration = {
+      ...configuration,
+      providerConfiguration: {
+        ...(existingConfiguration?.providerConfiguration ?? {}),
+        ...(configuration.providerConfiguration ?? {}),
+      },
+    };
+
     await repositories.configurationRepository.save(
       context.tenant.integrations.crm.id,
-      configuration,
+      mergedConfiguration,
     );
 
     return {
-      configuration,
+      configuration: mergedConfiguration,
     };
   }
 

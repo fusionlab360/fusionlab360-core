@@ -1,5 +1,4 @@
-
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
@@ -19,15 +18,12 @@ test(
 
     assert.equal(result.decision, "answer_partial");
     assert.equal(result.confidence, "medium");
-    assert.equal(
-      result.reason,
-      "partial_knowledge_coverage",
-    );
+    assert.equal(result.reason, "partial_knowledge_coverage");
   },
 );
 
 test(
-  "hands off when intent coverage is complete but requested attributes are unsupported",
+  "allows a grounded partial answer when requested attributes are unsupported",
   () => {
     const result = resolveCoreAIAnswerability(
       true,
@@ -37,12 +33,9 @@ test(
       true,
     );
 
-    assert.equal(result.decision, "handoff");
-    assert.equal(result.confidence, "low");
-    assert.equal(
-      result.reason,
-      "no_requested_attribute_coverage",
-    );
+    assert.equal(result.decision, "answer_partial");
+    assert.equal(result.confidence, "medium");
+    assert.equal(result.reason, "partial_knowledge_coverage");
   },
 );
 
@@ -58,9 +51,6 @@ test(
     );
 
     assert.equal(result.decision, "handoff");
-    assert.equal(
-      result.reason,
-      "no_requested_intent_coverage",
-    );
+    assert.equal(result.reason, "no_requested_intent_coverage");
   },
 );

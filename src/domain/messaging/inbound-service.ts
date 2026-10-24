@@ -17,10 +17,12 @@ import type {
 import {
   IntegrationEventService,
 } from "../../core/events/service";
+import { IntegrationEventProcessingError } from "../../core/events/errors";
 
 import {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
+import { MessagingConversationRepository } from "../../persistence/repositories/messaging-conversation-repository";
 
 import {
   AIConversationSessionRepository,
@@ -111,7 +113,11 @@ import {
 } from "./ai-pipeline-feature-flag";
 
 
-export { classifyInboundProcessingError } from "./inbound-diagnostics";
+export {
+  classifyInboundProcessingError,
+  getInboundProviderErrorCode,
+  getInboundProviderHTTPStatus,
+} from "./inbound-diagnostics";
 export type { InboundProcessingErrorClassification } from "./inbound-diagnostics";
 
 const informationalKnowledgeIntents = new Set<KnowledgeIntent>([
@@ -155,6 +161,39 @@ export function shouldRunBookingIntentExtraction(input: {
 
 export const runInboundProcessingOperation = traceInboundOperation;
 const getErrorClassification = classifyInboundProcessingError;
+
+function normalizePermanentHistoryFailure(error: unknown): unknown {
+  if (!error || typeof error !== "object") return error;
+  const failure = error as {
+    operation?: unknown;
+    retryable?: unknown;
+    httpStatus?: unknown;
+  };
+  if (
+    failure.operation !== "conversation_history" ||
+    failure.retryable !== false ||
+    typeof failure.httpStatus !== "number"
+  ) {
+    return error;
+  }
+  return new IntegrationEventProcessingError({
+    code: "PROVIDER_REQUEST_REJECTED",
+    severity: "error",
+    message: "Conversation history request was rejected by the provider.",
+    retryable: false,
+    cause: error,
+  });
+}
+
+function isConversationHistoryFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = current as { operation?: unknown; cause?: unknown; causeValue?: unknown };
+    if (value.operation === "conversation_history") return true;
+    current = value.cause ?? value.causeValue;
+  }
+  return false;
+}
 
 /*
  * ----------------------------------------------------------
@@ -702,8 +741,13 @@ export async function processGHLInboundMessage(
   }
   const deliveryProvider = messaging;
   messaging = {
-    getRecentMessages: (providerContext, conversationId, limit) =>
-      deliveryProvider.getRecentMessages(providerContext, conversationId, limit),
+    getRecentMessages: async (providerContext, conversationId, limit) => {
+      try {
+        return await deliveryProvider.getRecentMessages(providerContext, conversationId, limit);
+      } catch (error: unknown) {
+        throw normalizePermanentHistoryFailure(error);
+      }
+    },
     sendText: async (providerContext, input) => {
       const preparedInput = await runInboundProcessingOperation(
         "reply_preparation",
@@ -739,6 +783,25 @@ export async function processGHLInboundMessage(
   true;
 
 try {
+
+  // Canonical persistence is deliberately performed after the durable event
+  // claim and before provider history/AI work.  It is idempotent on the
+  // provider message identity, so retries cannot duplicate inbox messages.
+  if (message.provider === "gohighlevel") {
+    await runInboundProcessingOperation("canonical_message_persistence", correlationId, () =>
+      new MessagingConversationRepository(db).upsertGHLInbound({
+        tenantId: context.tenant.id,
+        locationId: message.locationId,
+        contactId: message.contactId,
+        conversationId: message.conversationId,
+        messageId: message.providerMessageId,
+        occurredAt: message.occurredAt,
+        text: message.text,
+        channel: message.channel,
+        channelProviderId: message.channelProviderId,
+      }),
+    );
+  }
 
   /*
    * --------------------------------------------------------
@@ -952,6 +1015,7 @@ try {
   }
 
   let tenantAIChatEnabled = false;
+  let tenantAIAutoReplyEnabled = false;
 
     try {
       tenantAIChatEnabled = await runInboundProcessingOperation(
@@ -973,6 +1037,50 @@ try {
         },
       );
     }
+
+    try {
+      tenantAIAutoReplyEnabled = await runInboundProcessingOperation(
+        "ai_auto_reply_feature",
+        correlationId,
+        () => isTenantFeatureEnabled(
+          db,
+          context.tenant.id,
+          "ai_auto_reply",
+        ),
+      );
+    } catch (error: unknown) {
+      console.error(
+        "Failed to load tenant AI auto-reply setting.",
+        {
+          tenantId: context.tenant.id,
+          error: getErrorClassification(error),
+        },
+      );
+    }
+
+  const aiAutoReplyEnabled =
+    tenantAIChatEnabled && tenantAIAutoReplyEnabled;
+
+  const isAIResponseEnabled = async (): Promise<boolean> => {
+    try {
+      return await runInboundProcessingOperation(
+        "ai_auto_reply_recheck",
+        correlationId,
+        async () =>
+          (await isTenantFeatureEnabled(db, context.tenant.id, "ai_chat")) &&
+          (await isTenantFeatureEnabled(db, context.tenant.id, "ai_auto_reply")),
+      );
+    } catch (error: unknown) {
+      console.error(
+        "Failed to recheck tenant AI auto-reply setting.",
+        {
+          tenantId: context.tenant.id,
+          error: getErrorClassification(error),
+        },
+      );
+      return false;
+    }
+  };
 
   const decision =
     await runInboundProcessingOperation("session_decision", correlationId, () => sessionService.handleInbound({
@@ -1208,7 +1316,7 @@ try {
   ) {
 
     if (
-      tenantAIChatEnabled &&
+      (await isAIResponseEnabled()) &&
       decision.response?.trim()
     ) {
 
@@ -1438,7 +1546,7 @@ try {
   );
 
   if (
-    tenantAIChatEnabled &&
+    (await isAIResponseEnabled()) &&
     knowledgeQuery.clarificationQuestion
   ) {
     await messaging.sendText(context, {
@@ -1473,6 +1581,7 @@ try {
  */
 
   if (
+      aiAutoReplyEnabled &&
       tenantBookingEnabled &&
       !clarificationResolved &&
       shouldRunBookingIntentExtraction({
@@ -1563,10 +1672,10 @@ try {
          */
 
         const latestBeforeBookingDelivery =
-          await messaging.getRecentMessages(
-            context,
-            message.conversationId,
-            20,
+          await runInboundProcessingOperation(
+            "conversation_history",
+            correlationId,
+            () => messaging.getRecentMessages(context, message.conversationId, 20),
           );
 
         if (
@@ -1635,10 +1744,10 @@ try {
          */
 
         const latestBeforeBookingSend =
-          await messaging.getRecentMessages(
-            context,
-            message.conversationId,
-            20,
+          await runInboundProcessingOperation(
+            "conversation_history",
+            correlationId,
+            () => messaging.getRecentMessages(context, message.conversationId, 20),
           );
 
         const newerBookingInboundMessage =
@@ -1733,6 +1842,8 @@ try {
           return;
         }
 
+        if (!(await isAIResponseEnabled())) return;
+
         await messaging.sendText(
           context,
           {
@@ -1766,6 +1877,10 @@ try {
         unknown
     ) {
 
+      // History failures must return to the event retry/dead-letter policy.
+      // Do not consume the inbound event with a generic booking apology.
+      if (isConversationHistoryFailure(error)) throw error;
+
       console.error(
         "AI BOOKING ENGINE FAILED",
         {
@@ -1795,6 +1910,8 @@ try {
         bookingSessionActive &&
         !clarificationResolved
       ) {
+
+        if (!(await isAIResponseEnabled())) return;
 
         await messaging.sendText(
           context,
@@ -1840,7 +1957,7 @@ try {
 
 
 
-  if (!tenantAIChatEnabled) {
+  if (!aiAutoReplyEnabled) {
     console.info(
       "Normal AI response skipped because AI Chat is disabled or its setting could not be verified.",
       {
@@ -2085,10 +2202,10 @@ try {
 const isHumanTakeover =
   async (): Promise<boolean> => {
     const latestHistory =
-      await messaging.getRecentMessages(
-        context,
-        message.conversationId,
-        20,
+      await runInboundProcessingOperation(
+        "conversation_history",
+        correlationId,
+        () => messaging.getRecentMessages(context, message.conversationId, 20),
       );
 
     const takeoverDetected =
@@ -2314,11 +2431,10 @@ try {
   },
 );
 
-const latestBeforeSend =
-  await messaging.getRecentMessages(
-    context,
-    message.conversationId,
-    20,
+  const latestBeforeSend = await runInboundProcessingOperation(
+    "conversation_history",
+    correlationId,
+    () => messaging.getRecentMessages(context, message.conversationId, 20),
   );
 
 console.log(
@@ -2457,6 +2573,14 @@ console.log(
   );
 
   try {
+
+    if (!(await isAIResponseEnabled())) {
+      console.info("AI response skipped because tenant auto-reply is disabled.", {
+        tenantId: context.tenant.id,
+        conversationId: message.conversationId,
+      });
+      return;
+    }
 
     const sendResult =
       await messaging.sendText(

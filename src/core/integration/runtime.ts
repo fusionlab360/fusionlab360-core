@@ -126,4 +126,17 @@ export interface IntegrationRuntime {
 
   credentials:
     IntegrationCredentialResolver;
+
+  /**
+   * Explicit internal-only mock composition. When selected, provider clients
+   * must use the injected transport and credential resolver and must fail
+   * closed if either is missing. Ordinary runtime construction leaves this
+   * unset and retains the existing provider transport behavior.
+   */
+  transportMode?: "mock";
+
+  httpTransport?: {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    credentials: IntegrationCredentialResolver;
+  };
 }

@@ -12,6 +12,9 @@ export const PERMISSION_SCOPES = [
   "integrations:write",
   "integrations:oauth:connect",
   "integrations:test",
+  "messaging:read",
+  "messaging:send",
+  "messaging:write",
   "messaging:test",
   "ai:read",
   "ai:write",
@@ -22,6 +25,8 @@ export const PERMISSION_SCOPES = [
   "knowledge:evaluate",
   "features:read",
   "features:write",
+  "tenants:provision",
+  "tenants:read",
 ] as const;
 
 export type PermissionScope = (typeof PERMISSION_SCOPES)[number];

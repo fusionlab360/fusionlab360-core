@@ -5,6 +5,12 @@ export const TENANT_FEATURES = {
     defaultEnabled: true,
   },
 
+  ai_auto_reply: {
+    label: "AI Auto-Reply",
+    description: "Allow automatic AI responses to inbound messages.",
+    defaultEnabled: false,
+  },
+
   ai_booking: {
     label: "AI Booking",
     description: "Handle AI-assisted booking conversations.",

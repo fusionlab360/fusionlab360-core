@@ -15,6 +15,69 @@ export type IntegrationEventClaimResult =
 export class IntegrationEventRepository
   extends BaseRepository {
 
+  /**
+   * Must immediately follow a reservation write in the SAME D1 batch.
+   * changes() gates emission on that write, including conditional zero-row updates.
+   * The canonical ID is read inside the transaction, never guessed by the caller.
+   */
+  async prepareReservationIntent(
+    record: import("../models/reservation-record").ReservationRecord & {
+      providerConnectionId: string; providerPropertyId: string;
+    },
+    destinationIntegrationId: string,
+    eventType: string,
+  ): Promise<{ statement: D1PreparedStatement; eventId: string }> {
+    // This unique provider scope identifies exactly one canonical reservation,
+    // including when concurrent inserts propose different canonical UUIDs.
+    const externalId = JSON.stringify([
+      "reservation", record.providerConnectionId, record.providerPropertyId,
+      record.providerReservationId, record.revision, eventType, destinationIntegrationId,
+    ]);
+    const eventId = await createTenantScopedEventId(record.tenantId, record.provider, externalId);
+    const statement = this.db.prepare(`
+      INSERT INTO integration_events (
+        event_id, tenant_id, event_type, aggregate_type, aggregate_id,
+        provider, revision, occurred_at, received_at, payload,
+        external_event_id, idempotency_key
+      )
+      SELECT ?, tenant_id, ?, 'reservation', canonical_reservation_id,
+        provider, revision, ?, ?,
+        json_object('canonicalReservationId', canonical_reservation_id,
+          'sourceIntegrationId', provider_connection_id, 'destinationIntegrationId', ?),
+        ?, ?
+      FROM reservation_records
+      WHERE changes() = 1 AND tenant_id = ? AND provider = ?
+        AND provider_connection_id = ? AND provider_property_id = ?
+        AND provider_reservation_id = ? AND revision = ?
+      ON CONFLICT(event_id) DO NOTHING
+    `).bind(
+      eventId, eventType, record.updatedAt, new Date().toISOString(),
+      destinationIntegrationId, externalId, eventId,
+      record.tenantId, record.provider, record.providerConnectionId,
+      record.providerPropertyId, record.providerReservationId, record.revision,
+    );
+    return { statement, eventId };
+  }
+
+  /** Bounded, identity-only recovery; dead letters and active leases are excluded. */
+  async findPendingReservationDispatch(limit = 50): Promise<Array<{ tenantId: string; eventId: string }>> {
+    const rows = await this.db.prepare(`
+      SELECT tenant_id, event_id FROM integration_events
+      WHERE aggregate_type = 'reservation'
+        AND event_type IN ('reservation.created','reservation.updated',
+          'reservation.cancelled','reservation.checked_in','reservation.checked_out')
+        AND (
+          processing_status IN ('received', 'failed')
+          OR (processing_status = 'processing'
+            AND COALESCE(julianday(processing_lease_expires_at),
+              julianday(processing_started_at, '+2 minutes')) <= julianday('now'))
+        )
+      ORDER BY received_at ASC, event_id ASC LIMIT ?
+    `).bind(Math.max(1, Math.min(50, Math.trunc(limit) || 50)))
+      .all<{ tenant_id: string; event_id: string }>();
+    return (rows.results ?? []).map(row => ({ tenantId: row.tenant_id, eventId: row.event_id }));
+  }
+
   async prepareDeadLetterReplay(
     tenantId: string,
     eventId: string,

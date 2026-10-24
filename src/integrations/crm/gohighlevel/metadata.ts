@@ -29,6 +29,13 @@ export interface GHLMetadata {
   customFields: GHLFieldMetadata[];
 }
 
+function errorCategory(error: unknown): string {
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof SyntaxError) return "syntax_error";
+  return error instanceof Error ? "error" : "unknown";
+}
+
 export async function resolveMetadata(
   context: RequestContext,
   locationId: string,
@@ -97,15 +104,6 @@ export async function resolveMetadata(
   "contact",
 );
 
-console.log(
-  "GHL CONTACT CUSTOM FIELDS RESPONSE:",
-  JSON.stringify(
-    contactFields,
-    null,
-    2,
-  ),
-);
-
 logger.info("Contact custom fields fetched", {
   count: contactFields.customFields.length,
 });
@@ -148,18 +146,13 @@ logger.info("Opportunity custom fields fetched", {
   count: fieldMetadata.length,
 });
 
-for (const field of fieldMetadata) {
-  logger.info("Discovered custom field", {
-    model: field.model,
-    name: field.name,
-    key: field.key,
-    id: field.id,
-  });
-}
-
   } catch (error) {
     logger.error("Failed to load custom fields", {
-      error,
+      operation: "metadata.custom_fields.fetch",
+      provider: "gohighlevel",
+      correlationId: context.requestId,
+      outcome: "failed",
+      errorCategory: errorCategory(error),
     });
 
     logger.warn(

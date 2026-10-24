@@ -54,16 +54,15 @@ export async function upsertContact(
   }
 
 
-  logger.info(
-    "FINAL GHL UPSERT PAYLOAD",
-    {
-      payload: {
-        locationId,
-
-        ...payload,
-      },
-    },
-  );
+  logger.info("GHL contact upsert payload prepared", {
+    operation: "contact.upsert",
+    provider: "gohighlevel",
+    correlationId: context.requestId,
+    locationId,
+    emailPresent: Boolean(payload.email),
+    phonePresent: Boolean(payload.phone),
+    customFieldCount: payload.customFields?.length ?? 0,
+  });
 
 
   logger.info(

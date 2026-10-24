@@ -90,6 +90,17 @@ These are known project technologies, not proof that every component is complete
 
 The actual repository is the source of truth for implementation details.
 
+The repository also contains an isolated STAAH channel-manager mock. M1 provides
+the mock adapter foundation, M2 stores its tenant-scoped connection in the
+existing `integrations` table, and M3 exposes synthetic property/catalog reads
+and an authorized, manually invoked reservation sync into canonical
+`reservation_records`. The M3 path does not call GHL, publish integration
+events, or connect to STAAH. Live STAAH remains unsupported; the synthetic
+contracts and `mock_verified` status do not prove provider authorization or
+official STAAH API compatibility. The additive M3 reservation-identity
+migration is local and must be applied separately before the durable sync path
+is deployed.
+
 Codex must inspect the source code, configuration, migrations, interfaces, and tests before documenting exact component responsibilities or claiming a capability is implemented.
 
 ## 5. Security and Data Integrity

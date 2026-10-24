@@ -13,6 +13,112 @@ export interface OAuthOnboardingSetup {
 }
 
 export class IntegrationRepository extends BaseRepository {
+  /** Finds a tenant-owned integration, including disabled records. */
+  async findByTenantAndProvider(
+    tenantId: string,
+    provider: string,
+  ): Promise<IntegrationRecord | null> {
+    const row = await this.db
+      .prepare(`
+        SELECT *
+        FROM integrations
+        WHERE tenant_id = ? AND provider = ?
+        LIMIT 1
+      `)
+      .bind(tenantId, provider)
+      .first<IntegrationRecord>();
+
+    return row ?? null;
+  }
+
+  /** Inserts once under the schema's tenant/provider unique constraint. */
+  async createIfMissing(
+    integration: Pick<IntegrationRecord, "id" | "tenant_id" | "provider" | "settings">,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(`
+        INSERT INTO integrations (id, tenant_id, provider, enabled, settings)
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(tenant_id, provider) DO NOTHING
+      `)
+      .bind(
+        integration.id,
+        integration.tenant_id,
+        integration.provider,
+        integration.settings,
+      )
+      .run();
+
+    return result.meta.changes === 1;
+  }
+
+  /** Compare-and-set protects configuration from stale concurrent updates. */
+  async updateTenantProviderSettings(
+    tenantId: string,
+    integrationId: string,
+    provider: string,
+    expectedSettings: string | null,
+    settings: string,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(`
+        UPDATE integrations
+        SET settings = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND provider = ? AND settings IS ?
+      `)
+      .bind(settings, tenantId, integrationId, provider, expectedSettings)
+      .run();
+
+    return result.meta.changes === 1;
+  }
+
+  /** Tenant/provider/id-scoped enabled-state transition. */
+  async setTenantProviderEnabled(
+    tenantId: string,
+    integrationId: string,
+    provider: string,
+    expectedEnabled: boolean,
+    enabled: boolean,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(`
+        UPDATE integrations
+        SET enabled = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND provider = ? AND enabled = ?
+      `)
+      .bind(
+        enabled ? 1 : 0,
+        tenantId,
+        integrationId,
+        provider,
+        expectedEnabled ? 1 : 0,
+      )
+      .run();
+
+    return result.meta.changes === 1;
+  }
+
+  /** Re-enables only a disabled record while invalidating its old verification. */
+  async reenableTenantProviderUnverified(
+    tenantId: string,
+    integrationId: string,
+    provider: string,
+    expectedSettings: string | null,
+    settings: string,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(`
+        UPDATE integrations
+        SET enabled = 1, settings = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND provider = ?
+          AND enabled = 0 AND settings IS ?
+      `)
+      .bind(settings, tenantId, integrationId, provider, expectedSettings)
+      .run();
+
+    return result.meta.changes === 1;
+  }
+
   async findByTenant(
     tenantId: string,
   ): Promise<IntegrationRecord[]> {

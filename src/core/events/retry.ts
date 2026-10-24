@@ -41,6 +41,8 @@ export function getIntegrationEventRetryPolicy(
 
     case "PROVIDER_NORMALIZATION_FAILED":
 
+    case "PROVIDER_REQUEST_REJECTED":
+
     case "PROVIDER_UNSUPPORTED":
 
     case "TENANT_CONTEXT_INVALID":

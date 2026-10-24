@@ -27,7 +27,24 @@ export interface GHLIntegrationEventReplayEnvelope {
   sourceEventId: string;
 }
 
+export interface MetaWhatsAppQueueEnvelope {
+  version: 1;
+  kind: "meta_whatsapp";
+  tenantId: string;
+  sourceEventId: string;
+}
+
 export type GHLInboundQueueEnvelope =
   | GHLInboundQueueMessageEnvelope
   | GHLKnowledgeQueueEnvelope
-  | GHLIntegrationEventReplayEnvelope;
+  | GHLIntegrationEventReplayEnvelope
+  | ReservationEventQueueEnvelope
+  | MetaWhatsAppQueueEnvelope;
+
+/** Shared Queue dispatch; provider, payload and destination are loaded from D1. */
+export interface ReservationEventQueueEnvelope {
+  version: 1;
+  kind: "reservation";
+  tenantId: string;
+  sourceEventId: string;
+}

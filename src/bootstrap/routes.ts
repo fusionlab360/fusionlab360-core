@@ -13,12 +13,18 @@ import { bookingTestRoutes } from "../domain/booking/routes";
 
 import integrationRoutes from "../domain/integration/routes";
 import { integrationTestRoutes } from "../domain/integration/routes";
+import staahManagementRoutes, {
+  type createSTAAHRoutes,
+} from "../integrations/channel-manager/staah/staah-routes";
 
 import messagingTestRoutes
   from "../domain/messaging/test-routes";
 
 import messagingRoutes
   from "../domain/messaging/routes";
+import { createSharedInboxRoutes }
+  from "../domain/messaging/shared-inbox-routes";
+import { createMetaWhatsAppOutboundService } from "../integrations/messaging/meta-whatsapp/outbound";
 
 import aiTestRoutes
   from "../domain/ai/test-routes";
@@ -33,18 +39,33 @@ import knowledgeRoutes
   from "../domain/knowledge/routes";
 
 import featureRoutes from "../domain/features/routes";
+import metaWhatsAppRoutes from "../integrations/messaging/meta-whatsapp/routes";
+import { metaWhatsAppWebhookController } from "../integrations/messaging/meta-whatsapp/webhook-controller";
 
 import {
   evaluateRetrievalController,
 } from "../domain/messaging/retrieval-evaluation-controller";
 import { requirePermission } from "../middleware/authorization";
+import { createConsoleServiceRoutes } from "../domain/console-service/routes";
+import type { MessagingProvider } from "../core/messaging";
 
 export function shouldEnableNonProductionRoutes(environment?: string): boolean {
   return environment === "development" || environment === "staging";
 }
 
-export function createApplication(environment?: string) {
-const includeNonProductionRoutes = shouldEnableNonProductionRoutes(environment);
+export function createApplication(
+  environment?: string,
+  localSTAAHRoutes?: ReturnType<typeof createSTAAHRoutes>,
+  manualReplyProvider?: MessagingProvider,
+) {
+  // A trusted local route override is never accepted by
+  // staging or production application composition.
+  if (localSTAAHRoutes && environment !== "development") {
+    throw new Error("Local STAAH mock routes require development composition.");
+  }
+
+  const includeNonProductionRoutes =
+    shouldEnableNonProductionRoutes(environment);
 const app = createApp();
 
 
@@ -114,6 +135,8 @@ app.route(
   messagingRoutes,
 );
 
+app.all("/webhooks/meta-whatsapp", metaWhatsAppWebhookController);
+
 
 /*
  * --------------------------------------------------
@@ -144,6 +167,9 @@ if (includeNonProductionRoutes) {
   app.use("/messaging-test/*", authMiddleware);
   app.use("/ai-test/*", authMiddleware);
 }
+
+app.use("/messaging", authMiddleware);
+app.use("/messaging/*", authMiddleware);
 
 app.use(
   "/ai/*",
@@ -197,6 +223,11 @@ app.route(
   "/integrations",
   integrationRoutes,
 );
+app.route("/integrations/meta-whatsapp", metaWhatsAppRoutes);
+app.route(
+  "/channel-manager/staah",
+  localSTAAHRoutes ?? staahManagementRoutes,
+);
 if (includeNonProductionRoutes) {
   app.route("/integrations", integrationTestRoutes);
 }
@@ -234,6 +265,9 @@ app.route(
   "/ai",
   aiRoutes,
 );
+
+app.route("/messaging", createSharedInboxRoutes((env) => createMetaWhatsAppOutboundService(env)));
+app.route("/internal/console", createConsoleServiceRoutes(manualReplyProvider));
 
 /*
  * --------------------------------------------------

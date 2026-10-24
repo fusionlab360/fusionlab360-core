@@ -6,6 +6,12 @@ export interface ReservationRecord {
 
   provider: string;
 
+  /** Provider connection scope; optional for records created before this identity was added. */
+  providerConnectionId?: string;
+
+  /** Provider property scope; optional for records created before this identity was added. */
+  providerPropertyId?: string;
+
   providerReservationId: string;
 
   providerCalendarId?: string;

@@ -7,6 +7,7 @@ export interface OutboundDeliveryPayload {
   channel: string;
   channelProviderId?: string;
   replyMessageId?: string;
+  origin?: "ai_agent" | "manual_agent";
 }
 
 export type OutboundDeliveryReservation =
@@ -26,6 +27,14 @@ async function hashPayload(payload: string): Promise<string> {
     .join("");
 }
 
+function hashablePayload(payload: OutboundDeliveryPayload): string {
+  // Keep the historical AI payload hash stable while distinguishing the
+  // explicitly-originated manual reply payloads.
+  if (payload.origin !== "ai_agent") return JSON.stringify(payload);
+  const { origin: _origin, ...legacyPayload } = payload;
+  return JSON.stringify(legacyPayload);
+}
+
 export class MessagingOutboundDeliveryRepository extends BaseRepository {
   async reserve(input: {
     tenantId: string;
@@ -34,7 +43,7 @@ export class MessagingOutboundDeliveryRepository extends BaseRepository {
     effectKey: string;
     payload: OutboundDeliveryPayload;
   }): Promise<OutboundDeliveryReservation> {
-    const payload = JSON.stringify(input.payload);
+    const payload = hashablePayload(input.payload);
     const payloadHash = await hashPayload(payload);
     const id = crypto.randomUUID();
 

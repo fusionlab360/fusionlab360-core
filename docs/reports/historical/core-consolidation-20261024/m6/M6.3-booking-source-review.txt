@@ -1,0 +1,1299 @@
+# M6.3 Mock Booking Submission
+
+========== src\domain\booking\routes.ts ==========
+
+import {
+  Hono,
+} from "hono";
+
+import type {
+  AppBindings,
+  AppVariables,
+} from "../../config/app";
+import { requirePermission } from "../../middleware/authorization";
+
+import {
+  listBookingOfferingsController,
+  getBookingAvailabilityController,
+  createBookingController,
+  getAccommodationBookingPageController,
+} from "./controller";
+
+import {
+  testBookingIntentController,
+} from "./intent-controller";
+
+import {
+  testAIBookingController,
+} from "./ai-booking-controller";
+
+import { createMiddleware } from "hono/factory";
+
+
+export const bookingTestRoutes = new Hono<{
+  Bindings: AppBindings;
+  Variables: AppVariables;
+}>();
+
+bookingTestRoutes.post(
+  "/intent-test",
+  requirePermission("booking:test"),
+  testBookingIntentController,
+);
+
+bookingTestRoutes.post(
+  "/ai-test",
+  requirePermission("booking:test"),
+  testAIBookingController,
+);
+
+
+
+const bookingRoutes =
+  new Hono<{
+    Bindings:
+      AppBindings;
+
+    Variables:
+      AppVariables;
+  }>();
+
+bookingRoutes.get(
+  "/accommodation/booking-page",
+  requirePermission("booking:read"),
+  getAccommodationBookingPageController,
+);
+
+bookingRoutes.get(
+  "/offerings",
+  requirePermission("booking:read"),
+  listBookingOfferingsController,
+);
+
+
+bookingRoutes.post(
+  "/availability",
+  requirePermission("booking:read"),
+  getBookingAvailabilityController,
+);
+
+
+bookingRoutes.post(
+  "/",
+  requirePermission("booking:create"),
+  createBookingController,
+);
+
+export default bookingRoutes;
+
+const testRouteEnvironmentMiddleware = createMiddleware<{
+  Bindings: AppBindings;
+  Variables: AppVariables;
+}>(async (c, next) => {
+  const environment = c.env.APP_ENVIRONMENT;
+
+  if (
+    environment !== "development" &&
+    environment !== "staging"
+  ) {
+    return c.json(
+      {
+        success: false,
+        message: "Not Found",
+      },
+      404,
+    );
+  }
+
+  await next();
+});
+
+bookingRoutes.use(
+  "/intent-test",
+  testRouteEnvironmentMiddleware,
+);
+
+bookingRoutes.use(
+  "/ai-test",
+  testRouteEnvironmentMiddleware,
+);
+
+========== src\core\booking\contracts.ts ==========
+
+import type {
+  IntegrationContext,
+} from "../../context/integration";
+
+
+/*
+ * --------------------------------------------------
+ * Booking type
+ * --------------------------------------------------
+ *
+ * The Core supports two booking domains:
+ *
+ * appointment
+ * accommodation
+ *
+ * Appointment:
+ * doctor / therapist / service + time slot
+ *
+ * Accommodation:
+ * property / room type / rate + date range
+ */
+export type BookingType =
+  | "appointment"
+  | "accommodation";
+
+export interface PatientIdentity {
+  fullName: string | null;
+  identityNumber: string | null;
+  phone: string | null;
+  identityType?: string | null;
+}
+
+export interface PatientIdentityGateway {
+  load(customerId: string): Promise<PatientIdentity>;
+  update(customerId: string, identity: PatientIdentity): Promise<PatientIdentity>;
+}
+
+export type BookingField =
+  | "customer.fullName"
+  | "customer.identityNumber"
+  | "customer.phone";
+
+export type BookingPersistenceMode =
+  | "none"
+  | "optional"
+  | "required";
+
+export interface BookingOfferingFieldPolicy {
+  requiredFields: BookingField[];
+  persistence: {
+    target?: "crm.contact" | "none";
+    mode: BookingPersistenceMode;
+  };
+}
+
+/**
+ * Legacy appointment field requirements retained only for compatibility with
+ * previously stored provider configuration. New code should use the generic
+ * offering policy above.
+ */
+export type AppointmentPatientField =
+  | "full_name"
+  | "identity_number"
+  | "phone";
+
+export interface AppointmentPatientFieldRequirements {
+  fields: AppointmentPatientField[];
+  persistToContact?: boolean;
+  requirePersistence?: boolean;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Booking status
+ * --------------------------------------------------
+ */
+export type BookingStatus =
+  | "confirmed"
+  | "pending"
+  | "cancelled";
+
+
+/*
+ * --------------------------------------------------
+ * Bookable offering
+ * --------------------------------------------------
+ *
+ * Appointment example:
+ *
+ * id:
+ *   calendar/service identifier
+ *
+ * type:
+ *   appointment
+ *
+ * name:
+ *   Physiotherapy
+ *
+ *
+ * Hotel example:
+ *
+ * id:
+ *   room type identifier
+ *
+ * type:
+ *   accommodation
+ *
+ * name:
+ *   Deluxe King Room
+ */
+export interface BookingOffering {
+
+  id:
+    string;
+
+  type:
+    BookingType;
+
+  name:
+    string;
+
+  locationId?:
+    string;
+
+  propertyId?:
+    string;
+
+  metadata?:
+    Record<
+      string,
+      unknown
+    >;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Availability request
+ * --------------------------------------------------
+ */
+export interface BookingAvailabilityRequest {
+
+  type:
+    BookingType;
+
+  offeringId:
+    string;
+
+  start:
+    string;
+
+  end:
+    string;
+
+  timezone?:
+    string;
+
+  durationMinutes?:
+    number;
+
+  adults?:
+    number;
+
+  children?:
+    number;
+
+  quantity?:
+    number;
+
+  resourceId?:
+    string;
+
+  metadata?:
+    Record<
+      string,
+      unknown
+    >;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Availability slot
+ * --------------------------------------------------
+ */
+export interface BookingAvailabilitySlot {
+
+  start:
+    string;
+
+  end:
+    string;
+
+  available:
+    boolean;
+
+  offeringId?:
+    string;
+
+  resourceId?:
+    string;
+
+  resourceName?:
+    string;
+
+  price?:
+    number;
+
+  currency?:
+    string;
+
+  metadata?:
+    Record<
+      string,
+      unknown
+    >;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Create booking request
+ * --------------------------------------------------
+ */
+export interface CreateBookingRequest {
+
+  type:
+    BookingType;
+
+  offeringId:
+    string;
+
+  customerId:
+    string;
+
+  start:
+    string;
+
+  end:
+    string;
+
+  adults?:
+    number;
+
+  children?:
+    number;
+
+  quantity?:
+    number;
+
+  resourceId?:
+    string;
+
+  metadata?:
+    Record<
+      string,
+      unknown
+    >;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Booking result
+ * --------------------------------------------------
+ */
+export interface BookingResult {
+
+  bookingId:
+    string;
+
+  status:
+    BookingStatus;
+
+  type:
+    BookingType;
+
+  offeringId:
+    string;
+
+  customerId:
+    string;
+
+  start:
+    string;
+
+  end:
+    string;
+
+  confirmationCode?:
+    string;
+
+  price?:
+    number;
+
+  currency?:
+    string;
+
+  metadata?:
+    Record<
+      string,
+      unknown
+    >;
+}
+
+
+/*
+ * --------------------------------------------------
+ * Booking provider
+ * --------------------------------------------------
+ *
+ * Provider adapters implement this contract.
+ *
+ * The Core never calls:
+ *
+ * GHL
+ * PMS
+ * Calendar APIs
+ * Room APIs
+ *
+ * directly.
+ */
+export interface BookingProvider {
+
+    supportsBookingType?(
+    type:
+      BookingType,
+    ):
+      boolean |
+      Promise<boolean>;
+
+  listOfferings(
+    context:
+      IntegrationContext,
+
+    type:
+      BookingType,
+  ):
+    Promise<
+      BookingOffering[]
+    >;
+
+
+  getAvailability(
+    context:
+      IntegrationContext,
+
+    request:
+      BookingAvailabilityRequest,
+  ):
+    Promise<
+      BookingAvailabilitySlot[]
+    >;
+
+
+  createBooking(
+    context:
+      IntegrationContext,
+
+    request:
+      CreateBookingRequest,
+  ):
+    Promise<
+      BookingResult
+    >;
+
+
+  getBooking?(
+    context:
+      IntegrationContext,
+
+    bookingId:
+      string,
+  ):
+    Promise<
+      BookingResult
+    >;
+
+
+  updateBooking?(
+    context:
+      IntegrationContext,
+
+    bookingId:
+      string,
+
+    request:
+      Partial<
+        CreateBookingRequest
+      >,
+  ):
+    Promise<
+      BookingResult
+    >;
+
+
+  cancelBooking?(
+    context:
+      IntegrationContext,
+
+    bookingId:
+      string,
+  ):
+    Promise<
+      BookingResult
+    >;
+}
+
+========== src\persistence\repositories\reservation-record-repository.ts ==========
+
+import { BaseRepository } from "./base-repository";
+import { IntegrationEventRepository } from "./integration-event-repository";
+
+import type {
+  ReservationRecord,
+} from "../models/reservation-record";
+
+
+export class ReservationRecordRepository
+  extends BaseRepository {
+
+  /** Atomic canonical write and durable intent; Queue notification is separate. */
+  async persistProviderReservationWithEvent(
+    record: ReservationRecord & { providerConnectionId: string; providerPropertyId: string },
+    destinationIntegrationId: string,
+  ): Promise<{
+    outcome: "inserted" | "updated" | "unchanged" | "stale" | "conflict";
+    eventId?: string;
+  }> {
+    const events = new IntegrationEventRepository(this.db);
+    const insertedType = record.lifecycle === "cancelled" ? "reservation.cancelled" : "reservation.created";
+    const updatedType = record.lifecycle === "cancelled" ? "reservation.cancelled"
+      : record.lifecycle === "checked_in" ? "reservation.checked_in"
+      : record.lifecycle === "checked_out" ? "reservation.checked_out" : "reservation.updated";
+    const insertEvent = await events.prepareReservationIntent(record, destinationIntegrationId, insertedType);
+    const updateEvent = await events.prepareReservationIntent(record, destinationIntegrationId, updatedType);
+    const results = await this.db.batch([
+      this.db.prepare(`
+        INSERT INTO reservation_records (
+          tenant_id, canonical_reservation_id, provider, provider_reservation_id,
+          provider_connection_id, provider_property_id, provider_calendar_id,
+          provider_edit_id, revision, lifecycle, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (tenant_id, provider, provider_connection_id,
+          provider_property_id, provider_reservation_id)
+          WHERE provider_connection_id IS NOT NULL AND provider_property_id IS NOT NULL
+        DO NOTHING
+      `).bind(record.tenantId, record.canonicalReservationId, record.provider,
+        record.providerReservationId, record.providerConnectionId, record.providerPropertyId,
+        record.providerCalendarId ?? null, record.providerEditId ?? null,
+        record.revision, record.lifecycle, record.payload),
+      insertEvent.statement,
+      this.db.prepare(`
+        UPDATE reservation_records SET provider_calendar_id = ?, provider_edit_id = ?,
+          revision = ?, lifecycle = ?, payload = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND provider = ? AND provider_connection_id = ?
+          AND provider_property_id = ? AND provider_reservation_id = ? AND revision < ?
+      `).bind(record.providerCalendarId ?? null, record.providerEditId ?? null,
+        record.revision, record.lifecycle, record.payload, record.tenantId, record.provider,
+        record.providerConnectionId, record.providerPropertyId, record.providerReservationId,
+        record.revision),
+      updateEvent.statement,
+    ]);
+    if (results[0].meta.changes === 1) return { outcome: "inserted", eventId: insertEvent.eventId };
+    if (results[2].meta.changes === 1) return { outcome: "updated", eventId: updateEvent.eventId };
+    const existing = await this.db.prepare(`
+      SELECT revision, lifecycle, payload FROM reservation_records
+      WHERE tenant_id = ? AND provider = ? AND provider_connection_id = ?
+        AND provider_property_id = ? AND provider_reservation_id = ?
+    `).bind(record.tenantId, record.provider, record.providerConnectionId,
+      record.providerPropertyId, record.providerReservationId)
+      .first<{ revision: number; lifecycle: string; payload: string }>();
+    if (existing && existing.revision > record.revision) return { outcome: "stale" };
+    return { outcome: existing?.revision === record.revision && existing.lifecycle === record.lifecycle &&
+      existing.payload === record.payload ? "unchanged" : "conflict" };
+  }
+
+  async persistProviderReservation(
+    record: ReservationRecord & {
+      providerConnectionId: string;
+      providerPropertyId: string;
+    },
+  ): Promise<"inserted" | "updated" | "unchanged" | "stale" | "conflict"> {
+    const result = await this.db.prepare(`
+      INSERT INTO reservation_records (
+        tenant_id, canonical_reservation_id, provider,
+        provider_reservation_id, provider_connection_id,
+        provider_property_id, provider_calendar_id, provider_edit_id,
+        revision, lifecycle, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (
+        tenant_id, provider, provider_connection_id,
+        provider_property_id, provider_reservation_id
+      ) WHERE provider_connection_id IS NOT NULL
+        AND provider_property_id IS NOT NULL
+      DO UPDATE SET
+        provider_calendar_id = excluded.provider_calendar_id,
+        provider_edit_id = excluded.provider_edit_id,
+        revision = excluded.revision,
+        lifecycle = excluded.lifecycle,
+        payload = excluded.payload,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE reservation_records.revision < excluded.revision
+    `).bind(
+      record.tenantId,
+      record.canonicalReservationId,
+      record.provider,
+      record.providerReservationId,
+      record.providerConnectionId,
+      record.providerPropertyId,
+      record.providerCalendarId ?? null,
+      record.providerEditId ?? null,
+      record.revision,
+      record.lifecycle,
+      record.payload,
+    ).run();
+
+    if (result.meta.changes === 1) {
+      const existing = await this.db.prepare(`
+        SELECT canonical_reservation_id
+        FROM reservation_records
+        WHERE tenant_id = ? AND provider = ?
+          AND provider_connection_id = ? AND provider_property_id = ?
+          AND provider_reservation_id = ?
+      `).bind(
+        record.tenantId,
+        record.provider,
+        record.providerConnectionId,
+        record.providerPropertyId,
+        record.providerReservationId,
+      ).first<{ canonical_reservation_id: string }>();
+      return existing?.canonical_reservation_id === record.canonicalReservationId
+        ? "inserted"
+        : "updated";
+    }
+
+    const existing = await this.db.prepare(`
+      SELECT canonical_reservation_id, revision, lifecycle, payload
+      FROM reservation_records
+      WHERE tenant_id = ? AND provider = ?
+        AND provider_connection_id = ? AND provider_property_id = ?
+        AND provider_reservation_id = ?
+    `).bind(
+      record.tenantId,
+      record.provider,
+      record.providerConnectionId,
+      record.providerPropertyId,
+      record.providerReservationId,
+    ).first<{
+      canonical_reservation_id: string;
+      revision: number;
+      lifecycle: string;
+      payload: string;
+    }>();
+    if (!existing) return "conflict";
+    if (existing.revision > record.revision) return "stale";
+    return existing.revision === record.revision &&
+      existing.lifecycle === record.lifecycle &&
+      existing.payload === record.payload
+      ? "unchanged"
+      : "conflict";
+  }
+
+  // ============================================================
+  // Find canonical reservation
+  // ============================================================
+
+  async find(
+    tenantId: string,
+    canonicalReservationId: string,
+  ): Promise<ReservationRecord | null> {
+
+    const result =
+      await this.db
+        .prepare(
+          `
+          SELECT *
+          FROM reservation_records
+          WHERE
+            tenant_id = ?
+            AND canonical_reservation_id = ?
+          LIMIT 1
+          `,
+        )
+        .bind(
+          tenantId,
+          canonicalReservationId,
+        )
+        .first<{
+          tenant_id: string;
+          canonical_reservation_id: string;
+
+          provider: string;
+
+          provider_connection_id: string | null;
+
+          provider_property_id: string | null;
+
+          provider_reservation_id: string;
+
+          provider_calendar_id:
+            string | null;
+
+          provider_edit_id:
+            string | null;
+
+          revision: number;
+
+          lifecycle: string;
+
+          payload: string;
+
+          created_at: string;
+
+          updated_at: string;
+        }>();
+
+
+    if (!result) {
+      return null;
+    }
+
+
+    return {
+
+      tenantId:
+        result.tenant_id,
+
+      canonicalReservationId:
+        result.canonical_reservation_id,
+
+      provider:
+        result.provider,
+
+      providerConnectionId:
+        result.provider_connection_id ??
+        undefined,
+
+      providerPropertyId:
+        result.provider_property_id ??
+        undefined,
+
+      providerReservationId:
+        result.provider_reservation_id,
+
+      providerCalendarId:
+        result.provider_calendar_id ??
+        undefined,
+
+      providerEditId:
+        result.provider_edit_id ??
+        undefined,
+
+      revision:
+        result.revision,
+
+      lifecycle:
+        result.lifecycle,
+
+      payload:
+        result.payload,
+
+      createdAt:
+        result.created_at,
+
+      updatedAt:
+        result.updated_at,
+
+    };
+
+  }
+
+
+  // ============================================================
+  // Create canonical reservation record
+  // ============================================================
+
+  async create(
+    record: ReservationRecord,
+  ): Promise<void> {
+
+    await this.db
+      .prepare(
+        `
+        INSERT INTO reservation_records (
+
+          tenant_id,
+          canonical_reservation_id,
+
+          provider,
+          provider_reservation_id,
+          provider_calendar_id,
+          provider_edit_id,
+
+          revision,
+          lifecycle,
+          payload
+
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .bind(
+
+        record.tenantId,
+
+        record.canonicalReservationId,
+
+        record.provider,
+
+        record.providerReservationId,
+
+        record.providerCalendarId ??
+          null,
+
+        record.providerEditId ??
+          null,
+
+        record.revision,
+
+        record.lifecycle,
+
+        record.payload,
+
+      )
+      .run();
+
+  }
+
+
+  // ============================================================
+  // Update canonical reservation record
+  // ============================================================
+
+  async update(
+    record: ReservationRecord,
+  ): Promise<void> {
+
+    await this.db
+      .prepare(
+        `
+        UPDATE reservation_records
+        SET
+
+          provider = ?,
+          provider_reservation_id = ?,
+          provider_calendar_id = ?,
+          provider_edit_id = ?,
+
+          revision = ?,
+          lifecycle = ?,
+          payload = ?,
+
+          updated_at = CURRENT_TIMESTAMP
+
+        WHERE
+          tenant_id = ?
+          AND canonical_reservation_id = ?
+        `,
+      )
+      .bind(
+
+        record.provider,
+
+        record.providerReservationId,
+
+        record.providerCalendarId ??
+          null,
+
+        record.providerEditId ??
+          null,
+
+        record.revision,
+
+        record.lifecycle,
+
+        record.payload,
+
+        record.tenantId,
+
+        record.canonicalReservationId,
+
+      )
+      .run();
+
+  }
+
+
+    // ============================================================
+  // Create or update canonical reservation state
+  // ============================================================
+
+  async upsert(
+    record: ReservationRecord,
+  ): Promise<void> {
+
+    await this.db
+      .prepare(
+        `
+        INSERT INTO reservation_records (
+
+          tenant_id,
+          canonical_reservation_id,
+
+          provider,
+          provider_reservation_id,
+          provider_calendar_id,
+          provider_edit_id,
+
+          revision,
+          lifecycle,
+          payload
+
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT (
+          tenant_id,
+          canonical_reservation_id
+        )
+        DO UPDATE SET
+
+          provider =
+            excluded.provider,
+
+          provider_reservation_id =
+            excluded.provider_reservation_id,
+
+          provider_calendar_id =
+            excluded.provider_calendar_id,
+
+          provider_edit_id =
+            excluded.provider_edit_id,
+
+          revision =
+            excluded.revision,
+
+          lifecycle =
+            excluded.lifecycle,
+
+          payload =
+            excluded.payload,
+
+          updated_at =
+            CURRENT_TIMESTAMP
+        `,
+      )
+      .bind(
+
+        record.tenantId,
+
+        record.canonicalReservationId,
+
+        record.provider,
+
+        record.providerReservationId,
+
+        record.providerCalendarId ??
+          null,
+
+        record.providerEditId ??
+          null,
+
+        record.revision,
+
+        record.lifecycle,
+
+        record.payload,
+
+      )
+      .run();
+
+  }
+
+}
+
+
+========== src\domain\reservation\types.ts ==========
+
+export interface ReservationPayload {
+
+  // ----------------------------------------
+  // Source
+  // ----------------------------------------
+
+  provider?: string;
+
+  // ----------------------------------------
+  // Reservation
+  // ----------------------------------------
+
+  reservationId: string;
+
+  otaReferenceNumber?: string;
+
+  status?: string;
+
+  bookingDate?: string;
+  createdAt?: string;
+  modifiedAt?: string;
+
+  checkIn?: string;
+  checkOut?: string;
+
+  nights?: number;
+
+  adults?: number;
+  children?: number;
+  infants?: number;
+
+  remarks?: string;
+  specialRequests?: string;
+
+
+
+  // ----------------------------------------
+  // Guest
+  // ----------------------------------------
+
+  firstName: string;
+  lastName?: string;
+  fullName?: string;
+
+  email?: string;
+  phone?: string;
+
+  passport?: string;
+
+  identityNumber?: string;
+  identityType?: string;
+
+  nationality?: string;
+
+  address?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+
+  // ----------------------------------------
+  // Room
+  // ----------------------------------------
+
+  roomType?: string;
+  roomNumber?: string;
+
+  ratePlan?: string;
+  package?: string;
+
+  // ----------------------------------------
+  // Financial
+  // ----------------------------------------
+
+  totalAmount?: number;
+  paidAmount?: number;
+  balance?: number;
+
+  currency?: string;
+
+  paymentMethod?: string;
+  paymentStatus?: string;
+
+  // ----------------------------------------
+  // Channel
+  // ----------------------------------------
+
+  channelSource?: string;
+
+  ota?: string;
+  travelAgent?: string;
+  marketSegment?: string;
+
+  // ----------------------------------------
+  // Hotel
+  // ----------------------------------------
+
+  hotelId?: string;
+  hotelName?: string;
+
+  branchId?: string;
+  branchName?: string;
+
+  timezone?: string;
+  hotelCountry?: string;
+
+  // ----------------------------------------
+  // Metadata
+  // ----------------------------------------
+
+  extractedAt?: string;
+
+}
+
+========== src\domain\integration\staah-ari.ts ==========
+
+import {
+  resolveSTAAHAdapter,
+  STAAHAdapterError,
+} from "../../integrations/channel-manager/staah";
+
+import type {
+  STAAHMockARIQuery,
+  STAAHMockARIBatch,
+} from "../../integrations/channel-manager/staah/contracts";
+
+import {
+  STAAHConnectionManagementService,
+} from "./staah-management";
+
+export class STAAHARIError extends Error {
+  constructor(
+    readonly status: 400 | 503,
+    readonly code:
+      | "invalid_date_range"
+      | "provider_unavailable"
+      | "provider_timeout"
+      | "invalid_provider_data",
+    message: string,
+  ) {
+    super(message);
+    this.name = "STAAHARIError";
+  }
+}
+
+/**
+ * Read-only, tenant-scoped synthetic STAAH ARI retrieval.
+ *
+ * This service:
+ * - uses the existing tenant-owned STAAH connection
+ * - requires an enabled and verified connection
+ * - never accesses real STAAH APIs
+ * - never writes inventory or pricing to D1
+ * - never triggers reservation or GHL synchronization
+ */
+export class STAAHMockARIService {
+  constructor(
+    private readonly management: STAAHConnectionManagementService,
+  ) {}
+
+  async retrieve(
+    tenantId: string,
+    integrationId: string,
+    query: STAAHMockARIQuery,
+  ): Promise<STAAHMockARIBatch> {
+    // Ownership, enabled status and verification are enforced
+    // by the existing connection management service.
+    const connection =
+      await this.management.loadOperationalConnection(
+        tenantId,
+        integrationId,
+      );
+
+    const adapter = resolveSTAAHAdapter(
+      connection.context,
+      {
+        mode: "mock",
+        profile: "crm",
+        mockFailureScenario: connection.mockFailureScenario,
+      },
+    );
+
+    let result: STAAHMockARIBatch;
+
+    try {
+      result = await adapter.getARI(
+        connection.context,
+        connection.syntheticPropertyId,
+        query,
+      );
+    } catch (error: unknown) {
+      if (error instanceof STAAHAdapterError) {
+        if (error.code === "invalid_configuration") {
+          throw new STAAHARIError(
+            400,
+            "invalid_date_range",
+            "A valid synthetic ARI date range of up to 31 days is required.",
+          );
+        }
+
+        if (error.code === "mock_provider_unavailable") {
+          throw new STAAHARIError(
+            503,
+            "provider_unavailable",
+            "Synthetic ARI provider is temporarily unavailable.",
+          );
+        }
+
+        if (error.code === "mock_timeout") {
+          throw new STAAHARIError(
+            503,
+            "provider_timeout",
+            "Synthetic ARI provider timed out.",
+          );
+        }
+      }
+
+      throw new STAAHARIError(
+        503,
+        "invalid_provider_data",
+        "Synthetic ARI retrieval failed.",
+      );
+    }
+
+    // Fail closed if the adapter returns a different property.
+    if (
+      result.providerPropertyId !==
+        connection.syntheticPropertyId ||
+      result.mode !== "mock" ||
+      result.startDate !== query.startDate ||
+      result.endDate !== query.endDate ||
+      !Array.isArray(result.records)
+    ) {
+      throw new STAAHARIError(
+        503,
+        "invalid_provider_data",
+        "Synthetic ARI response failed validation.",
+      );
+    }
+
+    const property = await adapter.getProperty(
+      connection.context,
+      connection.syntheticPropertyId,
+    );
+
+    const rooms = new Set(
+      property.rooms.map((room) => room.providerRoomId),
+    );
+
+    const ratePlans = new Map(
+      property.ratePlans.map((ratePlan) => [
+        ratePlan.providerRatePlanId,
+        ratePlan.currency,
+      ]),
+    );
+
+    const uniqueRecords = new Set<string>();
+
+    for (const record of result.records) {
+      const key = [
+        record.date,
+        record.providerRoomId,
+        record.providerRatePlanId,
+      ].join("|");
+
+      const valid =
+        record.providerPropertyId ===
+          connection.syntheticPropertyId &&
+        record.date >= query.startDate &&
+        record.date <= query.endDate &&
+        rooms.has(record.providerRoomId) &&
+        ratePlans.get(record.providerRatePlanId) ===
+          record.currency &&
+        Number.isSafeInteger(record.totalRooms) &&
+        record.totalRooms >= 0 &&
+        Number.isSafeInteger(record.availableRooms) &&
+        record.availableRooms >= 0 &&
+        record.availableRooms <= record.totalRooms &&
+        Number.isSafeInteger(record.rateAmountMinor) &&
+        record.rateAmountMinor >= 0 &&
+        record.sellable === (record.availableRooms > 0) &&
+        !uniqueRecords.has(key);
+
+      if (!valid) {
+        throw new STAAHARIError(
+          503,
+          "invalid_provider_data",
+          "Synthetic ARI records failed validation.",
+        );
+      }
+
+      uniqueRecords.add(key);
+    }
+
+    return result;
+  }
+}

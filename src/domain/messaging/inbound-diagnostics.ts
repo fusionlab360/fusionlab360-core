@@ -6,10 +6,13 @@ export type InboundProcessingOperation =
   | "queue_publish"
   | "event_accept"
   | "event_claim"
+  | "canonical_message_persistence"
   | "conversation_history"
   | "conversation_profile"
   | "session_decision"
   | "ai_chat_feature"
+  | "ai_auto_reply_feature"
+  | "ai_auto_reply_recheck"
   | "booking_state"
   | "booking_intent"
   | "ai_thinking_delay"
@@ -28,6 +31,9 @@ export type InboundProcessingErrorClassification =
   | "database_schema"
   | "database_constraint"
   | "database_unavailable"
+  | "provider_http"
+  | "provider_response"
+  | "provider_transport"
   | "cancelled"
   | "timeout"
   | "unknown";
@@ -99,6 +105,14 @@ export function classifyInboundProcessingError(
   }
   if (errorName === "TimeoutError") return "timeout";
 
+  const providerFailureKind = getProviderFailureKind(error);
+  if (providerFailureKind === "provider_http") return "provider_http";
+  if (providerFailureKind === "malformed_response") return "provider_response";
+  if (providerFailureKind === "transport") return "provider_transport";
+  if (providerFailureKind === "timeout") return "timeout";
+  if (providerFailureKind === "cancelled") return "cancelled";
+  if ((getInboundProviderHTTPStatus(error) ?? 0) >= 400) return "provider_http";
+
   try {
     const messages: string[] = [];
     let current: unknown = error;
@@ -140,6 +154,55 @@ export function classifyInboundProcessingError(
   return "unknown";
 }
 
+export function getInboundProviderHTTPStatus(error: unknown): number | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = current as { httpStatus?: unknown; status?: unknown; cause?: unknown; causeValue?: unknown };
+    const status = value.httpStatus ?? value.status;
+    if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
+      return status;
+    }
+    current = value.cause ?? value.causeValue;
+  }
+  return undefined;
+}
+
+function getProviderFailureKind(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = current as { failureKind?: unknown; cause?: unknown; causeValue?: unknown };
+    if (value.failureKind === "provider_http" || value.failureKind === "transport" ||
+        value.failureKind === "timeout" || value.failureKind === "cancelled" ||
+        value.failureKind === "malformed_response") {
+      return value.failureKind;
+    }
+    current = value.cause ?? value.causeValue;
+  }
+  return undefined;
+}
+
+export function getInboundRetryClassification(error: unknown): "retryable" | "permanent" | "unknown" {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = current as { retryable?: unknown; cause?: unknown; causeValue?: unknown };
+    if (typeof value.retryable === "boolean") return value.retryable ? "retryable" : "permanent";
+    current = value.cause ?? value.causeValue;
+  }
+  return "unknown";
+}
+
+export function getInboundProviderErrorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = current as { providerErrorCode?: unknown; cause?: unknown; causeValue?: unknown };
+    if (typeof value.providerErrorCode === "string" && /^[a-z0-9_.-]{1,64}$/i.test(value.providerErrorCode)) {
+      return value.providerErrorCode;
+    }
+    current = value.cause ?? value.causeValue;
+  }
+  return undefined;
+}
+
 export function logInboundCheckpoint(
   operation: InboundProcessingOperation,
   phase: "start" | "complete" | "failed",
@@ -156,6 +219,13 @@ export function logInboundCheckpoint(
     correlationId,
     ...(startedAt === undefined ? {} : { elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) }),
     ...(phase === "failed" ? { classification: classifyInboundProcessingError(error) } : {}),
+    ...(phase === "failed" && getInboundProviderHTTPStatus(error) !== undefined
+      ? { httpStatus: getInboundProviderHTTPStatus(error) }
+      : {}),
+    ...(phase === "failed" ? { retryClassification: getInboundRetryClassification(error) } : {}),
+    ...(phase === "failed" && getInboundProviderErrorCode(error)
+      ? { providerErrorCode: getInboundProviderErrorCode(error) }
+      : {}),
     ...(operation === "newer_message_check" && outcome ? { outcome } : {}),
     ...(versionIdentity ?? {}),
   };

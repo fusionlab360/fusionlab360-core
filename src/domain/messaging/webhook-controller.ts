@@ -29,6 +29,7 @@ import {
 import {
   createIntegrationContext,
 } from "../../context/integration";
+import { createInternalPatientIdentityContext, createPatientIdentityGateway } from "../contact/patient-identity";
 
 import type {
   KnowledgeContext,
@@ -1315,6 +1316,7 @@ export async function ghlInboundMessageController(
       "gohighlevel",
 
       integrationRuntime,
+      createPatientIdentityGateway(createInternalPatientIdentityContext(tenant, integrationRuntime)),
 
     );
 

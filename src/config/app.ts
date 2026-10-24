@@ -78,7 +78,24 @@ export type AppBindings = {
   /** Queue mode is opt-in until an environment binding is reviewed. */
   GHL_INBOUND_QUEUE_ENABLED?: string;
 
+  /** New reservation/Meta Queue envelope publishing is opt-in. */
+  NEW_QUEUE_ENVELOPES_ENABLED?: string;
+
+  /** Manual human-agent replies remain disabled unless explicitly enabled. */
+  MANUAL_REPLY_ENABLED?: string;
+
   GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
+
+  META_WHATSAPP_APP_SECRET?: string;
+  META_WHATSAPP_VERIFY_TOKEN?: string;
+  /** Meta app identifier used only by the server-side onboarding exchange. */
+  META_WHATSAPP_APP_ID?: string;
+  /** Explicit Graph API version, for example v22.0. */
+  META_WHATSAPP_GRAPH_API_VERSION?: string;
+  /** Secret JSON keyring: { "version": "base64-encoded-32-byte-key" }. */
+  META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS?: string;
+  /** Active key version used for new Meta WhatsApp credentials. */
+  META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
 
 };
 
