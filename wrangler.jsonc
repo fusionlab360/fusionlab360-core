@@ -15,7 +15,7 @@
   "GHL_INBOUND_QUEUE_ENABLED": "true",
   "NEW_QUEUE_ENVELOPES_ENABLED": "false",
   "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback",
-  "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write"
+  "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations.readonly conversations.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write"
 },
   "ai": {
     "binding": "AI"
@@ -72,7 +72,7 @@
         "AI_BOOKING_ENABLED": "false",
         "GHL_INBOUND_QUEUE_ENABLED": "false",
         "NEW_QUEUE_ENVELOPES_ENABLED": "false",
-        "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
+        "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations.readonly conversations.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
         "GHL_OAUTH_REDIRECT_URI": "https://fusionlab360-core-staging.fusionlab360-official.workers.dev/oauth/gohighlevel/callback",
         "AI_PIPELINE_V2_TENANT_ALLOWLIST": "",
         "JWT_ISSUER": "fusionlab360-core-staging",

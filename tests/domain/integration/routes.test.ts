@@ -9,8 +9,11 @@ import type {
 
 import type { RequestContext } from "../../../src/context/types";
 import type { AuthenticatedPrincipal } from "../../../src/core/security/principal";
+import type { Tenant } from "../../../src/tenants/types";
+import type { IntegrationConfiguration } from "../../../src/persistence/models/integration-configuration";
 
 import integrationRoutes from "../../../src/domain/integration/routes";
+import { resolveGHLConversationProviderId } from "../../../src/integrations/messaging/gohighlevel/custom-conversation-provider";
 
 function createFakeDb(
   initialSettings: Record<string, unknown> = {},
@@ -91,9 +94,9 @@ function createFakeDb(
   return {
     db: db as unknown as D1Database,
 
-    readSettings(integrationId: string) {
+    readSettings<T = Record<string, unknown>>(integrationId: string): T | null {
       const stored = settings.get(integrationId);
-      return stored ? JSON.parse(stored) as Record<string, unknown> : null;
+      return stored ? JSON.parse(stored) as T : null;
     },
   };
 }
@@ -101,6 +104,7 @@ function createFakeDb(
 function createTestApp(
   db: D1Database,
   providers: Record<string, string> = {},
+  options: { permissions?: string[] } = {},
 ) {
   const app = new Hono<{
     Bindings: AppBindings;
@@ -114,7 +118,7 @@ function createTestApp(
     const provider =
       providers[tenantId] ?? "gohighlevel";
 
-    const permissions = [
+    const permissions = options.permissions ?? [
       "integrations:read",
       "integrations:write",
     ];
@@ -187,6 +191,9 @@ function createTestApp(
 
 const endpoint =
   "/integrations/gohighlevel/rentals/booking-page";
+
+const customProviderEndpoint =
+  "/integrations/gohighlevel/custom-conversation-provider";
 
 test(
   "GET Rentals booking page returns the authenticated tenant's saved URL",
@@ -263,7 +270,7 @@ test(
       "https://rentals.example.com/property-a",
     );
 
-    const stored = fake.readSettings("tenant-a-crm");
+    const stored = fake.readSettings<IntegrationConfiguration>("tenant-a-crm");
 
     assert.ok(stored);
     assert.deepEqual(stored.workflow, { id: "workflow-a" });
@@ -397,5 +404,169 @@ test(
     const response = await app.request(endpoint);
 
     assert.equal(response.status, 409);
+  },
+);
+
+test(
+  "PATCH stores an authenticated tenant's Custom Conversation Provider ID and preserves settings",
+  async () => {
+    const fake = createFakeDb({
+      "tenant-a-crm": {
+        workflow: { id: "workflow-a" },
+        attributeMappings: [{ source: "email", target: "email" }],
+        providerConfiguration: {
+          existingOption: "keep-me",
+          rentalsBookingUrl: "https://rentals.example.test/a",
+        },
+      },
+    });
+    const app = createTestApp(fake.db);
+
+    const response = await app.request(customProviderEndpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationProviderId: "provider_12345678" }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true,
+      conversationProviderId: "provider_12345678",
+    });
+
+    const stored = fake.readSettings<IntegrationConfiguration>("tenant-a-crm");
+    assert.deepEqual(stored?.workflow, { id: "workflow-a" });
+    assert.deepEqual(stored?.attributeMappings, [{ source: "email", target: "email" }]);
+    assert.deepEqual(stored?.providerConfiguration, {
+      existingOption: "keep-me",
+      rentalsBookingUrl: "https://rentals.example.test/a",
+      conversationProviderId: "provider_12345678",
+    });
+
+    const publisherTenant = {
+      id: "tenant-a",
+      name: "Synthetic tenant",
+      status: "active",
+      integrations: {
+        crm: {
+          id: "tenant-a-crm",
+          provider: "gohighlevel",
+          credentials: { locationId: "test-location" },
+          configuration: stored,
+        },
+        pms: { provider: "cloudbeds" },
+      },
+    } as Tenant;
+    assert.equal(
+      resolveGHLConversationProviderId(publisherTenant),
+      "provider_12345678",
+    );
+  },
+);
+
+test(
+  "Custom Conversation Provider configuration is tenant scoped",
+  async () => {
+    const fake = createFakeDb({
+      "tenant-a-crm": {
+        workflow: { id: "workflow-a" },
+        attributeMappings: [],
+        providerConfiguration: {},
+      },
+      "tenant-b-crm": {
+        workflow: { id: "workflow-b" },
+        attributeMappings: [],
+        providerConfiguration: {
+          conversationProviderId: "provider_b_12345678",
+        },
+      },
+    });
+    const app = createTestApp(fake.db);
+
+    const update = await app.request(
+      customProviderEndpoint,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationProviderId: "provider_a_12345678" }),
+      },
+      "tenant-a",
+    );
+    assert.equal(update.status, 200);
+
+    const tenantB = await app.request(customProviderEndpoint, {}, "tenant-b");
+    assert.equal(tenantB.status, 200);
+    assert.deepEqual(await tenantB.json(), {
+      success: true,
+      conversationProviderId: "provider_b_12345678",
+    });
+    assert.equal(
+      fake.readSettings<{ providerConfiguration?: Record<string, unknown> }>("tenant-b-crm")
+        ?.providerConfiguration?.["conversationProviderId"],
+      "provider_b_12345678",
+    );
+  },
+);
+
+test(
+  "Custom Conversation Provider update requires integrations:write",
+  async () => {
+    const fake = createFakeDb({
+      "tenant-a-crm": {
+        workflow: { id: "workflow-a" },
+        attributeMappings: [],
+        providerConfiguration: {},
+      },
+    });
+    const app = createTestApp(fake.db, {}, {
+      permissions: ["integrations:read"],
+    });
+
+    const response = await app.request(customProviderEndpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationProviderId: "provider_12345678" }),
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(fake.readSettings("tenant-a-crm")?.providerConfiguration, {});
+  },
+);
+
+test(
+  "Custom Conversation Provider update rejects malformed IDs, arbitrary settings, and non-GHL integrations",
+  async () => {
+    const fake = createFakeDb({
+      "tenant-a-crm": {
+        workflow: { id: "workflow-a" },
+        attributeMappings: [],
+        providerConfiguration: {},
+      },
+    });
+    const app = createTestApp(fake.db);
+
+    const malformed = await app.request(customProviderEndpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationProviderId: "bad value!" }),
+    });
+    assert.equal(malformed.status, 400);
+
+    const arbitrarySettings = await app.request(customProviderEndpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationProviderId: "provider_12345678",
+        tenantId: "tenant-b",
+      }),
+    });
+    assert.equal(arbitrarySettings.status, 400);
+
+    const nonGHLApp = createTestApp(fake.db, { "tenant-a": "hubspot" });
+    const nonGHL = await nonGHLApp.request(customProviderEndpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationProviderId: "provider_12345678" }),
+    });
+    assert.equal(nonGHL.status, 409);
   },
 );

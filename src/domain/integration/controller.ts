@@ -39,6 +39,10 @@ import {
   normalizeGHLRentalsBookingPageUrl,
 } from "../booking/rentals-booking-page";
 
+import {
+  normalizeGHLConversationProviderId,
+} from "../../integrations/messaging/gohighlevel/custom-conversation-provider";
+
 /**
  * Discover the configured CRM integration.
  */
@@ -649,6 +653,11 @@ type GHLRentalsBookingPageContext = Context<{
   Variables: AppVariables;
 }>;
 
+type GHLCustomConversationProviderContext = Context<{
+  Bindings: AppBindings;
+  Variables: AppVariables;
+}>;
+
 /**
  * Accept only public HTTPS booking-page URLs.
  * Custom domains and HighLevel-hosted booking URLs are supported.
@@ -873,5 +882,136 @@ export async function updateGHLRentalsBookingPageController(
       },
       500,
     );
+  }
+}
+
+/**
+ * Return the current tenant's configured HighLevel Custom Conversation
+ * Provider identifier. It is provider configuration, never a credential.
+ */
+export async function getGHLCustomConversationProviderController(
+  c: GHLCustomConversationProviderContext,
+) {
+  const requestContext = c.get("context");
+  const crm = requestContext.tenant.integrations.crm;
+
+  if (crm.provider !== "gohighlevel") {
+    return c.json({
+      success: false,
+      message: "Custom Conversation Provider configuration requires a GoHighLevel integration.",
+    }, 409);
+  }
+
+  try {
+    const { configurationRepository } = createRepositories(c.env.DB);
+    const configuration = await configurationRepository.getByIntegrationId(crm.id);
+    const conversationProviderId = normalizeGHLConversationProviderId(
+      configuration?.providerConfiguration?.conversationProviderId,
+    );
+
+    return c.json({
+      success: true,
+      conversationProviderId,
+    });
+  } catch (error: unknown) {
+    logger.error("Failed to load GHL Custom Conversation Provider configuration.", {
+      tenantId: requestContext.tenant.id,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    return c.json({
+      success: false,
+      message: "Unable to load Custom Conversation Provider configuration.",
+    }, 500);
+  }
+}
+
+/**
+ * Set the Custom Conversation Provider ID for the authenticated tenant's
+ * existing GHL integration. The route accepts no tenant, location, or
+ * arbitrary settings object: all ownership is resolved from request context.
+ */
+export async function updateGHLCustomConversationProviderController(
+  c: GHLCustomConversationProviderContext,
+) {
+  const requestContext = c.get("context");
+  const crm = requestContext.tenant.integrations.crm;
+
+  if (crm.provider !== "gohighlevel") {
+    return c.json({
+      success: false,
+      message: "Custom Conversation Provider configuration requires a GoHighLevel integration.",
+    }, 409);
+  }
+
+  if (!crm.credentials.locationId.trim()) {
+    return c.json({
+      success: false,
+      message: "The authenticated tenant has no configured GoHighLevel location.",
+    }, 409);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json<unknown>();
+  } catch {
+    return c.json({ success: false, message: "Invalid JSON body." }, 400);
+  }
+
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 1 ||
+    !("conversationProviderId" in body)
+  ) {
+    return c.json({
+      success: false,
+      message: "conversationProviderId is required; no other settings may be changed by this endpoint.",
+    }, 400);
+  }
+
+  const conversationProviderId = normalizeGHLConversationProviderId(
+    (body as { conversationProviderId: unknown }).conversationProviderId,
+  );
+  if (!conversationProviderId) {
+    return c.json({
+      success: false,
+      message: "conversationProviderId must be a valid provider identifier.",
+    }, 400);
+  }
+
+  try {
+    const { configurationRepository } = createRepositories(c.env.DB);
+    const configuration = await configurationRepository.getByIntegrationId(crm.id);
+    if (!configuration) {
+      return c.json({
+        success: false,
+        message: "Configure the tenant's CRM integration before setting its Custom Conversation Provider.",
+      }, 409);
+    }
+
+    await configurationRepository.save(crm.id, {
+      ...configuration,
+      providerConfiguration: {
+        ...(configuration.providerConfiguration ?? {}),
+        conversationProviderId,
+      },
+    });
+
+    logger.info("GHL Custom Conversation Provider configured.", {
+      tenantId: requestContext.tenant.id,
+      locationConfigured: true,
+    });
+
+    return c.json({ success: true, conversationProviderId });
+  } catch (error: unknown) {
+    logger.error("Failed to update GHL Custom Conversation Provider configuration.", {
+      tenantId: requestContext.tenant.id,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    return c.json({
+      success: false,
+      message: "Unable to update Custom Conversation Provider configuration.",
+    }, 500);
   }
 }

@@ -42,6 +42,9 @@ import {
   resolveClientById,
 } from "../../clients/resolver";
 
+import type { APIClient } from "../../clients/types";
+import type { AuthenticatedPrincipal } from "../../core/security/principal";
+
 import {
   IntegrationRepository,
 } from "../../persistence/repositories/integration-repository";
@@ -57,12 +60,52 @@ import {
 
 
 const OAUTH_ONBOARDING_PERMISSION = "integrations:oauth:connect";
+const OAUTH_RECONNECT_PERMISSION = "integrations:test";
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const GM_METRO_TENANT_ID = "gmmetro";
+const GM_METRO_LOCATION_ID = "Npx2IdDDRjXz2QW3Svx4";
 
 interface GHLPendingContext {
   companyId: string;
   locationId: string;
   connectionStatus: string;
+}
+
+async function authenticateOAuthClient(
+  c: Context<{
+    Bindings: AppBindings;
+    Variables: AppVariables;
+  }>,
+): Promise<{ client: APIClient; principal: AuthenticatedPrincipal } | null> {
+  const authorization = c.req.header("Authorization");
+  if (!authorization?.startsWith("Bearer ")) return null;
+
+  try {
+    const authenticated = await authenticate(
+      c.env.DB,
+      authorization.substring(7),
+    );
+    const principal = authenticated.principal;
+    if (principal.type !== "client" || !principal.clientId) return null;
+
+    const client = authenticated.client ?? await resolveClientById(
+      c.env.DB,
+      principal.clientId,
+    );
+    if (
+      client.id !== principal.clientId ||
+      client.tenantId !== principal.tenantId ||
+      client.status !== "active"
+    ) return null;
+
+    return { client, principal };
+  } catch {
+    return null;
+  }
+}
+
+function hasPermission(scopes: readonly string[], required: string): boolean {
+  return scopes.includes("*") || scopes.includes(required);
 }
 
 function readGHLPendingContext(
@@ -291,6 +334,96 @@ export async function startGhlOAuthController(
   }
 }
 
+/** Start a browser reconnect for the single explicitly approved pilot tenant. */
+export async function startGhlReconnectController(
+  c: Context<{
+    Bindings: AppBindings;
+    Variables: AppVariables;
+  }>,
+) {
+  const authenticated = await authenticateOAuthClient(c);
+  if (!authenticated) {
+    return c.json({ success: false, message: "Unauthorized." }, 401);
+  }
+
+  const { client, principal } = authenticated;
+  if (
+    !hasPermission(client.permissions, OAUTH_ONBOARDING_PERMISSION) ||
+    !hasPermission(principal.permissions, OAUTH_ONBOARDING_PERMISSION) ||
+    !hasPermission(client.permissions, OAUTH_RECONNECT_PERMISSION) ||
+    !hasPermission(principal.permissions, OAUTH_RECONNECT_PERMISSION)
+  ) {
+    return c.json({ success: false, message: "Insufficient permissions." }, 403);
+  }
+
+  if (principal.tenantId !== GM_METRO_TENANT_ID) {
+    return c.json({ success: false, message: "OAuth reconnect is unavailable for this tenant." }, 403);
+  }
+
+  try {
+    const setup = await new IntegrationRepository(c.env.DB)
+      .findOAuthOnboardingSetup(principal.tenantId, "gohighlevel");
+    const pendingContext = setup ? readGHLPendingContext(setup) : null;
+
+    if (
+      !setup ||
+      !pendingContext ||
+      setup.tenantStatus !== "active" ||
+      setup.provider !== "gohighlevel" ||
+      !setup.integrationEnabled ||
+      setup.credentialAuthType !== "oauth2" ||
+      !setup.credentialHasToken ||
+      pendingContext.connectionStatus !== "connected" ||
+      pendingContext.locationId !== GM_METRO_LOCATION_ID
+    ) {
+      return c.json({ success: false, message: "No eligible OAuth integration was found." }, 409);
+    }
+
+    const credentialRepository = new CredentialRepository(c.env.DB);
+    const owner = await credentialRepository.findTenantIdByProviderAndLocation(
+      "gohighlevel",
+      GM_METRO_LOCATION_ID,
+    );
+    if (owner !== GM_METRO_TENANT_ID) {
+      return c.json({ success: false, message: "The configured GHL Location is not owned by this tenant." }, 409);
+    }
+
+    const rawState = createOAuthStateToken();
+    const expiresAt = Date.now() + OAUTH_STATE_TTL_MS;
+    const authorizationUrl = buildGHLAuthorizationUrl(
+      {
+        GHL_OAUTH_CLIENT_ID: c.env.GHL_OAUTH_CLIENT_ID,
+        GHL_OAUTH_REDIRECT_URI: c.env.GHL_OAUTH_REDIRECT_URI,
+        GHL_OAUTH_SCOPES: c.env.GHL_OAUTH_SCOPES,
+      },
+      rawState,
+    );
+
+    await new OAuthAuthorizationStateRepository(c.env.DB).create({
+      stateHash: await hashOAuthStateToken(rawState),
+      tenantId: GM_METRO_TENANT_ID,
+      integrationId: setup.integrationId,
+      provider: "gohighlevel",
+      purpose: "reconnect",
+      context: {
+        companyId: pendingContext.companyId,
+        locationId: GM_METRO_LOCATION_ID,
+      },
+      expiresAt,
+    });
+
+    return c.json({ success: true, authorizationUrl, expiresAt });
+  } catch (error: unknown) {
+    console.error("OAuth reconnect initiation failed.", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    return c.json(
+      { success: false, message: "OAuth reconnect is not configured or could not be started." },
+      503,
+    );
+  }
+}
+
 
 export async function ghlOAuthCallbackController(
   c: Context<{
@@ -322,10 +455,11 @@ export async function ghlOAuthCallbackController(
     const authorizationState =
       await stateRepository.consume(stateHash);
 
+    const isReconnect = authorizationState?.purpose === "reconnect";
     if (
       !authorizationState ||
       authorizationState.provider !== "gohighlevel" ||
-      authorizationState.purpose !== "connect"
+      (authorizationState.purpose !== "connect" && !isReconnect)
     ) {
       return c.json(
         {
@@ -398,19 +532,37 @@ export async function ghlOAuthCallbackController(
       ? readGHLPendingContext(pendingSetup)
       : null;
 
-    if (
-      !pendingSetup ||
-      !pendingContext ||
-      pendingSetup.tenantStatus !== "inactive" ||
-      pendingSetup.integrationId !== authorizationState.integrationId ||
-      pendingSetup.provider !== authorizationState.provider ||
-      pendingSetup.integrationEnabled ||
-      pendingSetup.credentialAuthType !== "oauth2" ||
-      pendingSetup.credentialHasToken ||
-      pendingContext.connectionStatus !== "pending_oauth" ||
-      pendingContext.companyId !== expectedCompanyId ||
-      pendingContext.locationId !== expectedLocationId
-    ) {
+    const setupMatches = isReconnect
+      ? Boolean(
+        pendingSetup &&
+        pendingContext &&
+        pendingSetup.tenantStatus === "active" &&
+        pendingSetup.integrationId === authorizationState.integrationId &&
+        pendingSetup.provider === authorizationState.provider &&
+        pendingSetup.integrationEnabled &&
+        pendingSetup.credentialAuthType === "oauth2" &&
+        pendingSetup.credentialHasToken &&
+        pendingContext.connectionStatus === "connected" &&
+        pendingContext.companyId === expectedCompanyId &&
+        pendingContext.locationId === expectedLocationId &&
+        authorizationState.tenantId === GM_METRO_TENANT_ID &&
+        expectedLocationId === GM_METRO_LOCATION_ID
+      )
+      : Boolean(
+        pendingSetup &&
+        pendingContext &&
+        pendingSetup.tenantStatus === "inactive" &&
+        pendingSetup.integrationId === authorizationState.integrationId &&
+        pendingSetup.provider === authorizationState.provider &&
+        !pendingSetup.integrationEnabled &&
+        pendingSetup.credentialAuthType === "oauth2" &&
+        !pendingSetup.credentialHasToken &&
+        pendingContext.connectionStatus === "pending_oauth" &&
+        pendingContext.companyId === expectedCompanyId &&
+        pendingContext.locationId === expectedLocationId
+      );
+
+    if (!setupMatches) {
       return c.json(
         {
           success: false,
@@ -526,7 +678,7 @@ export async function ghlOAuthCallbackController(
     const installationRepository =
       new OAuthInstallationRepository(c.env.DB);
 
-    await installationRepository.createIfAbsent({
+    const installation = {
       provider: "gohighlevel",
       accountType: "company",
       externalAccountId: companyId,
@@ -539,7 +691,13 @@ export async function ghlOAuthCallbackController(
       metadata,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    });
+    } as const;
+
+    if (isReconnect) {
+      await installationRepository.upsert(installation);
+    } else {
+      await installationRepository.createIfAbsent(installation);
+    }
 
     // 6. Sync only the Location bound to the consumed state.
     // This deliberately does not call the company-wide sync.

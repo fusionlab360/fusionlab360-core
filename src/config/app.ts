@@ -84,6 +84,12 @@ export type AppBindings = {
   /** Manual human-agent replies remain disabled unless explicitly enabled. */
   MANUAL_REPLY_ENABLED?: string;
 
+  /** Opt-in only: accepts signed GHL Custom Conversation Provider callbacks. */
+  GHL_CUSTOM_PROVIDER_ENABLED?: string;
+
+  /** Exactly one GHL location ID authorized for the Custom Provider pilot. */
+  GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST?: string;
+
   GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
 
   META_WHATSAPP_APP_SECRET?: string;

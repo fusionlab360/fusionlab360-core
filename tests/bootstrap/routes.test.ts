@@ -65,6 +65,21 @@ test("production application omits non-production routes and keeps business APIs
     401,
     "legitimate integration discovery remains registered behind authentication",
   );
+  assert.equal(
+    hasRoute(app, "POST", "/integrations/gohighlevel/custom-conversation-provider/test-inbound"),
+    false,
+    "the synthetic pilot endpoint must not be registered in production",
+  );
+  assert.equal(
+    hasRoute(app, "GET", "/integrations/gohighlevel/oauth/verify-location"),
+    false,
+    "the pilot OAuth diagnostic must not be registered in production",
+  );
+  assert.equal(
+    hasRoute(app, "POST", "/webhooks/gohighlevel/provider-outbound"),
+    true,
+    "the canonical GHL provider callback remains registered in production",
+  );
   assert.equal(hasRoute(app, "POST", "/reservations/sync"), true);
   assert.equal(
     app.routes.some((route) =>
@@ -109,6 +124,17 @@ test("development and staging applications retain test routes with authorization
         `${environment} ${method} ${path} remains behind API authentication`,
       );
     }
+
+    assert.equal(
+      hasRoute(app, "POST", "/integrations/gohighlevel/custom-conversation-provider/test-inbound"),
+      true,
+      `${environment} synthetic pilot route is registered behind the non-production composition gate`,
+    );
+    assert.equal(
+      hasRoute(app, "GET", "/integrations/gohighlevel/oauth/verify-location"),
+      true,
+      `${environment} pilot OAuth diagnostic is registered only in non-production composition`,
+    );
   }
 });
 
@@ -118,4 +144,42 @@ test("missing or unknown environment labels fail closed to production routes", (
   assert.equal(shouldEnableNonProductionRoutes("preview"), false);
   assert.equal(shouldEnableNonProductionRoutes("development"), true);
   assert.equal(shouldEnableNonProductionRoutes("staging"), true);
+});
+
+test("GHL Custom provider callback is registered but disabled by default", async () => {
+  const app = createApplication("staging");
+  const response = await app.request(
+    "/webhooks/gohighlevel/provider-outbound",
+    { method: "POST", body: "{}" },
+    bindings("staging"),
+  );
+  assert.equal(response.status, 404);
+});
+
+test("enabled GHL Custom provider callback rejects unsigned requests", async () => {
+  const app = createApplication("staging");
+  const response = await app.request(
+    "/webhooks/gohighlevel/provider-outbound",
+    { method: "POST", body: JSON.stringify({ type: "SMS" }) },
+    { ...bindings("staging"), GHL_CUSTOM_PROVIDER_ENABLED: "true" },
+  );
+  assert.equal(response.status, 401);
+});
+
+test("enabled GHL Custom provider callback rejects an invalid signature", async () => {
+  const app = createApplication("staging");
+  const response = await app.request(
+    "/webhooks/gohighlevel/provider-outbound",
+    {
+      method: "POST",
+      headers: { "X-GHL-Signature": "invalid" },
+      body: JSON.stringify({ type: "SMS" }),
+    },
+    {
+      ...bindings("staging"),
+      GHL_CUSTOM_PROVIDER_ENABLED: "true",
+      GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a",
+    },
+  );
+  assert.equal(response.status, 401);
 });

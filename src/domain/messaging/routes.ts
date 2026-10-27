@@ -10,6 +10,7 @@ import type {
 import {
   ghlInboundMessageController,
 } from "./webhook-controller";
+import { ghlProviderOutboundController } from "../../integrations/messaging/gohighlevel/provider-outbound";
 
 
 const messagingRoutes =
@@ -25,6 +26,11 @@ const messagingRoutes =
 messagingRoutes.post(
   "/inbound",
   ghlInboundMessageController,
+);
+
+messagingRoutes.post(
+  "/provider-outbound",
+  ghlProviderOutboundController,
 );
 
 

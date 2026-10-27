@@ -12,7 +12,10 @@ import bookingRoutes from "../domain/booking/routes";
 import { bookingTestRoutes } from "../domain/booking/routes";
 
 import integrationRoutes from "../domain/integration/routes";
-import { integrationTestRoutes } from "../domain/integration/routes";
+import {
+  integrationPilotRoutes,
+  integrationTestRoutes,
+} from "../domain/integration/routes";
 import staahManagementRoutes, {
   type createSTAAHRoutes,
 } from "../integrations/channel-manager/staah/staah-routes";
@@ -223,6 +226,12 @@ app.route(
   "/integrations",
   integrationRoutes,
 );
+// Operator diagnostics and synthetic pilot routes are development/staging-only.
+// Production retains the canonical integration APIs and GHL callback routes,
+// but does not expose these temporary operations.
+if (includeNonProductionRoutes) {
+  app.route("/integrations", integrationPilotRoutes);
+}
 app.route("/integrations/meta-whatsapp", metaWhatsAppRoutes);
 app.route(
   "/channel-manager/staah",
