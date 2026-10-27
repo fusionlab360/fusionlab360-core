@@ -414,6 +414,26 @@ export class GHLIntegrationCredentialResolver
       );
     }
 
+    if (
+      credential.authType === "oauth2" &&
+      typeof credential.metadata === "string"
+    ) {
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = JSON.parse(credential.metadata) as Record<string, unknown>;
+      } catch {
+        // Invalid legacy metadata remains refreshable, as before.
+      }
+      if (
+        metadata?.connectionStatus === "disconnected" &&
+        metadata.oauthRecoveryReason === "uninstalled"
+      ) {
+        throw new Error(
+          "GHL OAuth installation is disconnected and requires reauthorization.",
+        );
+      }
+    }
+
 
     /*
      * ------------------------------------------------

@@ -641,6 +641,81 @@ export class CredentialRepository
   }
 
   /**
+   * Mark one location-scoped GHL OAuth installation as disconnected.
+   *
+   * The access and refresh tokens are deliberately retained so the
+   * historical credential record remains auditable, while the lifecycle
+   * metadata makes it ineligible for normal provider use until OAuth is
+   * completed again. The location and optional company predicates prevent
+   * a signed event for one installation from changing another tenant.
+   */
+  async markGHLUninstalled(
+    tenantId: string,
+    locationId: string,
+    companyId?: string,
+  ): Promise<boolean> {
+    const normalizedCompanyId = companyId?.trim() ?? "";
+    const disconnectedAt = new Date().toISOString();
+
+    const result = await this.db
+      .prepare(
+        `
+        UPDATE integration_credentials
+        SET
+          metadata = CASE
+            WHEN json_valid(metadata) THEN json_set(
+              metadata,
+              '$.connectionStatus', 'disconnected',
+              '$.oauthRecoveryStatus', 'reauthorization_required',
+              '$.oauthRecoveryReason', 'uninstalled',
+              '$.oauthDisconnectedAt', ?
+            )
+            ELSE json_object(
+              'connectionStatus', 'disconnected',
+              'oauthRecoveryStatus', 'reauthorization_required',
+              'oauthRecoveryReason', 'uninstalled',
+              'oauthDisconnectedAt', ?
+            )
+          END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ?
+          AND provider = 'gohighlevel'
+          AND auth_type = 'oauth2'
+          AND TRIM(location_id) = ?
+          AND (
+            ? = ''
+            OR (
+              json_valid(metadata)
+              AND json_extract(metadata, '$.companyId') = ?
+            )
+          )
+          AND (
+            json_valid(metadata) = 0
+            OR COALESCE(
+              json_extract(metadata, '$.connectionStatus'),
+              ''
+            ) <> 'disconnected'
+            OR COALESCE(
+              json_extract(metadata, '$.oauthRecoveryReason'),
+              ''
+            ) <> 'uninstalled'
+          )
+        `,
+      )
+      .bind(
+        disconnectedAt,
+        disconnectedAt,
+        tenantId,
+        locationId.trim(),
+        normalizedCompanyId,
+        normalizedCompanyId,
+      )
+      .run();
+
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /**
    * Save a freshly rotated OAuth token pair.
    *
    * The update is permitted only when the caller still

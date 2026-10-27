@@ -19,6 +19,8 @@ import {
 import {
   processGHLInstall,
   processGHLAppUpdate,
+  processGHLUninstall,
+  isGHLUninstallEvent,
   type GHLInstallWebhookPayload,
 } from "../../integrations/messaging/gohighlevel/install";
 
@@ -314,7 +316,35 @@ export async function ghlInboundMessageController(
 
   /*
    * --------------------------------------------------
-   * 6. GHL INSTALL
+   * 6. GHL UNINSTALL
+   * --------------------------------------------------
+   */
+
+  if (
+    isGHLUninstallEvent(eventType ?? undefined)
+  ) {
+    c.executionCtx.waitUntil(
+      processGHLUninstall(
+        c.env.DB,
+        payload as GHLInstallWebhookPayload,
+      ).catch((error: unknown) => {
+        console.error(
+          "GHL UNINSTALL processing failed.",
+          getErrorClassification(error),
+        );
+      }),
+    );
+
+    return c.json({
+      success: true,
+      accepted: true,
+      eventType,
+    });
+  }
+
+  /*
+   * --------------------------------------------------
+   * 7. GHL INSTALL
    * --------------------------------------------------
    */
 
@@ -383,7 +413,7 @@ export async function ghlInboundMessageController(
 
   /*
    * --------------------------------------------------
-   * 7. GHL APP UPDATE
+   * 8. GHL APP UPDATE
    * --------------------------------------------------
    */
 
@@ -452,7 +482,7 @@ export async function ghlInboundMessageController(
 
   /*
    * --------------------------------------------------
-   * 8. Integration runtime
+   * 9. Integration runtime
    * --------------------------------------------------
    */
 

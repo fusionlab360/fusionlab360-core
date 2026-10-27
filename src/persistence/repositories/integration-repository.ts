@@ -98,6 +98,53 @@ export class IntegrationRepository extends BaseRepository {
     return result.meta.changes === 1;
   }
 
+  /**
+   * Disable only the tenant/provider integration whose OAuth credential
+   * owns the supplied GHL location. This keeps shared agency installations
+   * for other tenants untouched and is safe to repeat.
+   */
+  async disableGHLLocation(
+    tenantId: string,
+    locationId: string,
+    companyId?: string,
+  ): Promise<boolean> {
+    const normalizedCompanyId = companyId?.trim() ?? "";
+    const result = await this.db
+      .prepare(
+        `
+        UPDATE integrations
+        SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ?
+          AND provider = 'gohighlevel'
+          AND enabled = 1
+          AND EXISTS (
+            SELECT 1
+            FROM integration_credentials c
+            WHERE c.tenant_id = integrations.tenant_id
+              AND c.provider = integrations.provider
+              AND c.auth_type = 'oauth2'
+              AND TRIM(c.location_id) = ?
+              AND (
+                ? = ''
+                OR (
+                  json_valid(c.metadata)
+                  AND json_extract(c.metadata, '$.companyId') = ?
+                )
+              )
+          )
+        `,
+      )
+      .bind(
+        tenantId,
+        locationId.trim(),
+        normalizedCompanyId,
+        normalizedCompanyId,
+      )
+      .run();
+
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
   /** Re-enables only a disabled record while invalidating its old verification. */
   async reenableTenantProviderUnverified(
     tenantId: string,

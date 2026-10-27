@@ -7,6 +7,14 @@ import type {
   GHLCompanyOAuthRuntimeEnvironment,
 } from "./company-oauth-runtime";
 
+import {
+  CredentialRepository,
+} from "../../../persistence/repositories/credential-repository";
+
+import {
+  IntegrationRepository,
+} from "../../../persistence/repositories/integration-repository";
+
 
 export interface GHLInstallWebhookPayload {
 
@@ -54,6 +62,120 @@ export interface GHLInstallWebhookPayload {
 
   trial?:
     unknown;
+}
+
+export function isGHLUninstallEvent(
+  type: string | undefined,
+): boolean {
+  const normalized = type?.trim().toUpperCase().replace(/[-\s]+/g, "_");
+  return normalized === "UNINSTALL" || normalized === "APP_UNINSTALL";
+}
+
+/**
+ * Process a signed GHL uninstall lifecycle event.
+ *
+ * Location-less agency events are acknowledged by the caller but are not
+ * allowed to disable every location belonging to a shared installation.
+ */
+export async function processGHLUninstall(
+  db: D1Database,
+  payload: GHLInstallWebhookPayload,
+): Promise<{
+  status: "disconnected" | "ignored";
+  reason?: "missing_location" | "unknown_location" | "credential_mismatch" | "company_mismatch";
+  tenantId?: string;
+  locationId?: string;
+  credentialChanged: boolean;
+  integrationChanged: boolean;
+}> {
+  if (!isGHLUninstallEvent(payload.type)) {
+    throw new Error(`Unsupported GHL uninstall event: ${payload.type}`);
+  }
+
+  const locationId = payload.locationId?.trim();
+  if (!locationId) {
+    return {
+      status: "ignored",
+      reason: "missing_location",
+      credentialChanged: false,
+      integrationChanged: false,
+    };
+  }
+
+  const credentials = new CredentialRepository(db);
+  const tenantId = await credentials.findTenantIdByProviderAndLocation(
+    "gohighlevel",
+    locationId,
+  );
+  if (!tenantId) {
+    return {
+      status: "ignored",
+      reason: "unknown_location",
+      locationId,
+      credentialChanged: false,
+      integrationChanged: false,
+    };
+  }
+
+  const credential = await credentials.findByTenantAndProvider(
+    tenantId,
+    "gohighlevel",
+  );
+  const companyId = payload.companyId?.trim();
+  let metadata: Record<string, unknown> = {};
+  try {
+    metadata = credential?.metadata ? JSON.parse(credential.metadata) as Record<string, unknown> : {};
+  } catch {
+    metadata = {};
+  }
+
+  if (
+    !credential ||
+    credential.authType !== "oauth2" ||
+    credential.locationId.trim() !== locationId
+  ) {
+    return {
+      status: "ignored",
+      reason: "credential_mismatch",
+      tenantId,
+      locationId,
+      credentialChanged: false,
+      integrationChanged: false,
+    };
+  }
+
+  if (
+    companyId &&
+    metadata.companyId !== companyId
+  ) {
+    return {
+      status: "ignored",
+      reason: "company_mismatch",
+      tenantId,
+      locationId,
+      credentialChanged: false,
+      integrationChanged: false,
+    };
+  }
+
+  const credentialChanged = await credentials.markGHLUninstalled(
+    tenantId,
+    locationId,
+    companyId,
+  );
+  const integrationChanged = await new IntegrationRepository(db).disableGHLLocation(
+    tenantId,
+    locationId,
+    companyId,
+  );
+
+  return {
+    status: "disconnected",
+    tenantId,
+    locationId,
+    credentialChanged,
+    integrationChanged,
+  };
 }
 
 
