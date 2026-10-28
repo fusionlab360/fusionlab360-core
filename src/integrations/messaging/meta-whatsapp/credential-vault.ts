@@ -15,6 +15,7 @@ const META_WHATSAPP_PROVIDER = "meta_whatsapp";
 export interface MetaWhatsAppCredentialMetadataInput {
   expiresAt?: number;
   scopes?: readonly string[];
+  developerTest?: boolean;
 }
 
 export interface MetaWhatsAppCredentialRequest extends MetaWhatsAppCredentialOwner {
@@ -81,6 +82,12 @@ function normalizeMetadata(input: MetaWhatsAppCredentialMetadataInput | undefine
     }
     metadata.scopes = [...new Set(input.scopes.map((scope) => scope.trim()))];
   }
+  if (input.developerTest !== undefined) {
+    if (input.developerTest !== true) {
+      throw new MetaWhatsAppCredentialError("Developer test credential metadata is invalid.");
+    }
+    metadata.developerTest = true;
+  }
   return metadata;
 }
 
@@ -122,6 +129,12 @@ function safeMetadata(record: {
       throw new MetaWhatsAppCredentialError("Credential metadata is malformed.");
     }
     metadata.scopes = [...new Set(candidate.scopes.map((scope) => scope.trim()))];
+  }
+  if (candidate.developerTest !== undefined) {
+    if (candidate.developerTest !== true) {
+      throw new MetaWhatsAppCredentialError("Credential metadata is malformed.");
+    }
+    metadata.developerTest = true;
   }
 
   return {
@@ -212,6 +225,13 @@ export class MetaWhatsAppCredentialVault {
     if (!record || !record.ciphertext || !record.nonce) {
       throw new MetaWhatsAppCredentialError("No active Meta WhatsApp credential is available for this connection.");
     }
+    const metadata = safeMetadata(record);
+    if (
+      metadata.metadata.developerTest === true &&
+      (typeof metadata.metadata.expiresAt !== "number" || metadata.metadata.expiresAt <= Date.now())
+    ) {
+      throw new MetaWhatsAppCredentialError("Meta developer test credential has expired.");
+    }
     try {
       const accessToken = await this.cipher.decrypt(context, {
         algorithm: record.algorithm,
@@ -222,7 +242,7 @@ export class MetaWhatsAppCredentialVault {
       return {
         accessToken,
         credentialVersion: record.credentialVersion,
-        metadata: safeMetadata(record),
+        metadata,
       };
     } catch (error) {
       if (error instanceof CredentialCipherError) {

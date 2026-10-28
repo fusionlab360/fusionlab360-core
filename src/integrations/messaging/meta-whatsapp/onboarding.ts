@@ -21,6 +21,9 @@ export interface MetaWhatsAppOnboardingProvider {
   listPhoneNumbers(accessToken: string, wabaId: string): Promise<readonly string[]>;
   verifyWebhookSubscription(accessToken: string, wabaId: string): Promise<boolean>;
 }
+export interface MetaDeveloperTestAuthorizationProvider {
+  validateDeveloperTestToken(accessToken: string): Promise<MetaVerifiedAuthorization>;
+}
 export class MetaWhatsAppOnboardingError extends Error { constructor(message: string) { super(message); this.name = "MetaWhatsAppOnboardingError"; } }
 
 function identifier(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
@@ -42,11 +45,36 @@ export class MetaWhatsAppOnboardingService {
   }
 
   async complete(input: { tenantId: string; operatorId: string; state: string; code: string; wabaId: string; phoneNumberId: string }): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
+    return this.completeAuthorized(
+      input,
+      false,
+      () => this.provider.exchangeAuthorizationCode(input.code),
+    );
+  }
+
+  async completeDeveloperTest(
+    input: { tenantId: string; operatorId: string; state: string; accessToken: string; wabaId: string; phoneNumberId: string },
+    provider: MetaDeveloperTestAuthorizationProvider,
+  ): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
+    return this.completeAuthorized(input, true, async () => {
+      const authorization = await provider.validateDeveloperTestToken(input.accessToken);
+      if (!authorization.expiresAt || authorization.expiresAt <= Date.now() + 60_000) {
+        throw new MetaWhatsAppOnboardingError("Meta developer test token is expired or has no usable expiration.");
+      }
+      return authorization;
+    });
+  }
+
+  private async completeAuthorized(
+    input: { tenantId: string; operatorId: string; state: string; wabaId: string; phoneNumberId: string },
+    developerTest: boolean,
+    loadAuthorization: () => Promise<MetaVerifiedAuthorization>,
+  ): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
     const state = await new OAuthAuthorizationStateRepository(this.db).consume(await hashOAuthStateToken(input.state));
     if (!state || state.provider !== "meta_whatsapp" || state.purpose !== "embedded_signup" || state.tenantId !== input.tenantId || state.context.operatorId !== input.operatorId || state.context.action !== "activate") throw new MetaWhatsAppOnboardingError("Onboarding state is invalid, expired, already used, or does not belong to this operator.");
-    const code = identifier(input.code); const wabaId = identifier(input.wabaId); const phoneNumberId = identifier(input.phoneNumberId);
-    if (!code || !wabaId || !phoneNumberId) throw new MetaWhatsAppOnboardingError("Onboarding completion is incomplete.");
-    const authorization = await this.provider.exchangeAuthorizationCode(code);
+    const wabaId = identifier(input.wabaId); const phoneNumberId = identifier(input.phoneNumberId);
+    if (!wabaId || !phoneNumberId) throw new MetaWhatsAppOnboardingError("Onboarding completion is incomplete.");
+    const authorization = await loadAuthorization();
     if (!authorization.accessToken?.trim() || !scopesIncludeRequired(authorization.scopes)) throw new MetaWhatsAppOnboardingError("Meta authorization does not include the required permissions.");
     const [hasWaba, phones, subscribed] = await Promise.all([
       this.provider.verifyWabaAccess(authorization.accessToken, wabaId), this.provider.listPhoneNumbers(authorization.accessToken, wabaId), this.provider.verifyWebhookSubscription(authorization.accessToken, wabaId),
@@ -68,8 +96,8 @@ export class MetaWhatsAppOnboardingService {
     const current = await vault.metadata(owner);
     const usable = current?.status === "disabled" ? await vault.enable({ ...owner, expectedVersion: current.credentialVersion }) : current;
     const credential = usable
-      ? await vault.replace({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt }, expectedVersion: usable.credentialVersion })
-      : await vault.create({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt } });
+      ? await vault.replace({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt, ...(developerTest ? { developerTest: true } : {}) }, expectedVersion: usable.credentialVersion })
+      : await vault.create({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt, ...(developerTest ? { developerTest: true } : {}) } });
     if (connection.status !== "active" && !await connections.setStatus(input.tenantId, connection.id, connection.status, "active")) throw new MetaWhatsAppOnboardingError("Meta credential was stored but connection activation was not completed; retry authorization recovery.");
     return { connectionId: connection.id, status: "active", credentialVersion: credential.credentialVersion };
   }

@@ -1,8 +1,8 @@
 import type { AppBindings } from "../../../config/app";
-import type { MetaVerifiedAuthorization, MetaWhatsAppOnboardingProvider } from "./onboarding";
+import type { MetaDeveloperTestAuthorizationProvider, MetaVerifiedAuthorization, MetaWhatsAppOnboardingProvider } from "./onboarding";
 
 const VERSION = /^v\d+\.\d+$/;
-export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardingProvider {
+export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestAuthorizationProvider {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version: string, private readonly request: typeof fetch = fetch) {
     if (!appId.trim() || !appSecret.trim() || !VERSION.test(version)) throw new Error("Meta WhatsApp Graph onboarding is not configured.");
   }
@@ -24,6 +24,26 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
     const scopes = Array.isArray(info.scopes) ? info.scopes.filter((scope): scope is string => typeof scope === "string") : [];
     if (info.app_id !== this.appId || info.is_valid !== true) throw new Error("Meta token validation failed.");
     return { accessToken, scopes, expiresAt: typeof token.expires_in === "number" ? Date.now() + token.expires_in * 1000 : undefined };
+  }
+  async validateDeveloperTestToken(accessToken: string): Promise<MetaVerifiedAuthorization> {
+    const token = accessToken.trim();
+    if (!token) throw new Error("Meta developer test token is missing.");
+    const debug = await this.json(`/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(`${this.appId}|${this.appSecret}`)}`);
+    const data = debug.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Meta token validation response is malformed.");
+    const info = data as Record<string, unknown>;
+    const scopes = Array.isArray(info.scopes) ? info.scopes.filter((scope): scope is string => typeof scope === "string") : [];
+    const expiresAtSeconds = info.expires_at;
+    if (
+      info.app_id !== this.appId ||
+      info.is_valid !== true ||
+      typeof expiresAtSeconds !== "number" ||
+      !Number.isSafeInteger(expiresAtSeconds) ||
+      expiresAtSeconds * 1000 <= Date.now() + 60_000
+    ) {
+      throw new Error("Meta developer test token validation failed.");
+    }
+    return { accessToken: token, scopes, expiresAt: expiresAtSeconds * 1000 };
   }
   async verifyWabaAccess(accessToken: string, wabaId: string): Promise<boolean> { return (await this.json(`/${encodeURIComponent(wabaId)}?access_token=${encodeURIComponent(accessToken)}`)).id === wabaId; }
   async listPhoneNumbers(accessToken: string, wabaId: string): Promise<readonly string[]> { const data = (await this.json(`/${encodeURIComponent(wabaId)}/phone_numbers?access_token=${encodeURIComponent(accessToken)}`)).data; return Array.isArray(data) ? data.flatMap((item) => item && typeof item === "object" && typeof (item as Record<string, unknown>).id === "string" ? [(item as Record<string, unknown>).id as string] : []) : []; }

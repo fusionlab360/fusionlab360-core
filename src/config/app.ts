@@ -103,6 +103,12 @@ export type AppBindings = {
   /** Active key version used for new Meta WhatsApp credentials. */
   META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
 
+  /** Explicit, single-asset guard for temporary developer test tokens. */
+  META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED?: string;
+  META_WHATSAPP_DEVELOPER_TEST_TENANT_ALLOWLIST?: string;
+  META_WHATSAPP_DEVELOPER_TEST_WABA_ID_ALLOWLIST?: string;
+  META_WHATSAPP_DEVELOPER_TEST_PHONE_NUMBER_ID_ALLOWLIST?: string;
+
 };
 
 

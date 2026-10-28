@@ -4,12 +4,19 @@ import { requirePermission } from "../../../middleware/authorization";
 import { requireTenantClientPermission } from "../../../middleware/authorization";
 import { IntegrationRepository } from "../../../persistence/repositories/integration-repository";
 import { MetaWhatsAppConnectionRepository } from "./persistence/connection-repository";
-import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaWhatsAppOnboardingProvider } from "./onboarding";
+import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaWhatsAppOnboardingProvider } from "./onboarding";
 import { createMetaWhatsAppGraphOnboardingProvider } from "./graph-onboarding-provider";
+import { isMetaWhatsAppDeveloperTestAuthorized } from "./developer-test-config";
 
 export function createMetaWhatsAppRoutes(provider?: MetaWhatsAppOnboardingProvider) {
 const routes = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
 const resolveProvider = (env: AppBindings) => provider ?? createMetaWhatsAppGraphOnboardingProvider(env);
+
+function supportsDeveloperTestAuthorization(
+  candidate: MetaWhatsAppOnboardingProvider,
+): candidate is MetaWhatsAppOnboardingProvider & MetaDeveloperTestAuthorizationProvider {
+  return typeof (candidate as Partial<MetaDeveloperTestAuthorizationProvider>).validateDeveloperTestToken === "function";
+}
 
 /**
  * Provision the tenant-owned integration record required by Embedded Signup.
@@ -68,6 +75,62 @@ routes.post("/onboarding/sessions", requireTenantClientPermission("integrations:
     return c.json({ success: true, ...result }, 201);
   } catch (error) { return c.json({ success: false, message: error instanceof MetaWhatsAppOnboardingError ? error.message : "Meta WhatsApp onboarding could not be started." }, 409); }
 });
+
+routes.post(
+  "/onboarding/developer-test/complete",
+  requirePermission("integrations:write"),
+  requireTenantClientPermission("integrations:oauth:connect"),
+  async (c) => {
+    let onboardingProvider: MetaWhatsAppOnboardingProvider;
+    try {
+      onboardingProvider = resolveProvider(c.env);
+    } catch {
+      return c.json({ success: false, message: "Meta WhatsApp onboarding is not configured." }, 503);
+    }
+    const principal = c.get("principal");
+    const body: {
+      state?: string;
+      temporaryAccessToken?: string;
+      wabaId?: string;
+      phoneNumberId?: string;
+    } = await c.req.json<{
+      state?: string;
+      temporaryAccessToken?: string;
+      wabaId?: string;
+      phoneNumberId?: string;
+    }>().catch(() => ({}));
+    const wabaId = body.wabaId?.trim() ?? "";
+    const phoneNumberId = body.phoneNumberId?.trim() ?? "";
+    if (!isMetaWhatsAppDeveloperTestAuthorized(c.env, {
+      tenantId: principal!.tenantId,
+      wabaId,
+      phoneNumberId,
+    })) {
+      return c.json({ success: false, message: "Meta developer test onboarding is unavailable." }, 404);
+    }
+    if (!supportsDeveloperTestAuthorization(onboardingProvider)) {
+      return c.json({ success: false, message: "Meta developer test onboarding is unavailable." }, 503);
+    }
+    try {
+      const result = await new MetaWhatsAppOnboardingService(c.env.DB, c.env, onboardingProvider).completeDeveloperTest({
+        tenantId: principal!.tenantId,
+        operatorId: principal!.clientId!,
+        state: body.state ?? "",
+        accessToken: body.temporaryAccessToken ?? "",
+        wabaId,
+        phoneNumberId,
+      }, onboardingProvider);
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return c.json({
+        success: false,
+        message: error instanceof MetaWhatsAppOnboardingError
+          ? error.message
+          : "Meta developer test onboarding could not be completed.",
+      }, 409);
+    }
+  },
+);
 
 routes.post("/onboarding/complete", requireTenantClientPermission("integrations:oauth:connect"), async (c) => {
   let onboardingProvider: MetaWhatsAppOnboardingProvider; try { onboardingProvider = resolveProvider(c.env); } catch { return c.json({ success: false, message: "Meta WhatsApp onboarding is not configured." }, 503); }
