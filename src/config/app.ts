@@ -81,6 +81,11 @@ export type AppBindings = {
   /** New reservation/Meta Queue envelope publishing is opt-in. */
   NEW_QUEUE_ENVELOPES_ENABLED?: string;
 
+  /** Opt-in only: forwards processed Meta inbound text to GHL Custom Inbox. */
+  META_WHATSAPP_GHL_INBOUND_ENABLED?: string;
+  /** Exactly one tenant may use the Meta-to-GHL pilot. */
+  META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST?: string;
+
   /** Manual human-agent replies remain disabled unless explicitly enabled. */
   MANUAL_REPLY_ENABLED?: string;
 

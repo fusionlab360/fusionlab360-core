@@ -7,6 +7,7 @@ import { IntegrationEventRepository } from "../../../persistence/repositories/in
 import { IntegrationEventService } from "../../../core/events/service";
 import type { GHLInboundQueueEnvelope } from "../../../domain/messaging/inbound-queue-contract";
 import { areNewQueueEnvelopesEnabled } from "../../../domain/messaging/inbound-queue";
+import { isMetaWhatsAppGHLInboundEnabled } from "./gohighlevel-inbound-config";
 
 async function enqueuePendingMetaEvent(
   events: IntegrationEventRepository,
@@ -84,7 +85,9 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       occurredAt: message.occurredAt,
       payload: message,
     });
-    if (areNewQueueEnvelopesEnabled(c.env) && !await enqueuePendingMetaEvent(
+    const metaDispatchEnabled = areNewQueueEnvelopesEnabled(c.env) ||
+      isMetaWhatsAppGHLInboundEnabled(c.env, connection.tenantId);
+    if (metaDispatchEnabled && !await enqueuePendingMetaEvent(
       eventRepository,
       c.env.GHL_INBOUND_QUEUE,
       connection.tenantId,
@@ -108,7 +111,9 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       occurredAt: status.occurredAt,
       payload: { providerMessageId: status.providerMessageId, status: status.status, phoneNumberId: status.phoneNumberId },
     });
-    if (areNewQueueEnvelopesEnabled(c.env) && !await enqueuePendingMetaEvent(
+    const metaDispatchEnabled = areNewQueueEnvelopesEnabled(c.env) ||
+      isMetaWhatsAppGHLInboundEnabled(c.env, connection.tenantId);
+    if (metaDispatchEnabled && !await enqueuePendingMetaEvent(
       eventRepository,
       c.env.GHL_INBOUND_QUEUE,
       connection.tenantId,

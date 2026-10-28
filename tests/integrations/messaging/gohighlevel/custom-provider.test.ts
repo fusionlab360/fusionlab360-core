@@ -142,13 +142,14 @@ test("inbound publisher uses the documented Add Inbound Message API version", as
 
   const result = await publishGHLCustomInboundForTenant(
     context,
-    { contactId: "contact-a", message: "synthetic" },
+    { contactId: "contact-a", message: "synthetic", altId: "meta-message-a" },
     { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a" },
   );
 
   assert.deepEqual(result, { conversationId: "conversation-a", messageId: "message-a" });
   assert.equal(requestUrl, "https://services.leadconnectorhq.com/conversations/messages/inbound");
   assert.equal(new Headers(requestInit?.headers).get("Version"), "2023-02-21");
+  assert.equal(JSON.parse(String(requestInit?.body)).altId, "meta-message-a");
 });
 
 test("inbound publish diagnostics expose only bounded provider code and request ID", () => {

@@ -10,6 +10,8 @@ import { queue as workerQueue } from "../../../src/index";
 import { IntegrationEventRepository } from "../../../src/persistence/repositories/integration-event-repository";
 import { IntegrationEventService } from "../../../src/core/events/service";
 import { processMetaWhatsAppInboundEvent } from "../../../src/integrations/messaging/meta-whatsapp/inbound-handler";
+import { IntegrationEventProcessingError } from "../../../src/core/events/errors";
+import { isMetaWhatsAppGHLInboundEnabled } from "../../../src/integrations/messaging/meta-whatsapp/gohighlevel-inbound-config";
 
 class D1 { readonly sqlite = new DatabaseSync(":memory:"); constructor() { for (const file of readdirSync(join(process.cwd(), "migrations")).filter((x) => x.endsWith(".sql")).sort()) this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8")); } prepare(sql: string): D1PreparedStatement { let values: unknown[]=[]; const s={ bind:(...v:unknown[])=>{values=v;return s;}, run:async()=>({meta:{changes:Number(this.sqlite.prepare(sql).run(...values as never[]).changes)}}), first:async<T>()=>(this.sqlite.prepare(sql).get(...values as never[]) as T|undefined)??null, all:async<T>()=>({results:this.sqlite.prepare(sql).all(...values as never[]) as T[]})}; return s as unknown as D1PreparedStatement;} async batch(statements: D1PreparedStatement[]){return Promise.all(statements.map((statement)=>statement.run()));} binding(){return this as unknown as D1Database;} close(){this.sqlite.close();} }
 function setup(){ const db=new D1(); db.sqlite.exec("INSERT INTO tenants(id,name) VALUES('a','A'),('b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('ia','a','meta_whatsapp'),('ib','b','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('ca','a','ia','wa','phone-a','active'),('cb','b','ib','wb','phone-b','active')"); return db; }
@@ -21,3 +23,28 @@ test("Meta inbound events persist one tenant-scoped conversation and idempotent 
 test("Meta consumer rejects cross-tenant, disabled, and unsupported events without persisting messages", async()=>{ const db=setup(); try { const {repo,stored}=await event(db,"m2","a",{phoneNumberId:"phone-b"}); await assert.rejects(processMetaWhatsAppInboundEvent(stored!,db.binding(),new IntegrationEventService(repo))); db.sqlite.prepare("UPDATE meta_whatsapp_connections SET status='disabled' WHERE id='ca'").run(); const second=await event(db,"m3"); await assert.rejects(processMetaWhatsAppInboundEvent(second.stored!,db.binding(),new IntegrationEventService(second.repo))); assert.equal(db.sqlite.prepare("SELECT COUNT(*) count FROM messaging_messages").get()?.count,0); } finally {db.close();} });
 test("Meta status events complete durably but never become inbound messages", async()=>{ const db=setup(); try { const repo=new IntegrationEventRepository(db.binding()); const accepted=await new IntegrationEventService(repo).accept({eventId:"status",eventType:"messaging.meta_whatsapp.status",aggregateType:"message",aggregateId:"status",tenantId:"a",provider:"meta_whatsapp",occurredAt:"2026-01-01T00:00:00.000Z",payload:{status:"delivered",phoneNumberId:"phone-a",providerMessageId:"unknown"}}); await processMetaWhatsAppInboundEvent((await repo.find("a",accepted.event.eventId))!,db.binding(),new IntegrationEventService(repo)); assert.equal(db.sqlite.prepare("SELECT COUNT(*) count FROM messaging_messages").get()?.count,0); } finally {db.close();} });
 test("Worker Queue injects the Meta handler and acknowledges duplicate persisted deliveries", async()=>{ const db=setup(); try { const repo=new IntegrationEventRepository(db.binding()); const accepted=await new IntegrationEventService(repo).accept({eventId:"queued-message",eventType:"messaging.meta_whatsapp.inbound",aggregateType:"message",aggregateId:"queued-message",tenantId:"a",provider:"meta_whatsapp",occurredAt:"2026-01-01T00:00:00.000Z",payload:{provider:"meta_whatsapp",phoneNumberId:"phone-a",contactId:"participant-a",providerMessageId:"queued-message",text:"private message",occurredAt:"2026-01-01T00:00:00.000Z"}}); const envelope:GHLInboundQueueEnvelope={version:1,kind:"meta_whatsapp",tenantId:"a",sourceEventId:accepted.event.eventId}; const first=queueMessage(envelope); await workerQueue({messages:[first.message]} as unknown as MessageBatch<GHLInboundQueueEnvelope>,bindings(db),{} as ExecutionContext); assert.deepEqual(first.calls,["ack"]); const second=queueMessage(envelope); await workerQueue({messages:[second.message]} as unknown as MessageBatch<GHLInboundQueueEnvelope>,bindings(db),{} as ExecutionContext); assert.deepEqual(second.calls,["ack"]); assert.equal(db.sqlite.prepare("SELECT COUNT(*) count FROM messaging_messages").get()?.count,1); } finally {db.close();} });
+
+test("Meta-to-GHL forwarding is disabled unless the exact tenant pilot is enabled", () => {
+  assert.equal(isMetaWhatsAppGHLInboundEnabled({}, "a"), false);
+  assert.equal(isMetaWhatsAppGHLInboundEnabled({ META_WHATSAPP_GHL_INBOUND_ENABLED: "true", META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST: "a" }, "a"), true);
+  assert.equal(isMetaWhatsAppGHLInboundEnabled({ META_WHATSAPP_GHL_INBOUND_ENABLED: "true", META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST: "a,b" }, "a"), false);
+  assert.equal(isMetaWhatsAppGHLInboundEnabled({ META_WHATSAPP_GHL_INBOUND_ENABLED: "true", META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST: "a" }, "b"), false);
+});
+
+test("Meta canonical persistence is once-only while GHL forwarding retries a transient failure", async()=>{
+  const db=setup();
+  try {
+    const first = await event(db, "forward-1");
+    let attempts = 0;
+    const forwarder = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new IntegrationEventProcessingError({ code: "PROVIDER_TRANSIENT", severity: "error", message: "synthetic transient", retryable: true });
+    };
+    await assert.rejects(processMetaWhatsAppInboundEvent(first.stored!, db.binding(), new IntegrationEventService(first.repo), {} as AppBindings, forwarder));
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) count FROM messaging_messages").get()?.count, 1);
+    await processMetaWhatsAppInboundEvent(first.stored!, db.binding(), new IntegrationEventService(first.repo), {} as AppBindings, forwarder);
+    assert.equal(attempts, 2);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) count FROM messaging_messages").get()?.count, 1);
+    assert.equal((await first.repo.find("a", first.stored!.eventId))?.processingStatus, "processed");
+  } finally { db.close(); }
+});

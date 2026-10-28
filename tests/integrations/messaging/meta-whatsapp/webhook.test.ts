@@ -94,6 +94,7 @@ async function sign(body: string, secret: string): Promise<string> {
 function controllerFixture(
   newEnvelopeEnabled = true,
   send?: (value: Record<string, unknown>, queue: Array<Record<string, unknown>>) => Promise<void>,
+  metaGhlInboundEnabled = false,
 ) {
   const db = new SQLiteD1();
   db.sqlite.exec("INSERT INTO tenants (id, name) VALUES ('tenant-a', 'A'); INSERT INTO integrations (id, tenant_id, provider) VALUES ('integration-a', 'tenant-a', 'meta_whatsapp'); INSERT INTO meta_whatsapp_connections (id, tenant_id, integration_id, waba_id, phone_number_id, status) VALUES ('connection-a', 'tenant-a', 'integration-a', 'waba-a', 'phone-a', 'active');");
@@ -105,6 +106,10 @@ function controllerFixture(
     META_WHATSAPP_APP_SECRET: "synthetic-secret",
     META_WHATSAPP_VERIFY_TOKEN: "verify-me",
     ...(newEnvelopeEnabled ? { NEW_QUEUE_ENVELOPES_ENABLED: "true" } : {}),
+    ...(metaGhlInboundEnabled ? {
+      META_WHATSAPP_GHL_INBOUND_ENABLED: "true",
+      META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST: "tenant-a",
+    } : {}),
     GHL_INBOUND_QUEUE: {
       send: async (value: Record<string, unknown>) => {
         if (send) return send(value, queue);
@@ -114,6 +119,18 @@ function controllerFixture(
   } as unknown as AppBindings;
   return { app, env, queue, db };
 }
+
+test("Meta webhook can dispatch only the explicitly allowlisted tenant without enabling global queue envelopes", async () => {
+  const fixture = controllerFixture(false, undefined, true);
+  const body = webhookBody();
+  const response = await fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers: { "X-Hub-Signature-256": await sign(body, "synthetic-secret") }, body },
+    fixture.env,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(fixture.queue.length, 1);
+});
 
 test("Meta webhook persists a durable event without publishing a new envelope while the gate is off", async () => {
   const fixture = controllerFixture(false);
