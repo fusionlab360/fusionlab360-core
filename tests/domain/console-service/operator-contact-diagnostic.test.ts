@@ -107,8 +107,23 @@ test("operator contact diagnostic rejects an unauthenticated caller", async () =
   const { db, env } = await fixture({ enabled: "true" });
   try {
     const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST" }, env);
-    assert.equal(response.status, 403);
+    assert.equal(response.status, 401);
   } finally {
+    db.sqlite.close();
+  }
+});
+
+test("operator contact diagnostic accepts a normal tenant API key without the Console service marker", async () => {
+  const { db, key, env } = await fixture({ enabled: "true" });
+  db.sqlite.exec("DELETE FROM console_service_clients");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ contacts: [{ id: "contact-a", locationId: "Npx2IdDDRjXz2QW3Svx4" }] }), { status: 200 });
+  try {
+    const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, errorCode: null });
+  } finally {
+    globalThis.fetch = originalFetch;
     db.sqlite.close();
   }
 });
