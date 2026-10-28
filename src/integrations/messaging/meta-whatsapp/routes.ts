@@ -81,6 +81,9 @@ routes.post(
   requirePermission("integrations:write"),
   requireTenantClientPermission("integrations:oauth:connect"),
   async (c) => {
+    if (new URL(c.req.url).protocol !== "https:") {
+      return c.json({ success: false, message: "Meta developer test onboarding requires HTTPS." }, 400);
+    }
     let onboardingProvider: MetaWhatsAppOnboardingProvider;
     try {
       onboardingProvider = resolveProvider(c.env);

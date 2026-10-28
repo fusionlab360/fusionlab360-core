@@ -18,6 +18,7 @@ import { MetaWhatsAppGraphOnboardingProvider } from "../../../../src/integration
 const WABA_ID = "2182329942321588";
 const PHONE_ID = "1452502451268655";
 const key = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+const DEVELOPER_TEST_PATH = "https://core.test/integrations/meta-whatsapp/onboarding/developer-test/complete";
 
 class SQLiteD1 {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -170,7 +171,7 @@ test("protected developer route rejects wrong permissions and asset tuples witho
     await seedClient(db, "tenant-b", ["integrations:oauth:connect", "integrations:write"], "fl360_tenant_b");
     const started = await state(db, provider);
     const app = createApp(db, provider, "tenant-a", ["integrations:oauth:connect", "integrations:write"]);
-    const accepted = await app.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const accepted = await app.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: started.state, temporaryAccessToken: "temporary-test-token", tenantId: "tenant-b", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
     }, bindings(db));
@@ -178,34 +179,34 @@ test("protected developer route rejects wrong permissions and asset tuples witho
     assert.equal(db.sqlite.prepare("SELECT tenant_id FROM meta_whatsapp_connections").get()?.tenant_id, "tenant-a");
 
     const secondState = await state(db, provider);
-    const wrongAsset = await app.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const wrongAsset = await app.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: secondState.state, temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: "99999999" }),
     }, bindings(db));
     assert.equal(wrongAsset.status, 404);
 
-    const wrongWaba = await app.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const wrongWaba = await app.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: secondState.state, temporaryAccessToken: "temporary-test-token", wabaId: "99999999", phoneNumberId: PHONE_ID }),
     }, bindings(db));
     assert.equal(wrongWaba.status, 404);
 
     const disabledState = await state(db, provider);
-    const disabled = await app.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const disabled = await app.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: disabledState.state, temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
     }, { ...bindings(db), META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED: "false" });
     assert.equal(disabled.status, 404);
 
     const otherTenant = createApp(db, provider, "tenant-b", ["integrations:oauth:connect", "integrations:write"]);
-    const rejectedTenant = await otherTenant.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const rejectedTenant = await otherTenant.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_b", "Content-Type": "application/json" },
       body: JSON.stringify({ state: "not-used", temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
     }, bindings(db));
     assert.equal(rejectedTenant.status, 404);
 
     const noWrite = createApp(db, provider, "tenant-a", ["integrations:oauth:connect"]);
-    const deniedWrite = await noWrite.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const deniedWrite = await noWrite.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: "not-used", temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
     }, bindings(db));
@@ -214,11 +215,27 @@ test("protected developer route rejects wrong permissions and asset tuples witho
     db.sqlite.prepare("UPDATE clients SET permissions = ? WHERE id = 'client-tenant-a'")
       .run(JSON.stringify(["integrations:write"]));
     const noConnect = createApp(db, provider, "tenant-a", ["integrations:write"]);
-    const deniedConnect = await noConnect.request("/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+    const deniedConnect = await noConnect.request(DEVELOPER_TEST_PATH, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
       body: JSON.stringify({ state: "not-used", temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
     }, bindings(db));
     assert.equal(deniedConnect.status, 403);
+  } finally { db.close(); }
+});
+
+test("developer test route rejects plaintext transport before reading a token", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    await seedClient(db, "tenant-a", ["integrations:oauth:connect", "integrations:write"], "fl360_tenant_a");
+    const response = await createApp(db, provider, "tenant-a", ["integrations:oauth:connect", "integrations:write"])
+      .request("http://core.test/integrations/meta-whatsapp/onboarding/developer-test/complete", {
+        method: "POST",
+        headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
+        body: JSON.stringify({ temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
+      }, bindings(db));
+    assert.equal(response.status, 400);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_credentials").get()?.count, 0);
   } finally { db.close(); }
 });
 
