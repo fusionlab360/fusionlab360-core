@@ -65,7 +65,6 @@ routes.post("/diagnostics/gohighlevel/contact-lookup",
   if(!target || !principal || principal.type!=="client" || !client || client.tenantId!==target.tenantId) return c.json({success:false,message:"Diagnostic unavailable."},404);
   const rawBody=await c.req.text();
   if(rawBody.trim()) return c.json({success:false,message:"This diagnostic does not accept a request body."},400);
-  if(!(await grant(c.env.DB,client.id,client.tenantId,"contacts:read"))) return c.json({success:false,message:"Forbidden."},403);
   try {
     const tenant=await resolveTenant(c.env.DB,client.tenantId);
     const locationId=tenant.integrations.crm.credentials.locationId?.trim();

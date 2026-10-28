@@ -115,7 +115,7 @@ test("operator contact diagnostic rejects an unauthenticated caller", async () =
 
 test("operator contact diagnostic accepts a normal tenant API key without the Console service marker", async () => {
   const { db, key, env } = await fixture({ enabled: "true" });
-  db.sqlite.exec("DELETE FROM console_service_clients");
+  db.sqlite.exec("DELETE FROM console_service_clients; DELETE FROM client_tenant_grants WHERE client_id='console-client' AND tenant_id='gmmetro'");
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ contacts: [{ id: "contact-a", locationId: "Npx2IdDDRjXz2QW3Svx4" }] }), { status: 200 });
   try {
@@ -124,6 +124,17 @@ test("operator contact diagnostic accepts a normal tenant API key without the Co
     assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, errorCode: null });
   } finally {
     globalThis.fetch = originalFetch;
+    db.sqlite.close();
+  }
+});
+
+test("operator contact diagnostic rejects a same-client request when the fixed tenant allowlist differs", async () => {
+  const { db, key, env } = await fixture({ enabled: "true" });
+  env.GHL_OPERATOR_CONTACT_DIAGNOSTIC_TENANT_ALLOWLIST = "other-tenant";
+  try {
+    const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
+    assert.equal(response.status, 404);
+  } finally {
     db.sqlite.close();
   }
 });
