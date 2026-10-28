@@ -45,6 +45,9 @@ import {
 import {
   ApiError,
 } from "../../core/errors/ApiError";
+import {
+  IntegrationEventProcessingError,
+} from "../../core/events/errors";
 
 
 const integrationRoutes =
@@ -71,6 +74,60 @@ export const integrationPilotRoutes = new Hono<{
   Bindings: AppBindings;
   Variables: AppVariables;
 }>();
+
+function classifyCustomProviderTestInboundFailure(
+  error: unknown,
+): IntegrationEventProcessingError {
+  if (error instanceof ApiError) {
+    const retryable = error.status === 408 ||
+      error.status === 425 ||
+      error.status === 429 ||
+      error.status >= 500;
+    return new IntegrationEventProcessingError({
+      code: retryable ? "PROVIDER_TRANSIENT" : "PROVIDER_REQUEST_REJECTED",
+      severity: retryable ? "warning" : "error",
+      message: retryable
+        ? "Custom provider request was temporarily unavailable."
+        : "Custom provider request was rejected.",
+      retryable,
+      cause: error,
+    });
+  }
+
+  return new IntegrationEventProcessingError({
+    code: "OUTBOUND_DELIVERY_UNKNOWN",
+    severity: "error",
+    message: "Custom provider delivery outcome could not be confirmed.",
+    retryable: false,
+    cause: error,
+  });
+}
+
+function parsePersistedCustomProviderTestPayload(
+  payload: string,
+): {
+  contactId: string;
+  message: string;
+  altId?: string;
+  occurredAt?: string;
+} | null {
+  try {
+    const value = JSON.parse(payload) as Record<string, unknown>;
+    if (
+      !value ||
+      typeof value.contactId !== "string" ||
+      typeof value.message !== "string"
+    ) return null;
+    return {
+      contactId: value.contactId,
+      message: value.message,
+      ...(typeof value.altId === "string" ? { altId: value.altId } : {}),
+      ...(typeof value.occurredAt === "string" ? { occurredAt: value.occurredAt } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
 
 
 integrationRoutes.post(
@@ -423,7 +480,8 @@ integrationPilotRoutes.post(
       return c.json({ success: false, message: "A valid contactId, message and idempotencyKey are required." }, 400);
     }
 
-    const events = new IntegrationEventService(new IntegrationEventRepository(c.env.DB));
+    const eventRepository = new IntegrationEventRepository(c.env.DB);
+    const events = new IntegrationEventService(eventRepository);
     const accepted = await events.accept({
       eventId: idempotencyKey,
       tenantId: tenant.id,
@@ -435,25 +493,55 @@ integrationPilotRoutes.post(
       payload: { contactId, message, altId: idempotencyKey },
     });
 
+    let publishInput: {
+      contactId: string;
+      message: string;
+      altId?: string;
+      occurredAt?: string;
+    } = { contactId, message, altId: idempotencyKey, occurredAt };
+    let retried = false;
+
     if (accepted.duplicate) {
-      return c.json({ success: true, accepted: false, duplicate: true });
+      const existing = await eventRepository.find(tenant.id, accepted.event.eventId);
+      if (
+        !existing ||
+        existing.processingStatus !== "failed" ||
+        existing.lastErrorCode !== "PROVIDER_TRANSIENT"
+      ) {
+        return c.json({ success: true, accepted: false, duplicate: true });
+      }
+
+      const persisted = parsePersistedCustomProviderTestPayload(existing.payload);
+      if (!persisted) {
+        return c.json({ success: true, accepted: false, duplicate: true });
+      }
+      publishInput = persisted;
+      retried = true;
     }
 
     const claim = await events.claimForProcessing(tenant.id, accepted.event.eventId);
     if (claim.state !== "claimed") {
+      if (claim.state === "processed" || claim.state === "terminal" || claim.state === "exhausted") {
+        return c.json({ success: true, accepted: false, duplicate: true });
+      }
       return c.json({ success: false, message: "The test inbound is already being processed." }, 409);
     }
 
     try {
       await publishGHLCustomInboundForTenant(
         createIntegrationContext(tenant, "gohighlevel", requestContext.integrationRuntime),
-        { contactId, message, altId: idempotencyKey, occurredAt },
+        publishInput,
         c.env,
       );
       await events.markProcessed(tenant.id, accepted.event.eventId, claim.leaseToken);
-      return c.json({ success: true, accepted: true, duplicate: false });
-    } catch {
-      await events.markFailed(tenant.id, accepted.event.eventId, new Error("Custom provider test inbound failed."), claim.leaseToken);
+      return c.json({ success: true, accepted: true, duplicate: retried, ...(retried ? { retried: true } : {}) });
+    } catch (error) {
+      await events.markFailed(
+        tenant.id,
+        accepted.event.eventId,
+        classifyCustomProviderTestInboundFailure(error),
+        claim.leaseToken,
+      );
       return c.json({ success: false, message: "The test inbound could not be published." }, 502);
     }
   },

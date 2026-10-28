@@ -62,6 +62,21 @@ export function getIntegrationEventRetryPolicy(
 
       };
 
+    case "PROVIDER_TRANSIENT":
+
+      return {
+
+        retryable:
+          true,
+
+        maxAttempts:
+          DEFAULT_MAX_ATTEMPTS,
+
+        baseDelaySeconds:
+          DEFAULT_BASE_DELAY_SECONDS,
+
+      };
+
 
     // ----------------------------------------------------------
     // Temporary persistence/infrastructure failure
