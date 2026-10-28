@@ -9,6 +9,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "client:create": "tsx src/cli/index.ts client:create",
     "client:create-local": "tsx src/cli/index.ts client:create-local",
+    "client:service": "tsx src/cli/index.ts client:service",
     "client:permissions": "tsx src/cli/index.ts client:permissions",
     "integration-event:replay": "tsx src/cli/index.ts integration-event:replay",
     "client:list": "tsx src/cli/index.ts client:list",

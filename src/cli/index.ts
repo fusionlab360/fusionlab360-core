@@ -7,6 +7,7 @@ import {
   createStagingEvaluationClientCommand,
 } from "./commands/create-staging-evaluation-client";
 import { createLocalClientCommand } from "./commands/create-local-client";
+import { serviceClientCommand } from "./commands/service-client";
 
 // Future commands
 // import { createTenantCommand } from "./commands/create-tenant";
@@ -24,6 +25,10 @@ async function main() {
 
     case "client:create-local":
       await createLocalClientCommand();
+      break;
+
+    case "client:service":
+      await serviceClientCommand();
       break;
 
     case "client:permissions":
@@ -67,6 +72,7 @@ Available commands
 
   client:create
   client:create-local --local --tenant <id> --client <id> --name <name> --persist-to <path> --write-console-api-dev-vars <path>
+  client:service <provision|inspect> --tenant gmmetro --client <id> --target production --remote
   client:permissions <inspect|grant|revoke>
   integration-event:replay <inspect|replay>
   client:list
