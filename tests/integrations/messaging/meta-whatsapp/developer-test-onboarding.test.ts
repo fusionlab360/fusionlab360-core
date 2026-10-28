@@ -183,6 +183,43 @@ test("Graph developer token validation accepts the documented debug-token data e
   assert.equal(authorization.expiresAt, expiresAt * 1000);
 });
 
+test("Graph provider invokes fetch without rebinding its receiver", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  let receiver: unknown = "not-called";
+  let requestUrl = "";
+  let requestInit: RequestInit | undefined;
+  const request = function (this: unknown, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    receiver = this;
+    if (this !== undefined) throw new TypeError("Illegal invocation");
+    requestUrl = String(input);
+    requestInit = init;
+    return Promise.resolve(new Response(JSON.stringify({
+      data: {
+        app_id: "expected-app",
+        is_valid: true,
+        scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+        expires_at: expiresAt,
+      },
+    }), { status: 200 }));
+  } as typeof fetch;
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    request,
+  );
+  const authorization = await provider.validateDeveloperTestToken("temporary-test-token");
+  assert.equal(receiver, undefined);
+  assert.equal(authorization.expiresAt, expiresAt * 1000);
+  assert.equal(requestInit, undefined);
+  const url = new URL(requestUrl);
+  assert.equal(url.protocol, "https:");
+  assert.equal(url.hostname, "graph.facebook.com");
+  assert.equal(url.pathname, "/v26.0/debug_token");
+  assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
+  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+});
+
 test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
   const provider = new MetaWhatsAppGraphOnboardingProvider(
     "expected-app",

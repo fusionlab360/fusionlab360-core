@@ -31,7 +31,8 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
   private async json(path: string, stage: GraphStage, init?: RequestInit): Promise<GraphJsonResponse> {
     let response: Response;
     try {
-      response = await this.request(`https://graph.facebook.com/${this.version}${path}`, init);
+      const request = this.request;
+      response = await request(`https://graph.facebook.com/${this.version}${path}`, init);
     } catch {
       throw new MetaWhatsAppOnboardingError("Meta provider request failed.", {
         stage,
