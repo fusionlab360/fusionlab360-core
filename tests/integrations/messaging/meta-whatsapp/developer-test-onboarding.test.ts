@@ -163,6 +163,26 @@ test("Graph developer token validation rejects a token issued to another Meta ap
   await assert.rejects(provider.validateDeveloperTestToken("temporary-test-token"));
 });
 
+test("Graph developer token validation accepts the documented debug-token data envelope", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => new Response(JSON.stringify({
+      data: {
+        app_id: "expected-app",
+        is_valid: true,
+        scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+        expires_at: expiresAt,
+      },
+    }), { status: 200 }),
+  );
+  const authorization = await provider.validateDeveloperTestToken("temporary-test-token");
+  assert.deepEqual(authorization.scopes, ["whatsapp_business_management", "whatsapp_business_messaging"]);
+  assert.equal(authorization.expiresAt, expiresAt * 1000);
+});
+
 test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
   const provider = new MetaWhatsAppGraphOnboardingProvider(
     "expected-app",
