@@ -12,6 +12,13 @@ function graphFailureCode(stage: GraphStage) {
     case "meta_app_subscription": return "meta_app_subscription_failed" as const;
   }
 }
+function safeProviderErrorCode(body: unknown): number | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const error = (body as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const code = (error as Record<string, unknown>).code;
+  return typeof code === "number" && Number.isSafeInteger(code) && code >= 0 ? code : undefined;
+}
 export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestAuthorizationProvider {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version: string, private readonly request: typeof fetch = fetch) {
     if (!appId.trim() || !appSecret.trim() || !VERSION.test(version)) throw new Error("Meta WhatsApp Graph onboarding is not configured.");
@@ -27,13 +34,14 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
       });
     }
     const providerRequestId = response.headers.get("x-fb-request-id") ?? response.headers.get("x-fb-trace-id") ?? undefined;
+    const body: unknown = await response.json().catch(() => null);
     if (!response.ok) throw new MetaWhatsAppOnboardingError("Meta provider request failed.", {
       stage,
       code: graphFailureCode(stage),
       upstreamHttpStatus: response.status,
+      providerErrorCode: safeProviderErrorCode(body),
       providerRequestId,
     });
-    const body: unknown = await response.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new MetaWhatsAppOnboardingError("Meta provider response was malformed.", {
       stage,
       code: graphFailureCode(stage),

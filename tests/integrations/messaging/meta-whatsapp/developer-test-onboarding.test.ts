@@ -168,7 +168,7 @@ test("Graph token-debug failures expose only a stable code, status, and validate
     "expected-app",
     "synthetic-secret",
     "v26.0",
-    async () => new Response("provider-private-body", {
+    async () => new Response(JSON.stringify({ error: { code: 190, message: "provider-private-body" } }), {
       status: 401,
       headers: { "x-fb-request-id": "req-123" },
     }),
@@ -181,8 +181,10 @@ test("Graph token-debug failures expose only a stable code, status, and validate
         stage: "meta_token_debug",
         code: "meta_token_debug_failed",
         upstreamHttpStatus: 401,
+        providerErrorCode: 190,
         providerRequestId: "req-123",
       });
+      assert.doesNotMatch(JSON.stringify(error.diagnostic), /provider-private-body|temporary-test-token|synthetic-secret/);
       assert.doesNotMatch(error.message, /provider-private-body|temporary-test-token|synthetic-secret/);
       return true;
     },

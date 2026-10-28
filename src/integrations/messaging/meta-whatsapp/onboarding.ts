@@ -60,6 +60,7 @@ export interface MetaOnboardingDiagnostic {
   stage: MetaOnboardingDiagnosticStage;
   code: MetaOnboardingDiagnosticCode;
   upstreamHttpStatus?: number;
+  providerErrorCode?: number;
   providerRequestId?: string;
 }
 
