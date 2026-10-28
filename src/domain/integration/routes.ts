@@ -48,6 +48,12 @@ import {
 import {
   IntegrationEventProcessingError,
 } from "../../core/events/errors";
+import {
+  GHL_PROVIDER_INSPECTION_LOCATION,
+  GHL_PROVIDER_INSPECTION_TENANT,
+  inspectGHLProvider,
+  providerInspectionErrorCode,
+} from "../../integrations/messaging/gohighlevel/provider-inspection";
 
 
 const integrationRoutes =
@@ -172,6 +178,41 @@ integrationRoutes.patch(
   "/gohighlevel/custom-conversation-provider",
   requirePermission("integrations:write"),
   updateGHLCustomConversationProviderController,
+);
+
+integrationRoutes.get(
+  "/gohighlevel/provider-inspection",
+  requirePermission("contacts:read"),
+  requirePermission("integrations:test"),
+  async (c) => {
+    const unavailable = {
+      lookupSucceeded: false,
+      expectedProviderPresent: false,
+      registeredChannelType: null,
+      customProviderFlag: null,
+      providerOwnershipVerified: null,
+      errorCode: "inspection_disabled",
+    } as const;
+    if (c.env.GHL_OPERATOR_PROVIDER_INSPECTION_ENABLED !== "true") return c.json(unavailable, 404);
+
+    const tenant = c.get("context").tenant;
+    const locationId = tenant.integrations.crm.credentials.locationId?.trim();
+    if (tenant.id !== GHL_PROVIDER_INSPECTION_TENANT ||
+        tenant.integrations.crm.provider !== "gohighlevel" ||
+        locationId !== GHL_PROVIDER_INSPECTION_LOCATION) {
+      return c.json({ ...unavailable, errorCode: "pilot_not_authorized" }, 404);
+    }
+
+    try {
+      return c.json(await inspectGHLProvider(createIntegrationContext(
+        tenant,
+        "gohighlevel",
+        c.get("context").integrationRuntime,
+      )));
+    } catch (error) {
+      return c.json({ ...unavailable, errorCode: providerInspectionErrorCode(error) }, 502);
+    }
+  },
 );
 
 /*

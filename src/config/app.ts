@@ -101,6 +101,9 @@ export type AppBindings = {
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_LOCATION_ALLOWLIST?: string;
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_PHONE_E164?: string;
 
+  /** Temporary, fail-closed read-only GHL provider inspection. */
+  GHL_OPERATOR_PROVIDER_INSPECTION_ENABLED?: string;
+
   GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
 
   META_WHATSAPP_APP_SECRET?: string;
