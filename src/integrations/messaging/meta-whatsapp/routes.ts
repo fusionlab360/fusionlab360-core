@@ -11,6 +11,54 @@ export function createMetaWhatsAppRoutes(provider?: MetaWhatsAppOnboardingProvid
 const routes = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
 const resolveProvider = (env: AppBindings) => provider ?? createMetaWhatsAppGraphOnboardingProvider(env);
 
+/**
+ * Provision the tenant-owned integration record required by Embedded Signup.
+ *
+ * Provisioning deliberately does not create credentials or a Meta connection;
+ * those are created only after the existing, state-bound onboarding flow has
+ * verified the Meta authorization result.
+ */
+routes.post("/provision", requirePermission("integrations:write"), async (c) => {
+  const tenantId = c.get("context").tenant.id;
+  const integrations = new IntegrationRepository(c.env.DB);
+  const existing = await integrations.findByTenantAndProvider(tenantId, "meta_whatsapp");
+  if (existing) {
+    return c.json({
+      success: true,
+      created: false,
+      integration: {
+        id: existing.id,
+        provider: existing.provider,
+        enabled: existing.enabled === 1,
+        connectionStatus: "unchanged",
+      },
+    }, 200);
+  }
+
+  const integrationId = crypto.randomUUID();
+  const created = await integrations.createIfMissing({
+    id: integrationId,
+    tenant_id: tenantId,
+    provider: "meta_whatsapp",
+    settings: null,
+  });
+  const persisted = await integrations.findByTenantAndProvider(tenantId, "meta_whatsapp");
+  if (!persisted) {
+    return c.json({ success: false, message: "Meta WhatsApp integration could not be provisioned." }, 500);
+  }
+
+  return c.json({
+    success: true,
+    created,
+    integration: {
+      id: persisted.id,
+      provider: persisted.provider,
+      enabled: persisted.enabled === 1,
+      connectionStatus: "not_connected",
+    },
+  }, created ? 201 : 200);
+});
+
 routes.post("/onboarding/sessions", requireTenantClientPermission("integrations:oauth:connect"), async (c) => {
   let onboardingProvider: MetaWhatsAppOnboardingProvider; try { onboardingProvider = resolveProvider(c.env); } catch { return c.json({ success: false, message: "Meta WhatsApp onboarding is not configured." }, 503); }
   const principal = c.get("principal");
