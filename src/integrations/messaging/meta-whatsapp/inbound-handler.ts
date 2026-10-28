@@ -71,7 +71,6 @@ export const forwardMetaWhatsAppInboundToGHL: MetaWhatsAppGHLInboundForwarder = 
     await publishGHLCustomInboundForTenant(context, {
       contactId,
       message: String(value.text),
-      conversationId: `${connection.phoneNumberId}:${sender}`,
       altId: String(value.providerMessageId),
       occurredAt: String(value.occurredAt),
     }, env);

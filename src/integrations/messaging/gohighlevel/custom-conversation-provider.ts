@@ -31,7 +31,19 @@ export interface GHLCustomInboundFailureDiagnostics {
   errorCategory: "upstream_http_error" | "internal_error";
   errorCode: string;
   providerRequestId: string | null;
+  validationFields: string[];
 }
+
+const GHL_INBOUND_VALIDATION_FIELDS = [
+  "type",
+  "contactId",
+  "conversationId",
+  "conversationProviderId",
+  "message",
+  "direction",
+  "altId",
+  "date",
+] as const;
 
 function safeDiagnosticField(
   details: unknown,
@@ -55,6 +67,36 @@ function safeDiagnosticField(
   }
 
   return null;
+}
+
+function safeValidationFields(details: unknown): string[] {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return [];
+  const root = details as Record<string, unknown>;
+  const records = [root];
+  if (root.error && typeof root.error === "object" && !Array.isArray(root.error)) {
+    records.push(root.error as Record<string, unknown>);
+  }
+
+  const candidateText: string[] = [];
+  const candidateFields = new Set<string>();
+  for (const record of records) {
+    for (const key of ["message", "errors", "details"]) {
+      const value = record[key];
+      if (typeof value === "string") candidateText.push(value);
+      if (Array.isArray(value)) {
+        for (const item of value) if (typeof item === "string") candidateText.push(item);
+      }
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const field of Object.keys(value)) candidateFields.add(field);
+      }
+    }
+  }
+
+  return GHL_INBOUND_VALIDATION_FIELDS.filter((field) =>
+    candidateFields.has(field) ||
+    (field !== "message" && candidateText.some((candidate) =>
+      new RegExp(`(^|[^A-Za-z0-9_])${field}([^A-Za-z0-9_]|$)`).test(candidate))),
+  );
 }
 
 /** Extract only bounded provider diagnostics; never expose body text or headers. */
@@ -81,6 +123,7 @@ export function getGHLCustomInboundFailureDiagnostics(
       : "upstream_http_error",
     errorCode: providerErrorCode ?? (upstreamHttpStatus === null ? "UNKNOWN" : `HTTP_${upstreamHttpStatus}`),
     providerRequestId,
+    validationFields: safeValidationFields(details),
   };
 }
 
@@ -143,7 +186,7 @@ async function publishGHLCustomInbound(
     context.tenant.integrations.crm.credentials.locationId,
   );
   const body: Record<string, unknown> = {
-    type: "Custom",
+    type: "SMS",
     direction: "inbound",
     contactId: required(input.contactId, "contactId"),
     message: required(input.message, "message"),

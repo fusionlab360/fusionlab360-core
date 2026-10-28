@@ -150,8 +150,10 @@ test("inbound publisher uses the documented Add Inbound Message API version", as
   assert.equal(requestUrl, "https://services.leadconnectorhq.com/conversations/messages/inbound");
   assert.equal(new Headers(requestInit?.headers).get("Version"), "2023-02-21");
   const requestBody = JSON.parse(String(requestInit?.body));
+  assert.equal(requestBody.type, "SMS");
   assert.equal(requestBody.altId, "meta-message-a");
   assert.equal(requestBody.direction, "inbound");
+  assert.equal(requestBody.conversationId, undefined);
 });
 
 test("inbound publish diagnostics expose only bounded provider code and request ID", () => {
@@ -161,7 +163,7 @@ test("inbound publish diagnostics expose only bounded provider code and request 
     {
       code: "OAUTH_SCOPE_MISSING",
       requestId: "req-401-example",
-      message: "do not expose this body message",
+      message: ["conversationId must be a valid provider conversation", "do not expose this body message"],
       token: "do-not-expose",
     },
   ));
@@ -171,6 +173,7 @@ test("inbound publish diagnostics expose only bounded provider code and request 
     errorCategory: "upstream_http_error",
     errorCode: "OAUTH_SCOPE_MISSING",
     providerRequestId: "req-401-example",
+    validationFields: ["conversationId"],
   });
   assert.equal(JSON.stringify(diagnostics).includes("do-not-expose"), false);
 });
