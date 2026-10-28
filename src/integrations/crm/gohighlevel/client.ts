@@ -29,6 +29,19 @@ type GHLIntegrationContext =
   | RequestContext
   | IntegrationContext;
 
+/** Keep contact lookup values out of provider request logs. */
+export function sanitizeGHLLogUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    for (const parameter of ["phone", "email", "contactId"]) {
+      if (url.searchParams.has(parameter)) url.searchParams.set(parameter, "[redacted]");
+    }
+    return url.toString();
+  } catch {
+    return value.split("?", 1)[0] ?? value;
+  }
+}
+
 
 /*
  * --------------------------------------------------
@@ -316,7 +329,7 @@ async function performGHLRequest<T>(
   logger.debug(
     "Sending GHL request",
     {
-      url,
+      url: sanitizeGHLLogUrl(url),
       method,
     },
   );
@@ -346,7 +359,7 @@ async function performGHLRequest<T>(
   logger.debug(
     "Received GHL response",
     {
-      url,
+      url: sanitizeGHLLogUrl(url),
       method,
       status:
         response.status,
@@ -543,7 +556,7 @@ export async function ghlFetchAuthenticated<T>(
       "GoHighLevel authenticated request failed",
       {
         url:
-          `${GHL.BASE_URL}${endpoint}`,
+          sanitizeGHLLogUrl(`${GHL.BASE_URL}${endpoint}`),
 
         method:
           options.method ??
@@ -576,7 +589,7 @@ export async function ghlFetchAuthenticated<T>(
     "GoHighLevel authenticated request completed",
     {
       url:
-        `${GHL.BASE_URL}${endpoint}`,
+        sanitizeGHLLogUrl(`${GHL.BASE_URL}${endpoint}`),
 
       method:
         options.method ??

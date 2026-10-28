@@ -12,11 +12,38 @@ import { getContact as getGHLContact } from "../../integrations/crm/gohighlevel/
 import { isTenantFeatureEnabled, setTenantFeatureEnabled } from "../features/tenant-feature-service";
 import { searchGHLConversations } from "../../integrations/messaging/gohighlevel/conversations";
 import { getConversationMessages } from "../../integrations/messaging/gohighlevel/messages";
+import { lookupGHLContactByPhone } from "../../integrations/crm/gohighlevel/contacts/lookup";
+import { ApiError } from "../../core/errors/ApiError";
+import { CredentialRepository } from "../../persistence/repositories/credential-repository";
 import { sendManualGHLReply } from "../messaging/manual-reply";
 import type { MessagingProvider } from "../../core/messaging";
 async function service(c: any, scope: string) { const h=c.req.header("Authorization"); if(!h?.startsWith("Bearer ")) return null; try { const r=await authenticate(c.env.DB,h.slice(7)); if(r.principal.type!=="client"||!r.principal.clientId)return null; const client=r.client??await resolveClientById(c.env.DB,r.principal.clientId); const marker=(await c.env.DB.prepare("SELECT 1 AS ok FROM console_service_clients WHERE client_id=?").bind(client.id).first()) as {ok:number} | null; return client.status==="active"&&client.id===r.principal.clientId&&marker?.ok===1&&(client.permissions.includes("*")||client.permissions.includes(scope))?client:null; } catch{return null;} }
 async function digest(v:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(v));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("");}
 async function grant(db:D1Database,cid:string,tid:string,scope:string){const r=(await db.prepare("SELECT 1 AS ok FROM client_tenant_grants WHERE client_id=? AND tenant_id=? AND grant_scope=?").bind(cid,tid,scope).first()) as {ok:number} | null;return r?.ok===1;}
+
+function resolveSingleOperatorDiagnosticTarget(value: string | undefined, pattern: RegExp): string | null {
+  const normalized = value?.trim();
+  return normalized && !normalized.includes(",") && !normalized.includes("*") && pattern.test(normalized) ? normalized : null;
+}
+
+function resolveOperatorContactDiagnosticTarget(env: AppBindings): { tenantId: string; locationId: string; phone: string } | null {
+  if (env.GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED !== "true") return null;
+  const tenantId = resolveSingleOperatorDiagnosticTarget(env.GHL_OPERATOR_CONTACT_DIAGNOSTIC_TENANT_ALLOWLIST, /^[A-Za-z0-9_-]+$/);
+  const locationId = resolveSingleOperatorDiagnosticTarget(env.GHL_OPERATOR_CONTACT_DIAGNOSTIC_LOCATION_ALLOWLIST, /^[A-Za-z0-9_-]+$/);
+  const phone = resolveSingleOperatorDiagnosticTarget(env.GHL_OPERATOR_CONTACT_DIAGNOSTIC_PHONE_E164, /^\+[1-9]\d{6,14}$/);
+  return tenantId && locationId && phone ? { tenantId, locationId, phone } : null;
+}
+
+function diagnosticErrorCode(error: unknown): string {
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+    return "GHL_AUTHORIZATION_FAILED";
+  }
+  if (error instanceof Error && /more than one/i.test(error.message)) {
+    return "CONTACT_MATCH_NOT_UNIQUE";
+  }
+  return "GHL_CONTACT_LOOKUP_FAILED";
+}
+
 export function createConsoleServiceRoutes(manualReplyProvider?: MessagingProvider) {
 const routes = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
 routes.post("/tenants",async c=>{const client=await service(c,"tenants:provision");if(!client)return c.json({success:false,message:"Unauthorized."},403);const b=await c.req.json().catch(()=>null) as {name?:unknown,idempotencyKey?:unknown}|null;if(typeof b?.name!=="string"||b.name.trim().length<2||typeof b.idempotencyKey!=="string"||!/^[A-Za-z0-9._:-]{1,200}$/.test(b.idempotencyKey))return c.json({success:false,message:"A valid company name and idempotencyKey are required."},400);const name=b.name.trim(),hash=await digest(JSON.stringify({name}));const old=await c.env.DB.prepare("SELECT tenant_id,request_hash,tenant_name FROM console_service_idempotency WHERE client_id=? AND idempotency_key=?").bind(client.id,b.idempotencyKey).first<{tenant_id:string;request_hash:string;tenant_name:string}>();if(old)return old.request_hash===hash?c.json({success:true,tenant:{id:old.tenant_id,name:old.tenant_name,status:"active"},idempotent:true}):c.json({success:false,message:"The idempotency key was already used for a different company."},409);const tid=crypto.randomUUID();try{await c.env.DB.batch([c.env.DB.prepare("INSERT INTO tenants(id,name,status) VALUES(?,?,?)").bind(tid,name,"active"),c.env.DB.prepare("INSERT INTO console_service_idempotency(client_id,idempotency_key,request_hash,tenant_id,tenant_name) VALUES(?,?,?,?,?)").bind(client.id,b.idempotencyKey,hash,tid,name),c.env.DB.prepare("INSERT INTO client_tenant_grants(client_id,tenant_id,grant_scope) VALUES(?,?,?)").bind(client.id,tid,"tenants:read")]);return c.json({success:true,tenant:{id:tid,name,status:"active"},idempotent:false},201);}catch{return c.json({success:false,message:"Tenant provisioning failed."},503);}});
@@ -26,6 +53,32 @@ routes.get("/tenants/:tenantId/messaging/conversations",async c=>{const client=a
 routes.get("/tenants/:tenantId/messaging/conversations/:conversationId/messages",async c=>{const client=await service(c,"messaging:read"),tid=c.req.param("tenantId"),cid=c.req.param("conversationId");if(!client||!(await grant(c.env.DB,client.id,tid,"messaging:read")))return c.json({success:false,message:"Forbidden."},403);const repo=new MessagingConversationRepository(c.env.DB),conversation=await repo.findForTenant(tid,cid);if(!conversation)return c.json({success:false,message:"Conversation not found."},404);const p=await repo.listMessagesForTenant(tid,cid,{limit:100});return c.json({success:true,conversation,messages:p.items,nextCursor:p.nextCursor});});
 routes.get("/tenants/:tenantId/contacts",async c=>{const client=await service(c,"contacts:read"),tid=c.req.param("tenantId"),email=c.req.query("email")?.trim();if(!client||!(await grant(c.env.DB,client.id,tid,"contacts:read")))return c.json({success:false,message:"Forbidden."},403);if(!email||email.length>320||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return c.json({success:false,message:"A valid email is required."},400);try{const tenant=await resolveTenant(c.env.DB,tid);const runtime=createIntegrationRuntime(tenant.integrations.crm.provider,{DB:c.env.DB,GHL_OAUTH_CLIENT_ID:c.env.GHL_OAUTH_CLIENT_ID,GHL_OAUTH_CLIENT_SECRET:c.env.GHL_OAUTH_CLIENT_SECRET,GHL_OAUTH_REDIRECT_URI:c.env.GHL_OAUTH_REDIRECT_URI});const contact=await getContactService(createRequestContext(client,tenant,runtime),email);return c.json({success:true,contact});}catch(error){if(error instanceof Error&&error.message==="Contact not found.")return c.json({success:true,contact:null});return c.json({success:false,message:"Contact lookup failed."},503);}});
 routes.get("/tenants/:tenantId/ghl/conversations/:conversationId/contact",async c=>{const client=await service(c,"messaging:read"),tid=c.req.param("tenantId"),conversationId=c.req.param("conversationId");if(!client||!(await grant(c.env.DB,client.id,tid,"messaging:read")))return c.json({success:false,message:"Forbidden."},403);try{const tenant=await resolveTenant(c.env.DB,tid);if(tenant.integrations.crm.provider!=="gohighlevel")return c.json({success:false,message:"GoHighLevel is not configured for this tenant."},409);const runtime=createIntegrationRuntime("gohighlevel",{DB:c.env.DB,GHL_OAUTH_CLIENT_ID:c.env.GHL_OAUTH_CLIENT_ID,GHL_OAUTH_CLIENT_SECRET:c.env.GHL_OAUTH_CLIENT_SECRET,GHL_OAUTH_REDIRECT_URI:c.env.GHL_OAUTH_REDIRECT_URI});const requestContext=createRequestContext(client,tenant,runtime);const summaries=await searchGHLConversations(createIntegrationContext(tenant,"gohighlevel",runtime),{limit:100,page:1});const summary=summaries.items.find(item=>item.id===conversationId);const locationId=tenant.integrations.crm.credentials.locationId;if(!summary||summary.locationId!==locationId||!summary.contactId)return c.json({success:false,message:"Conversation contact is unavailable."},404);const response=await getGHLContact(requestContext,summary.contactId);const contact=response.contact;const tags=Array.isArray((contact as unknown as {tags?:unknown}).tags)?(contact as unknown as {tags:string[]}).tags:[];return c.json({success:true,contact:{id:contact.id,firstName:contact.firstName,lastName:contact.lastName,email:contact.email,phone:contact.phone,tags}});}catch{return c.json({success:false,message:"Conversation contact is currently unavailable."},503);}});
+// Temporary, private operator diagnostic. Remove after the controlled pilot.
+routes.post("/diagnostics/gohighlevel/contact-lookup",async c=>{
+  const client=await service(c,"contacts:read");
+  if(!client || !client.permissions.includes("integrations:test")) return c.json({success:false,message:"Forbidden."},403);
+  const target=resolveOperatorContactDiagnosticTarget(c.env);
+  if(!target || client.tenantId!==target.tenantId) return c.json({success:false,message:"Diagnostic unavailable."},404);
+  const rawBody=await c.req.text();
+  if(rawBody.trim()) return c.json({success:false,message:"This diagnostic does not accept a request body."},400);
+  if(!(await grant(c.env.DB,client.id,client.tenantId,"contacts:read"))) return c.json({success:false,message:"Forbidden."},403);
+  try {
+    const tenant=await resolveTenant(c.env.DB,client.tenantId);
+    const locationId=tenant.integrations.crm.credentials.locationId?.trim();
+    if(tenant.integrations.crm.provider!=="gohighlevel" || locationId!==target.locationId) return c.json({success:false,message:"Diagnostic unavailable."},404);
+    const credential=await new CredentialRepository(c.env.DB).findByTenantAndProvider(tenant.id,"gohighlevel");
+    const refreshRequired=credential?.authType==="oauth2" && (!credential.apiKey.trim() || credential.accessTokenExpiresAt == null || credential.accessTokenExpiresAt <= Date.now());
+    const runtime=createIntegrationRuntime("gohighlevel",{DB:c.env.DB,GHL_OAUTH_CLIENT_ID:c.env.GHL_OAUTH_CLIENT_ID,GHL_OAUTH_CLIENT_SECRET:c.env.GHL_OAUTH_CLIENT_SECRET,GHL_OAUTH_REDIRECT_URI:c.env.GHL_OAUTH_REDIRECT_URI});
+    const contactId=await lookupGHLContactByPhone(createIntegrationContext(tenant,"gohighlevel",runtime),target.phone);
+    const refreshOutcome=refreshRequired ? "completed" : "not_required";
+    if(!contactId) return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:false,locationMatched:false,errorCode:"CONTACT_NOT_FOUND"});
+    return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:true,locationMatched:true,errorCode:null});
+  } catch(error) {
+    const authorizationFailed=error instanceof ApiError && (error.status === 401 || error.status === 403);
+    return c.json({oauthAuthorized:authorizationFailed ? false : "unverified",refreshOutcome:"failed",uniqueContactFound:false,locationMatched:false,errorCode:diagnosticErrorCode(error)},502);
+  }
+});
+
 // Compatibility alias for existing Console clients. AI Chat is the only
 // tenant-level automatic-reply control; ai_auto_reply rows are historical.
 routes.get("/tenants/:tenantId/ai-auto-reply",async c=>{const client=await service(c,"features:read"),tid=c.req.param("tenantId");if(!client||!(await grant(c.env.DB,client.id,tid,"features:read")))return c.json({success:false,message:"Forbidden."},403);try{const tenant=await resolveTenant(c.env.DB,tid);const enabled=await isTenantFeatureEnabled(c.env.DB,tenant.id,"ai_chat");return c.json({success:true,enabled});}catch{return c.json({success:false,message:"AI Chat setting is unavailable."},503);}});

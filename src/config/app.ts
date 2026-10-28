@@ -95,6 +95,12 @@ export type AppBindings = {
   /** Exactly one GHL location ID authorized for the Custom Provider pilot. */
   GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST?: string;
 
+  /** Temporary, fail-closed operator diagnostic for a single contact pilot. */
+  GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED?: string;
+  GHL_OPERATOR_CONTACT_DIAGNOSTIC_TENANT_ALLOWLIST?: string;
+  GHL_OPERATOR_CONTACT_DIAGNOSTIC_LOCATION_ALLOWLIST?: string;
+  GHL_OPERATOR_CONTACT_DIAGNOSTIC_PHONE_E164?: string;
+
   GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
 
   META_WHATSAPP_APP_SECRET?: string;
