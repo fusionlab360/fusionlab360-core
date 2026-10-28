@@ -191,6 +191,32 @@ test("Graph token-debug failures expose only a stable code, status, and validate
   );
 });
 
+test("Graph token-debug response normalization retains HTTP 200 without retaining the response body", async () => {
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => new Response(JSON.stringify({ unexpected: "provider-private-body" }), {
+      status: 200,
+      headers: { "x-fb-request-id": "req-200" },
+    }),
+  );
+  await assert.rejects(
+    provider.validateDeveloperTestToken("temporary-test-token"),
+    (error: unknown) => {
+      assert.ok(error instanceof MetaWhatsAppOnboardingError);
+      assert.deepEqual(error.diagnostic, {
+        stage: "meta_token_debug",
+        code: "meta_token_debug_failed",
+        upstreamHttpStatus: 200,
+        providerRequestId: "req-200",
+      });
+      assert.doesNotMatch(JSON.stringify(error.diagnostic), /provider-private-body|temporary-test-token|synthetic-secret/);
+      return true;
+    },
+  );
+});
+
 test("developer route keeps the public 409 fallback while logging only classified diagnostics", async () => {
   const db = new SQLiteD1();
   const provider = new TestProvider();
