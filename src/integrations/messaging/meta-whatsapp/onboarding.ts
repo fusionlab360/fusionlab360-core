@@ -42,6 +42,7 @@ export type MetaOnboardingDiagnosticStage =
 
 export type MetaOnboardingDiagnosticCode =
   | "meta_token_debug_failed"
+  | "meta_token_debug_transport_failed"
   | "meta_app_id_mismatch"
   | "meta_token_invalid_or_expired"
   | "meta_required_scopes_missing"

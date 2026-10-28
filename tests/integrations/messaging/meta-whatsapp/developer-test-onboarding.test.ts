@@ -237,12 +237,77 @@ test("Graph token-debug response normalization retains HTTP 200 without retainin
   );
 });
 
-test("developer route keeps the public 409 fallback while logging only classified diagnostics", async () => {
+test("Graph token-debug distinguishes transport failure from HTTP response failures", async () => {
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => { throw new TypeError("provider-private-transport-detail"); },
+  );
+  await assert.rejects(
+    provider.validateDeveloperTestToken("temporary-test-token"),
+    (error: unknown) => {
+      assert.ok(error instanceof MetaWhatsAppOnboardingError);
+      assert.deepEqual(error.diagnostic, {
+        stage: "meta_token_debug",
+        code: "meta_token_debug_transport_failed",
+        providerRequestId: undefined,
+      });
+      assert.doesNotMatch(JSON.stringify(error), /provider-private-transport-detail|temporary-test-token|synthetic-secret/);
+      return true;
+    },
+  );
+});
+
+test("Graph token-debug retains HTTP 200 for invalid JSON normalization", async () => {
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => new Response("provider-private-body", { status: 200 }),
+  );
+  await assert.rejects(
+    provider.validateDeveloperTestToken("temporary-test-token"),
+    (error: unknown) => {
+      assert.ok(error instanceof MetaWhatsAppOnboardingError);
+      assert.equal(error.diagnostic.code, "meta_token_debug_failed");
+      assert.equal(error.diagnostic.upstreamHttpStatus, 200);
+      assert.doesNotMatch(JSON.stringify(error), /provider-private-body|temporary-test-token|synthetic-secret/);
+      return true;
+    },
+  );
+});
+
+test("Graph token-debug rejects missing or non-string input before fetch", async () => {
+  let requested = false;
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => { requested = true; return new Response("{}"); },
+  );
+  for (const token of ["", {} as unknown as string]) {
+    await assert.rejects(
+      provider.validateDeveloperTestToken(token),
+      (error: unknown) => error instanceof MetaWhatsAppOnboardingError &&
+        error.diagnostic.stage === "input_validation" &&
+        error.diagnostic.code === "meta_input_invalid",
+    );
+  }
+  assert.equal(requested, false);
+});
+
+test("developer route preserves classified transport diagnostics without logging exception details", async () => {
   const db = new SQLiteD1();
   const provider = new TestProvider();
   await seedClient(db, "tenant-a", ["integrations:oauth:connect", "integrations:write"], "fl360_tenant_a");
   const started = await state(db, provider);
-  provider.validateDeveloperTestToken = async () => { throw new Error("provider-private-body"); };
+  provider.validateDeveloperTestToken = async () => {
+    throw new MetaWhatsAppOnboardingError("Meta provider request failed.", {
+      stage: "meta_token_debug",
+      code: "meta_token_debug_transport_failed",
+    });
+  };
   const entries: unknown[] = [];
   const originalError = console.error;
   console.error = (...values: unknown[]) => entries.push(values);
@@ -254,9 +319,9 @@ test("developer route keeps the public 409 fallback while logging only classifie
         body: JSON.stringify({ state: started.state, temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
       }, bindings(db));
     assert.equal(response.status, 409);
-    assert.deepEqual(await response.json(), { success: false, message: "Meta developer test token validation failed." });
+    assert.deepEqual(await response.json(), { success: false, message: "Meta provider request failed." });
     const diagnosticText = JSON.stringify(entries);
-    assert.match(diagnosticText, /meta_token_debug_failed/);
+    assert.match(diagnosticText, /meta_token_debug_transport_failed/);
     assert.doesNotMatch(diagnosticText, /provider-private-body|temporary-test-token/);
   } finally {
     console.error = originalError;

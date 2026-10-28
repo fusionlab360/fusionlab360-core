@@ -35,7 +35,7 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
     } catch {
       throw new MetaWhatsAppOnboardingError("Meta provider request failed.", {
         stage,
-        code: graphFailureCode(stage),
+        code: stage === "meta_token_debug" ? "meta_token_debug_transport_failed" : graphFailureCode(stage),
       });
     }
     const providerRequestId = response.headers.get("x-fb-request-id") ?? response.headers.get("x-fb-trace-id") ?? undefined;
@@ -69,8 +69,11 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
     return { accessToken, scopes, expiresAt: typeof tokenResponse.body.expires_in === "number" ? Date.now() + tokenResponse.body.expires_in * 1000 : undefined };
   }
   async validateDeveloperTestToken(accessToken: string): Promise<MetaVerifiedAuthorization> {
-    const token = accessToken.trim();
-    if (!token) throw new Error("Meta developer test token is missing.");
+    const token = typeof accessToken === "string" ? accessToken.trim() : "";
+    if (!token) throw new MetaWhatsAppOnboardingError("Meta developer test token validation failed.", {
+      stage: "input_validation",
+      code: "meta_input_invalid",
+    });
     const debugResponse = await this.json(`/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(`${this.appId}|${this.appSecret}`)}`, "meta_token_debug");
     const data = debugResponse.body.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new MetaWhatsAppOnboardingError("Meta token validation response is malformed.", {
