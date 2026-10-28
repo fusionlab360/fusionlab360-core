@@ -78,6 +78,89 @@ export class IntegrationEventRepository
     return (rows.results ?? []).map(row => ({ tenantId: row.tenant_id, eventId: row.event_id }));
   }
 
+  /**
+   * Fence Queue publication separately from event processing. A source-webhook
+   * retry may resume only a failed or expired Queue dispatch; it cannot create
+   * another active dispatch for the same durable event.
+   */
+  async prepareQueueDispatch(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+    now: string,
+    leaseExpiresAt: string,
+    allowInitialDispatch: boolean,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_started_at = ?,
+          processing_lease_token = ?,
+          processing_lease_expires_at = ?,
+          last_error_code = 'QUEUE_DISPATCH_PENDING',
+          last_error_message = 'Queue dispatch is pending confirmation.'
+      WHERE tenant_id = ? AND event_id = ?
+        AND processing_status = 'received'
+        AND (
+          (? = 1 AND last_error_code IS NULL)
+          OR last_error_code = 'QUEUE_ENQUEUE_FAILED'
+          OR (
+            last_error_code = 'QUEUE_DISPATCH_PENDING'
+            AND processing_lease_expires_at IS NOT NULL
+            AND processing_lease_expires_at <= ?
+          )
+        )
+    `).bind(
+      now,
+      leaseToken,
+      leaseExpiresAt,
+      tenantId,
+      eventId,
+      allowInitialDispatch ? 1 : 0,
+      now,
+    ).run();
+    return result.meta.changes === 1;
+  }
+
+  async completeQueueDispatch(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_started_at = NULL,
+          processing_lease_token = NULL,
+          processing_lease_expires_at = NULL,
+          last_error_code = NULL,
+          last_error_message = NULL
+      WHERE tenant_id = ? AND event_id = ?
+        AND processing_status = 'received'
+        AND last_error_code = 'QUEUE_DISPATCH_PENDING'
+        AND processing_lease_token = ?
+    `).bind(tenantId, eventId, leaseToken).run();
+    return result.meta.changes === 1;
+  }
+
+  async failQueueDispatch(
+    tenantId: string,
+    eventId: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    const result = await this.db.prepare(`
+      UPDATE integration_events
+      SET processing_started_at = NULL,
+          processing_lease_token = NULL,
+          processing_lease_expires_at = NULL,
+          last_error_code = 'QUEUE_ENQUEUE_FAILED',
+          last_error_message = 'Queue dispatch could not be confirmed.'
+      WHERE tenant_id = ? AND event_id = ?
+        AND processing_status = 'received'
+        AND last_error_code = 'QUEUE_DISPATCH_PENDING'
+        AND processing_lease_token = ?
+    `).bind(tenantId, eventId, leaseToken).run();
+    return result.meta.changes === 1;
+  }
+
   async prepareDeadLetterReplay(
     tenantId: string,
     eventId: string,

@@ -8,6 +8,49 @@ import { IntegrationEventService } from "../../../core/events/service";
 import type { GHLInboundQueueEnvelope } from "../../../domain/messaging/inbound-queue-contract";
 import { areNewQueueEnvelopesEnabled } from "../../../domain/messaging/inbound-queue";
 
+async function enqueuePendingMetaEvent(
+  events: IntegrationEventRepository,
+  queue: Queue<GHLInboundQueueEnvelope> | undefined,
+  tenantId: string,
+  eventId: string,
+  allowInitialDispatch: boolean,
+): Promise<boolean> {
+  const event = await events.find(tenantId, eventId);
+  if (!event || event.tenantId !== tenantId || event.provider !== "meta_whatsapp") return false;
+  const expiredPendingDispatch = event.lastErrorCode === "QUEUE_DISPATCH_PENDING" &&
+    !!event.processingLeaseExpiresAt && event.processingLeaseExpiresAt <= new Date().toISOString();
+  const recoverableDispatchFailure = event.lastErrorCode === "QUEUE_ENQUEUE_FAILED" || expiredPendingDispatch;
+  if (event.processingStatus !== "received" || (!allowInitialDispatch && !recoverableDispatchFailure)) return true;
+  const leaseToken = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const prepared = await events.prepareQueueDispatch(
+    tenantId,
+    eventId,
+    leaseToken,
+    now,
+    new Date(Date.now() + 60_000).toISOString(),
+    allowInitialDispatch,
+  );
+  if (!prepared) return true;
+  if (!queue) {
+    await events.failQueueDispatch(tenantId, eventId, leaseToken);
+    return false;
+  }
+  try {
+    await queue.send({ version: 1, kind: "meta_whatsapp", tenantId, sourceEventId: eventId });
+  } catch {
+    await events.failQueueDispatch(tenantId, eventId, leaseToken);
+    return false;
+  }
+  try {
+    await events.completeQueueDispatch(tenantId, eventId, leaseToken);
+  } catch {
+    // Queue acceptance is already durable. A stale dispatch marker is safe:
+    // consumer-side event idempotency fences any later recovery enqueue.
+  }
+  return true;
+}
+
 export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBindings; Variables: AppVariables }>) {
   if (c.req.method === "GET") {
     const mode = c.req.query("hub.mode");
@@ -24,8 +67,10 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
   const messages = parseMetaInboundText(payload as MetaWebhookPayload);
   const statuses = parseMetaStatusEvents(payload as MetaWebhookPayload);
   const connections = new MetaWhatsAppConnectionRepository(c.env.DB);
-  const events = new IntegrationEventService(new IntegrationEventRepository(c.env.DB));
+  const eventRepository = new IntegrationEventRepository(c.env.DB);
+  const events = new IntegrationEventService(eventRepository);
   let accepted = 0;
+  let queuePublicationFailed = false;
   for (const message of messages) {
     const connection = await connections.findActiveByPhoneNumberId(message.phoneNumberId);
     if (!connection) continue;
@@ -39,9 +84,14 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       occurredAt: message.occurredAt,
       payload: message,
     });
-    if (result.accepted && c.env.GHL_INBOUND_QUEUE && areNewQueueEnvelopesEnabled(c.env)) {
-      const envelope: GHLInboundQueueEnvelope = { version: 1, kind: "meta_whatsapp", tenantId: connection.tenantId, sourceEventId: result.event.eventId };
-      try { await c.env.GHL_INBOUND_QUEUE.send(envelope); } catch { /* durable event remains recoverable */ }
+    if (areNewQueueEnvelopesEnabled(c.env) && !await enqueuePendingMetaEvent(
+      eventRepository,
+      c.env.GHL_INBOUND_QUEUE,
+      connection.tenantId,
+      result.event.eventId,
+      result.accepted,
+    )) {
+      queuePublicationFailed = true;
     }
     accepted++;
   }
@@ -58,10 +108,19 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       occurredAt: status.occurredAt,
       payload: { providerMessageId: status.providerMessageId, status: status.status, phoneNumberId: status.phoneNumberId },
     });
-    if (result.accepted && c.env.GHL_INBOUND_QUEUE && areNewQueueEnvelopesEnabled(c.env)) {
-      try { await c.env.GHL_INBOUND_QUEUE.send({ version: 1, kind: "meta_whatsapp", tenantId: connection.tenantId, sourceEventId: result.event.eventId }); } catch { /* durable event remains recoverable */ }
+    if (areNewQueueEnvelopesEnabled(c.env) && !await enqueuePendingMetaEvent(
+      eventRepository,
+      c.env.GHL_INBOUND_QUEUE,
+      connection.tenantId,
+      result.event.eventId,
+      result.accepted,
+    )) {
+      queuePublicationFailed = true;
     }
     accepted++;
+  }
+  if (queuePublicationFailed) {
+    return c.json({ success: false, message: "Meta event queue publication could not be confirmed." }, 503);
   }
   return c.json({ success: true, accepted });
 }

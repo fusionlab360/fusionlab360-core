@@ -91,13 +91,27 @@ async function sign(body: string, secret: string): Promise<string> {
   return `sha256=${Array.from(digest).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function controllerFixture(newEnvelopeEnabled = true) {
+function controllerFixture(
+  newEnvelopeEnabled = true,
+  send?: (value: Record<string, unknown>, queue: Array<Record<string, unknown>>) => Promise<void>,
+) {
   const db = new SQLiteD1();
   db.sqlite.exec("INSERT INTO tenants (id, name) VALUES ('tenant-a', 'A'); INSERT INTO integrations (id, tenant_id, provider) VALUES ('integration-a', 'tenant-a', 'meta_whatsapp'); INSERT INTO meta_whatsapp_connections (id, tenant_id, integration_id, waba_id, phone_number_id, status) VALUES ('connection-a', 'tenant-a', 'integration-a', 'waba-a', 'phone-a', 'active');");
   const queue: Array<Record<string, unknown>> = [];
   const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
   app.all("/webhooks/meta-whatsapp", metaWhatsAppWebhookController);
-  const env = { DB: db.binding(), META_WHATSAPP_APP_SECRET: "synthetic-secret", META_WHATSAPP_VERIFY_TOKEN: "verify-me", ...(newEnvelopeEnabled ? { NEW_QUEUE_ENVELOPES_ENABLED: "true" } : {}), GHL_INBOUND_QUEUE: { send: async (value: Record<string, unknown>) => { queue.push(value); } } } as unknown as AppBindings;
+  const env = {
+    DB: db.binding(),
+    META_WHATSAPP_APP_SECRET: "synthetic-secret",
+    META_WHATSAPP_VERIFY_TOKEN: "verify-me",
+    ...(newEnvelopeEnabled ? { NEW_QUEUE_ENVELOPES_ENABLED: "true" } : {}),
+    GHL_INBOUND_QUEUE: {
+      send: async (value: Record<string, unknown>) => {
+        if (send) return send(value, queue);
+        queue.push(value);
+      },
+    },
+  } as unknown as AppBindings;
   return { app, env, queue, db };
 }
 
@@ -132,5 +146,79 @@ test("duplicate Meta webhook delivery does not enqueue a second event", async ()
   const headers = { "X-Hub-Signature-256": await sign(body, "synthetic-secret") };
   await fixture.app.request("/webhooks/meta-whatsapp", { method: "POST", headers, body }, fixture.env);
   await fixture.app.request("/webhooks/meta-whatsapp", { method: "POST", headers, body }, fixture.env);
+  assert.equal(fixture.queue.length, 1);
+});
+
+test("a duplicate Meta webhook re-enqueues a received event after Queue publication fails", async () => {
+  let sends = 0;
+  const fixture = controllerFixture(true, async (value, queue) => {
+    sends += 1;
+    if (sends === 1) throw new Error("synthetic Queue publication failure");
+    queue.push(value);
+  });
+  const body = webhookBody();
+  const headers = { "X-Hub-Signature-256": await sign(body, "synthetic-secret") };
+
+  const first = await fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers, body },
+    fixture.env,
+  );
+  assert.equal(first.status, 503);
+  assert.equal(fixture.queue.length, 0);
+  assert.equal(
+    fixture.db.sqlite.prepare("SELECT processing_status FROM integration_events").get()?.processing_status,
+    "received",
+  );
+  assert.equal(
+    fixture.db.sqlite.prepare("SELECT last_error_code FROM integration_events").get()?.last_error_code,
+    "QUEUE_ENQUEUE_FAILED",
+  );
+
+  const retried = await fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers, body },
+    fixture.env,
+  );
+  assert.equal(retried.status, 200);
+  assert.equal(fixture.queue.length, 1);
+
+  const duplicate = await fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers, body },
+    fixture.env,
+  );
+  assert.equal(duplicate.status, 200);
+  assert.equal(fixture.queue.length, 1);
+});
+
+test("concurrent Meta webhook deliveries cannot publish the same pending event twice", async () => {
+  let releaseQueuePublication: (() => void) | undefined;
+  let queuePublicationStarted: (() => void) | undefined;
+  const publicationStarted = new Promise<void>((resolve) => { queuePublicationStarted = resolve; });
+  const fixture = controllerFixture(true, async (value, queue) => {
+    queuePublicationStarted?.();
+    await new Promise<void>((resolve) => { releaseQueuePublication = resolve; });
+    queue.push(value);
+  });
+  const body = webhookBody();
+  const headers = { "X-Hub-Signature-256": await sign(body, "synthetic-secret") };
+
+  const first = fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers, body },
+    fixture.env,
+  );
+  await publicationStarted;
+  const duplicate = await fixture.app.request(
+    "/webhooks/meta-whatsapp",
+    { method: "POST", headers, body },
+    fixture.env,
+  );
+  assert.equal(duplicate.status, 200);
+  assert.equal(fixture.queue.length, 0);
+
+  releaseQueuePublication?.();
+  assert.equal((await first).status, 200);
   assert.equal(fixture.queue.length, 1);
 });

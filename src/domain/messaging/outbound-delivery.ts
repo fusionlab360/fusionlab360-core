@@ -4,6 +4,9 @@ import type {
 import {
   IntegrationEventProcessingError,
 } from "../../core/events/errors";
+import {
+  ApiError,
+} from "../../core/errors/ApiError";
 import type {
   MessagingProvider,
 } from "../../core/messaging";
@@ -17,6 +20,22 @@ function unknownOutcome(): IntegrationEventProcessingError {
     code: "OUTBOUND_DELIVERY_UNKNOWN",
     severity: "error",
     message: "Outbound delivery outcome is unknown; automatic retry is disabled.",
+    retryable: false,
+  });
+}
+
+function isPermanentProviderRejection(error: unknown): error is ApiError {
+  return error instanceof ApiError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    ![408, 425, 429].includes(error.status);
+}
+
+function permanentProviderRejection(): IntegrationEventProcessingError {
+  return new IntegrationEventProcessingError({
+    code: "PROVIDER_REQUEST_REJECTED",
+    severity: "error",
+    message: "Outbound delivery was rejected by the provider.",
     retryable: false,
   });
 }
@@ -95,14 +114,19 @@ export function withDurableOutboundDelivery(
         }
         return result;
       } catch (error: unknown) {
-        if (error instanceof KnownNonDeliveryError) {
+        if (error instanceof KnownNonDeliveryError || isPermanentProviderRejection(error)) {
           await repository.markFailed({
             tenantId: context.tenant.id,
             eventId,
             effectKey,
             leaseToken: reservation.leaseToken,
-            errorCode: error.code,
+            errorCode: error instanceof KnownNonDeliveryError
+              ? error.code
+              : "PROVIDER_REQUEST_REJECTED",
           });
+          if (isPermanentProviderRejection(error)) {
+            throw permanentProviderRejection();
+          }
           throw error;
         }
 

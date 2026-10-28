@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { IntegrationContext } from "../../../src/context/integration";
 import type { MessagingProvider } from "../../../src/core/messaging";
+import { ApiError } from "../../../src/core/errors/ApiError";
+import { IntegrationEventProcessingError } from "../../../src/core/events/errors";
 import { withDurableOutboundDelivery } from "../../../src/domain/messaging/outbound-delivery";
 
 interface DeliveryRow {
@@ -69,6 +71,13 @@ class OutboxMemoryDatabase {
         if (sql.includes("SET status = 'unknown'")) {
           if (this.row?.status === "sending" && this.row.lease_token === bindings[4]) {
             this.row.status = "unknown";
+            this.row.lease_token = null;
+          }
+          return { meta: { changes: 1 } };
+        }
+        if (sql.includes("SET status = 'failed'")) {
+          if (this.row?.status === "sending" && this.row.lease_token === bindings[4]) {
+            this.row.status = "failed";
             this.row.lease_token = null;
           }
           return { meta: { changes: 1 } };
@@ -159,4 +168,24 @@ test("ambiguous outbound failure is marked unknown and never resent", async () =
   await assert.rejects(retry.sendText(context, input), /outcome is unknown/i);
   assert.equal(sends, 1);
   assert.equal(db.row?.status, "unknown");
+});
+
+test("a definitive provider rejection is terminal instead of an ambiguous delivery", async () => {
+  const db = new OutboxMemoryDatabase();
+  const wrapped = withDurableOutboundDelivery(
+    db as unknown as D1Database,
+    provider(async () => {
+      throw new ApiError(400, "Provider rejected the request.");
+    }),
+    "event-3",
+    async () => true,
+  );
+
+  await assert.rejects(
+    wrapped.sendText(context, input),
+    (error: unknown) => error instanceof IntegrationEventProcessingError &&
+      error.code === "PROVIDER_REQUEST_REJECTED" &&
+      error.retryable === false,
+  );
+  assert.equal(db.row?.status, "failed");
 });
