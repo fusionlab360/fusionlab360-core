@@ -27,6 +27,8 @@ function safeProviderErrorCode(body: unknown): number | undefined {
 export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestAuthorizationProvider {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version: string, private readonly request: typeof fetch = fetch) {
     if (!appId.trim() || !appSecret.trim() || !VERSION.test(version)) throw new Error("Meta WhatsApp Graph onboarding is not configured.");
+    this.appId = appId.trim();
+    this.appSecret = appSecret.trim();
   }
   private async json(path: string, stage: GraphStage, init?: RequestInit): Promise<GraphJsonResponse> {
     let response: Response;

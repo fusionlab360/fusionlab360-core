@@ -220,6 +220,33 @@ test("Graph provider invokes fetch without rebinding its receiver", async () => 
   assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
 });
 
+test("Graph token-debug normalizes app credentials like the validated operator request", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  let requestUrl = "";
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "  expected-app  ",
+    " synthetic-secret\r\n",
+    "v26.0",
+    async (input) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({
+        data: {
+          app_id: "expected-app",
+          is_valid: true,
+          scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+          expires_at: expiresAt,
+        },
+      }), { status: 200 });
+    },
+  );
+
+  await provider.validateDeveloperTestToken("  temporary-test-token  ");
+
+  const url = new URL(requestUrl);
+  assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
+  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+});
+
 test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
   const provider = new MetaWhatsAppGraphOnboardingProvider(
     "expected-app",
