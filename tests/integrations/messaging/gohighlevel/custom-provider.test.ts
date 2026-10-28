@@ -149,7 +149,9 @@ test("inbound publisher uses the documented Add Inbound Message API version", as
   assert.deepEqual(result, { conversationId: "conversation-a", messageId: "message-a" });
   assert.equal(requestUrl, "https://services.leadconnectorhq.com/conversations/messages/inbound");
   assert.equal(new Headers(requestInit?.headers).get("Version"), "2023-02-21");
-  assert.equal(JSON.parse(String(requestInit?.body)).altId, "meta-message-a");
+  const requestBody = JSON.parse(String(requestInit?.body));
+  assert.equal(requestBody.altId, "meta-message-a");
+  assert.equal(requestBody.direction, "inbound");
 });
 
 test("inbound publish diagnostics expose only bounded provider code and request ID", () => {

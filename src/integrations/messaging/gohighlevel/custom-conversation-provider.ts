@@ -144,6 +144,7 @@ async function publishGHLCustomInbound(
   );
   const body: Record<string, unknown> = {
     type: "Custom",
+    direction: "inbound",
     contactId: required(input.contactId, "contactId"),
     message: required(input.message, "message"),
     conversationProviderId: required(input.conversationProviderId, "conversationProviderId"),
