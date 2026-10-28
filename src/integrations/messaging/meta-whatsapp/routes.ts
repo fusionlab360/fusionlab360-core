@@ -125,6 +125,10 @@ routes.post(
       }, onboardingProvider);
       return c.json({ success: true, ...result });
     } catch (error) {
+      const diagnostic = error instanceof MetaWhatsAppOnboardingError
+        ? error.diagnostic
+        : { stage: "unknown" as const, code: "meta_unknown_failure" as const };
+      console.error("Meta developer test onboarding failed.", diagnostic);
       return c.json({
         success: false,
         message: error instanceof MetaWhatsAppOnboardingError

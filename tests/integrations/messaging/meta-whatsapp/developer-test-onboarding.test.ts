@@ -163,6 +163,124 @@ test("Graph developer token validation rejects a token issued to another Meta ap
   await assert.rejects(provider.validateDeveloperTestToken("temporary-test-token"));
 });
 
+test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => new Response("provider-private-body", {
+      status: 401,
+      headers: { "x-fb-request-id": "req-123" },
+    }),
+  );
+  await assert.rejects(
+    provider.validateDeveloperTestToken("temporary-test-token"),
+    (error: unknown) => {
+      assert.ok(error instanceof MetaWhatsAppOnboardingError);
+      assert.deepEqual(error.diagnostic, {
+        stage: "meta_token_debug",
+        code: "meta_token_debug_failed",
+        upstreamHttpStatus: 401,
+        providerRequestId: "req-123",
+      });
+      assert.doesNotMatch(error.message, /provider-private-body|temporary-test-token|synthetic-secret/);
+      return true;
+    },
+  );
+});
+
+test("developer route keeps the public 409 fallback while logging only classified diagnostics", async () => {
+  const db = new SQLiteD1();
+  const provider = new TestProvider();
+  await seedClient(db, "tenant-a", ["integrations:oauth:connect", "integrations:write"], "fl360_tenant_a");
+  const started = await state(db, provider);
+  provider.validateDeveloperTestToken = async () => { throw new Error("provider-private-body"); };
+  const entries: unknown[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => entries.push(values);
+  try {
+    const response = await createApp(db, provider, "tenant-a", ["integrations:oauth:connect", "integrations:write"])
+      .request(DEVELOPER_TEST_PATH, {
+        method: "POST",
+        headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
+        body: JSON.stringify({ state: started.state, temporaryAccessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }),
+      }, bindings(db));
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { success: false, message: "Meta developer test token validation failed." });
+    const diagnosticText = JSON.stringify(entries);
+    assert.match(diagnosticText, /meta_token_debug_failed/);
+    assert.doesNotMatch(diagnosticText, /provider-private-body|temporary-test-token/);
+  } finally {
+    console.error = originalError;
+    db.close();
+  }
+});
+
+test("developer onboarding classifies app, token, scope, ownership, subscription, and encryption failures", async () => {
+  const cases: Array<{
+    name: string;
+    provider: TestProvider;
+    expected: string;
+    encryptionMissing?: boolean;
+  }> = [
+    {
+      name: "app mismatch",
+      provider: Object.assign(new TestProvider(), { validateDeveloperTestToken: async () => { throw new MetaWhatsAppOnboardingError("invalid app", { stage: "meta_app_validation", code: "meta_app_id_mismatch" }); } }),
+      expected: "meta_app_id_mismatch",
+    },
+    {
+      name: "expired token",
+      provider: Object.assign(new TestProvider(), { authorization: { accessToken: "token", scopes: ["whatsapp_business_management", "whatsapp_business_messaging"], expiresAt: Date.now() - 1 } }),
+      expected: "meta_token_invalid_or_expired",
+    },
+    {
+      name: "missing scopes",
+      provider: Object.assign(new TestProvider(), { authorization: { accessToken: "token", scopes: ["whatsapp_business_management"], expiresAt: Date.now() + 3600000 } }),
+      expected: "meta_required_scopes_missing",
+    },
+    {
+      name: "waba access",
+      provider: Object.assign(new TestProvider(), { verifyWabaAccess: async () => false }),
+      expected: "meta_waba_access_failed",
+    },
+    {
+      name: "phone membership",
+      provider: Object.assign(new TestProvider(), { listPhoneNumbers: async () => [] }),
+      expected: "meta_phone_membership_failed",
+    },
+    {
+      name: "app subscription",
+      provider: Object.assign(new TestProvider(), { verifyWebhookSubscription: async () => false }),
+      expected: "meta_app_subscription_failed",
+    },
+    {
+      name: "credential encryption",
+      provider: new TestProvider(),
+      encryptionMissing: true,
+      expected: "meta_credential_encryption_failed",
+    },
+  ];
+  for (const failure of cases) {
+    const db = new SQLiteD1();
+    try {
+      const started = await state(db, failure.provider);
+      const serviceBindings = failure.encryptionMissing
+        ? { ...bindings(db), META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS: undefined }
+        : bindings(db);
+      const service = new MetaWhatsAppOnboardingService(db.binding(), serviceBindings, failure.provider);
+      await assert.rejects(
+        service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, failure.provider),
+        (error: unknown) => {
+          assert.ok(error instanceof MetaWhatsAppOnboardingError, failure.name);
+          assert.equal(error.diagnostic.code, failure.expected, failure.name);
+          assert.doesNotMatch(JSON.stringify(error.diagnostic), /temporary-test-token|synthetic-secret|provider-private-body/i);
+          return true;
+        },
+      );
+    } finally { db.close(); }
+  }
+});
+
 test("protected developer route rejects wrong permissions and asset tuples without caller-controlled tenant selection", async () => {
   const db = new SQLiteD1();
   try {
