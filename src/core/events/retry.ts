@@ -43,6 +43,18 @@ export function getIntegrationEventRetryPolicy(
 
     case "PROVIDER_REQUEST_REJECTED":
 
+    case "PROVIDER_PAYLOAD_REJECTED":
+
+    case "PROVIDER_IDENTITY_REJECTED":
+
+    case "GHL_CONTACT_MISMATCH":
+
+    case "META_CONNECTION_UNAVAILABLE":
+
+    case "META_CONVERSATION_NOT_UNIQUE":
+
+    case "META_CUSTOMER_WINDOW_EXPIRED":
+
     case "PROVIDER_UNSUPPORTED":
 
     case "TENANT_CONTEXT_INVALID":
@@ -63,6 +75,10 @@ export function getIntegrationEventRetryPolicy(
       };
 
     case "PROVIDER_TRANSIENT":
+
+    case "GHL_CONTACT_LOOKUP_FAILED":
+
+    case "META_CREDENTIAL_UNAVAILABLE":
 
       return {
 

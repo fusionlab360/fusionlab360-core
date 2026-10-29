@@ -8,6 +8,7 @@ import { isGHLProviderPilotLocationAuthorized } from "./custom-provider-pilot-co
 import { IntegrationEventProcessingError } from "../../../core/events/errors";
 import {
   deliverGHLProviderOutboundToMeta,
+  GHLMetaOutboundFailure,
   isGHLMetaOutboundPilotEnabled,
 } from "./provider-outbound-meta";
 import type { MetaSendOutcome } from "../meta-whatsapp/outbound";
@@ -99,17 +100,17 @@ export function createGHLProviderOutboundController(
     return c.json({ success: false, message: "Invalid JSON payload." }, 400);
   }
   const payload = parseGHLProviderOutboundPayload(parsed);
-  if (!payload) return c.json({ success: false, message: "Invalid provider outbound payload." }, 400);
+  if (!payload) return c.json({ success: false, message: "Invalid provider outbound payload.", code: "PROVIDER_PAYLOAD_REJECTED" }, 400);
 
   if (!isGHLProviderPilotLocationAuthorized(c.env, payload.locationId)) {
-    return c.json({ success: false, message: "Custom provider bridge is disabled for this location." }, 404);
+    return c.json({ success: false, message: "Custom provider bridge is disabled for this location.", code: "PROVIDER_IDENTITY_REJECTED" }, 404);
   }
 
   let tenant;
   try {
     tenant = await (dependencies.resolveTenant ?? resolveTenantByProviderLocation)(c.env.DB, "gohighlevel", payload.locationId);
   } catch {
-    return c.json({ success: false, message: "Unknown GHL location." }, 403);
+    return c.json({ success: false, message: "Unknown GHL location.", code: "PROVIDER_IDENTITY_REJECTED" }, 403);
   }
 
   const eventService = new IntegrationEventService(new IntegrationEventRepository(c.env.DB));
@@ -151,6 +152,7 @@ export function createGHLProviderOutboundController(
         duplicate: event.duplicate,
         deliveryMode: "meta",
         deliveryState: outcome.state,
+        ...(outcome.state === "unknown" ? { code: outcome.code } : {}),
       }, outcome.state === "accepted" ? 200 : 202);
     }
     const retryable = outcome.state === "retryable";
@@ -161,14 +163,15 @@ export function createGHLProviderOutboundController(
       retryable,
     }), claim.leaseToken);
     return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: outcome.state }, retryable ? 503 : 422);
-  } catch {
+  } catch (error) {
+    const failure = error instanceof GHLMetaOutboundFailure ? error : null;
     await eventService.markFailed(tenant.id, event.event.eventId, new IntegrationEventProcessingError({
-      code: "PROVIDER_REQUEST_REJECTED",
+      code: failure?.code ?? "PROVIDER_REQUEST_REJECTED",
       severity: "error",
-      message: "The signed GHL provider reply was not authorized for Meta delivery.",
-      retryable: false,
+      message: failure?.message ?? "The signed GHL provider reply was not authorized for Meta delivery.",
+      retryable: failure?.retryable ?? false,
     }), claim.leaseToken);
-    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: "rejected" }, 422);
+    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: "rejected", code: failure?.code ?? "PROVIDER_REQUEST_REJECTED" }, failure?.retryable ? 503 : 422);
   }
   };
 }

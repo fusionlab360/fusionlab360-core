@@ -13,12 +13,15 @@ import {
 } from "../../../../src/integrations/messaging/gohighlevel/provider-outbound";
 import {
   deliverGHLProviderOutboundToMeta,
+  GHLMetaOutboundFailure,
   GHL_META_OUTBOUND_LOCATION,
   GHL_META_OUTBOUND_PHONE_NUMBER_ID,
   GHL_META_OUTBOUND_PROVIDER,
   GHL_META_OUTBOUND_RECIPIENT,
   GHL_META_OUTBOUND_TENANT,
 } from "../../../../src/integrations/messaging/gohighlevel/provider-outbound-meta";
+import { MetaWhatsAppOutboundError } from "../../../../src/integrations/messaging/meta-whatsapp/outbound";
+import { ApiError } from "../../../../src/core/errors/ApiError";
 
 class LocalD1 {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -126,6 +129,102 @@ test("pilot bridge rejects disabled, cross-tenant, provider, recipient, and echo
     await assert.rejects(deliverGHLProviderOutboundToMeta(enabled, tenant(), { ...payload, phone: "+60111111111" }, deps));
     await assert.rejects(deliverGHLProviderOutboundToMeta(enabled, tenant(), { ...payload, userId: undefined }, deps));
     await assert.rejects(deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, { ...deps, lookupContact: async () => "other-contact" }));
+  } finally { db.close(); }
+});
+
+test("pilot bridge classifies each pre-delivery rejection stage without sensitive details", async () => {
+  const db = new LocalD1();
+  try {
+    seedBridge(db);
+    const enabled = { DB: db.binding(), GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true" } as AppBindings;
+    const send = async () => ({ state: "accepted" as const, providerMessageId: "unexpected" });
+    const assertStage = async (operation: Promise<unknown>, code: string, retryable: boolean) => {
+      await assert.rejects(operation, (error: unknown) =>
+        error instanceof GHLMetaOutboundFailure && error.code === code && error.retryable === retryable,
+      );
+    };
+
+    await assertStage(
+      deliverGHLProviderOutboundToMeta({ ...enabled, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "false" }, tenant(), payload, { send }),
+      "PROVIDER_IDENTITY_REJECTED", false,
+    );
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), { ...payload, type: "Email" }, { send }),
+      "PROVIDER_PAYLOAD_REJECTED", false,
+    );
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), { ...payload, userId: undefined }, { send }),
+      "PROVIDER_IDENTITY_REJECTED", false,
+    );
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, { lookupContact: async () => { throw new Error("private"); }, send }),
+      "GHL_CONTACT_LOOKUP_FAILED", true,
+    );
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, { lookupContact: async () => { throw new ApiError(400, "private"); }, send }),
+      "GHL_CONTACT_LOOKUP_FAILED", false,
+    );
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, { lookupContact: async () => "other-contact", send }),
+      "GHL_CONTACT_MISMATCH", false,
+    );
+    const noConnection = new LocalD1();
+    try {
+      await assertStage(
+        deliverGHLProviderOutboundToMeta({ ...enabled, DB: noConnection.binding() }, tenant(), payload, { send }),
+        "META_CONNECTION_UNAVAILABLE", false,
+      );
+    } finally { noConnection.close(); }
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, {
+        lookupContact: async () => "ghl-contact",
+        send: async () => { throw new MetaWhatsAppOutboundError("window", "META_CUSTOMER_WINDOW_EXPIRED"); },
+      }),
+      "META_CUSTOMER_WINDOW_EXPIRED", false,
+    );
+    db.sqlite.exec("INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id,channel) VALUES ('meta-conversation-2','gmmetro','meta_whatsapp','meta-connection','0060176177115','whatsapp')");
+    await assertStage(
+      deliverGHLProviderOutboundToMeta(enabled, tenant(), payload, { lookupContact: async () => "ghl-contact", send }),
+      "META_CONVERSATION_NOT_UNIQUE", false,
+    );
+  } finally { db.close(); }
+});
+
+test("controller persists retryable lookup diagnostics and preserves ambiguous credential outcomes", async () => {
+  const db = new LocalD1();
+  try {
+    const createApp = (deliver: NonNullable<Parameters<typeof createGHLProviderOutboundController>[0]>["deliver"]) => {
+      const controller = createGHLProviderOutboundController({
+        verifySignature: async () => true,
+        resolveTenant: async () => tenant(),
+        deliver,
+      });
+      const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
+      app.post("/callback", controller);
+      return app;
+    };
+    const env = {
+      DB: db.binding(), GHL_CUSTOM_PROVIDER_ENABLED: "true",
+      GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: GHL_META_OUTBOUND_LOCATION,
+      GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true",
+    } as AppBindings;
+    const retryable = createApp(async () => {
+      throw new GHLMetaOutboundFailure("GHL_CONTACT_LOOKUP_FAILED", true, "The GHL contact lookup could not be completed.");
+    });
+    const retryResponse = await retryable.request("/callback", {
+      method: "POST", headers: { "X-GHL-Signature": "verified" }, body: JSON.stringify(payload),
+    }, env);
+    assert.equal(retryResponse.status, 503);
+    const retryEvent = db.sqlite.prepare("SELECT processing_status,last_error_code FROM integration_events").get() as { processing_status: string; last_error_code: string };
+    assert.equal(retryEvent.processing_status, "failed");
+    assert.equal(retryEvent.last_error_code, "GHL_CONTACT_LOOKUP_FAILED");
+
+    const ambiguous = createApp(async () => ({ state: "unknown" as const, code: "META_CREDENTIAL_UNAVAILABLE" }));
+    const ambiguousResponse = await ambiguous.request("/callback", {
+      method: "POST", headers: { "X-GHL-Signature": "verified" }, body: JSON.stringify({ ...payload, messageId: "credential-ambiguous" }),
+    }, env);
+    assert.equal(ambiguousResponse.status, 202);
+    assert.equal((await ambiguousResponse.json() as { code?: string }).code, "META_CREDENTIAL_UNAVAILABLE");
   } finally { db.close(); }
 });
 

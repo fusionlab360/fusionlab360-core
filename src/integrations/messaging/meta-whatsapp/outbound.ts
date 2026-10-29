@@ -6,18 +6,29 @@ import { createMetaWhatsAppGraphOutboundTransport } from "./graph-outbound-trans
 
 export type MetaSendOutcome = { state: "accepted"; providerMessageId: string } | { state: "retryable"; code: string } | { state: "permanent"; code: string } | { state: "unknown"; code: string };
 export interface MetaWhatsAppTransport { sendText(input: { phoneNumberId: string; recipientId: string; text: string; accessToken: string }): Promise<MetaSendOutcome>; }
-export class MetaWhatsAppOutboundError extends Error { constructor(message: string) { super(message); this.name = "MetaWhatsAppOutboundError"; } }
+export type MetaWhatsAppOutboundErrorCode =
+  | "PROVIDER_PAYLOAD_REJECTED"
+  | "META_CONNECTION_UNAVAILABLE"
+  | "META_CONVERSATION_NOT_UNIQUE"
+  | "META_CUSTOMER_WINDOW_EXPIRED";
+
+export class MetaWhatsAppOutboundError extends Error {
+  constructor(message: string, public readonly code?: MetaWhatsAppOutboundErrorCode) {
+    super(message);
+    this.name = "MetaWhatsAppOutboundError";
+  }
+}
 
 export class MetaWhatsAppOutboundService {
   constructor(private readonly db: D1Database, private readonly bindings: Pick<AppBindings, "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION">, private readonly transport: MetaWhatsAppTransport) {}
   async send(input: { tenantId: string; connectionId: string; conversationId: string; recipientId: string; text: string; effectKey: string }): Promise<MetaSendOutcome> {
-    if (!input.text.trim() || input.text.length > 4096 || !input.recipientId.trim() || !input.effectKey.trim()) throw new MetaWhatsAppOutboundError("Outbound Meta message is invalid.");
+    if (!input.text.trim() || input.text.length > 4096 || !input.recipientId.trim() || !input.effectKey.trim()) throw new MetaWhatsAppOutboundError("Outbound Meta message is invalid.", "PROVIDER_PAYLOAD_REJECTED");
     const connection = await new MetaWhatsAppConnectionRepository(this.db).findByTenantAndId(input.tenantId, input.connectionId);
-    if (!connection || connection.status !== "active") throw new MetaWhatsAppOutboundError("Meta connection is unavailable.");
+    if (!connection || connection.status !== "active") throw new MetaWhatsAppOutboundError("Meta connection is unavailable.", "META_CONNECTION_UNAVAILABLE");
     const conversation = await this.db.prepare(`SELECT 1 FROM messaging_conversations WHERE id=? AND tenant_id=? AND provider='meta_whatsapp' AND connection_id=? AND external_participant_id=?`).bind(input.conversationId,input.tenantId,input.connectionId,input.recipientId).first();
-    if (!conversation) throw new MetaWhatsAppOutboundError("Meta conversation is not authorized for this recipient.");
+    if (!conversation) throw new MetaWhatsAppOutboundError("Meta conversation is not authorized for this recipient.", "META_CONVERSATION_NOT_UNIQUE");
     const lastInbound = await this.db.prepare(`SELECT occurred_at FROM messaging_messages WHERE tenant_id=? AND conversation_id=? AND direction='inbound' AND content_type='text' ORDER BY occurred_at DESC LIMIT 1`).bind(input.tenantId,input.conversationId).first<{occurred_at:string}>();
-    if (!lastInbound || Date.now()-Date.parse(lastInbound.occurred_at)>24*60*60*1000) throw new MetaWhatsAppOutboundError("The customer-service messaging window is not eligible.");
+    if (!lastInbound || Date.now()-Date.parse(lastInbound.occurred_at)>24*60*60*1000) throw new MetaWhatsAppOutboundError("The customer-service messaging window is not eligible.", "META_CUSTOMER_WINDOW_EXPIRED");
     const payloadHash = await hash(input.text);
     const existing=await this.db.prepare(`SELECT id, status, provider_message_id, payload_hash, last_error_code FROM messaging_outbound_deliveries WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(input.tenantId,input.effectKey,input.effectKey).first<{id:string;status:string;provider_message_id:string|null;payload_hash:string;last_error_code:string|null}>();
     let deliveryId: string;
@@ -55,7 +66,7 @@ export class MetaWhatsAppOutboundService {
       const credential = await createMetaWhatsAppCredentialVault(this.db, this.bindings).resolve({tenantId:input.tenantId,integrationId:connection.integrationId,connectionId:connection.id,provider:"meta_whatsapp"});
       outcome = await this.transport.sendText({phoneNumberId:connection.phoneNumberId,recipientId:input.recipientId,text:input.text,accessToken:credential.accessToken});
     } catch (error) {
-      outcome={state:"unknown",code:error instanceof MetaWhatsAppCredentialError ? "credential_unavailable" : "transport_exception"};
+      outcome={state:"unknown",code:error instanceof MetaWhatsAppCredentialError ? "META_CREDENTIAL_UNAVAILABLE" : "transport_exception"};
     }
     if(outcome.state==="accepted") await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status='sent',provider_delivery_status='accepted',provider_message_id=?,updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(outcome.providerMessageId,input.tenantId,input.effectKey,input.effectKey).run();
     else await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status=?,last_error_code=?,updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(outcome.state==="unknown"?"unknown":"failed",outcome.code,input.tenantId,input.effectKey,input.effectKey).run();
