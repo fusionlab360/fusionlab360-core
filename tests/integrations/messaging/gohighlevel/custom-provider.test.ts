@@ -150,7 +150,7 @@ test("inbound publisher uses the documented Add Inbound Message API version", as
   assert.equal(requestUrl, "https://services.leadconnectorhq.com/conversations/messages/inbound");
   assert.equal(new Headers(requestInit?.headers).get("Version"), "2023-02-21");
   const requestBody = JSON.parse(String(requestInit?.body));
-  assert.equal(requestBody.type, "SMS");
+  assert.equal(requestBody.type, "Custom");
   assert.equal(requestBody.altId, "meta-message-a");
   assert.equal(requestBody.direction, "inbound");
   assert.equal(requestBody.conversationId, undefined);

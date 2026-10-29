@@ -186,7 +186,7 @@ async function publishGHLCustomInbound(
     context.tenant.integrations.crm.credentials.locationId,
   );
   const body: Record<string, unknown> = {
-    type: "SMS",
+    type: "Custom",
     direction: "inbound",
     contactId: required(input.contactId, "contactId"),
     message: required(input.message, "message"),
