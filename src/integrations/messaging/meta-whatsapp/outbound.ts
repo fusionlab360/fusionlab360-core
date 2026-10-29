@@ -19,24 +19,36 @@ export class MetaWhatsAppOutboundService {
     const lastInbound = await this.db.prepare(`SELECT occurred_at FROM messaging_messages WHERE tenant_id=? AND conversation_id=? AND direction='inbound' AND content_type='text' ORDER BY occurred_at DESC LIMIT 1`).bind(input.tenantId,input.conversationId).first<{occurred_at:string}>();
     if (!lastInbound || Date.now()-Date.parse(lastInbound.occurred_at)>24*60*60*1000) throw new MetaWhatsAppOutboundError("The customer-service messaging window is not eligible.");
     const payloadHash = await hash(input.text);
-    const existing=await this.db.prepare(`SELECT id, status, provider_message_id, payload_hash FROM messaging_outbound_deliveries WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(input.tenantId,input.effectKey,input.effectKey).first<{id:string;status:string;provider_message_id:string|null;payload_hash:string}>();
+    const existing=await this.db.prepare(`SELECT id, status, provider_message_id, payload_hash, last_error_code FROM messaging_outbound_deliveries WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(input.tenantId,input.effectKey,input.effectKey).first<{id:string;status:string;provider_message_id:string|null;payload_hash:string;last_error_code:string|null}>();
+    let deliveryId: string;
     if (existing) {
       if (existing.payload_hash !== payloadHash) throw new MetaWhatsAppOutboundError("The idempotency key was already used for a different message.");
-      const outcome: MetaSendOutcome = existing.status === "sent" && existing.provider_message_id
-        ? {state:"accepted",providerMessageId:existing.provider_message_id}
-        : existing.status === "failed" ? {state:"permanent",code:"duplicate_effect"} : {state:"unknown",code:"duplicate_effect"};
-      await this.persistCanonical(input, existing.id);
-      return outcome;
-    }
-    const deliveryId = crypto.randomUUID();
-    const reserved=await this.db.prepare(`INSERT INTO messaging_outbound_deliveries (id,tenant_id,event_id,provider,effect_key,conversation_id,payload_hash,status,connection_id,recipient_id) VALUES (?,?,?,?,?,?,?,'sending',?,?) ON CONFLICT(tenant_id,event_id,effect_key) DO NOTHING`).bind(deliveryId,input.tenantId,input.effectKey,"meta_whatsapp",input.effectKey,input.conversationId,payloadHash,input.connectionId,input.recipientId).run();
-    if ((reserved.meta?.changes??0)!==1) {
-      const duplicate = await this.db.prepare(`SELECT id, payload_hash FROM messaging_outbound_deliveries WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(input.tenantId,input.effectKey,input.effectKey).first<{id:string;payload_hash:string}>();
-      if (duplicate) {
-        if (duplicate.payload_hash !== payloadHash) throw new MetaWhatsAppOutboundError("The idempotency key was already used for a different message.");
-        await this.persistCanonical(input, duplicate.id);
+      if (existing.status === "sent" && existing.provider_message_id) {
+        await this.persistCanonical(input, existing.id);
+        return {state:"accepted",providerMessageId:existing.provider_message_id};
       }
-      return {state:"unknown",code:"duplicate_effect"};
+      const retryableProviderRejection = existing.status === "failed" &&
+        /^provider_http_(429|5\d\d)$/.test(existing.last_error_code ?? "");
+      if (!retryableProviderRejection) {
+        await this.persistCanonical(input, existing.id);
+        return existing.status === "failed"
+          ? {state:"permanent",code:"duplicate_effect"}
+          : {state:"unknown",code:"duplicate_effect"};
+      }
+      const reclaimed = await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status='sending',attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND status='failed' AND last_error_code=?`).bind(existing.id,input.tenantId,existing.last_error_code).run();
+      if ((reclaimed.meta?.changes ?? 0) !== 1) return {state:"unknown",code:"duplicate_effect"};
+      deliveryId = existing.id;
+    } else {
+      deliveryId = crypto.randomUUID();
+      const reserved=await this.db.prepare(`INSERT INTO messaging_outbound_deliveries (id,tenant_id,event_id,provider,effect_key,conversation_id,payload_hash,status,connection_id,recipient_id) VALUES (?,?,?,?,?,?,?,'sending',?,?) ON CONFLICT(tenant_id,event_id,effect_key) DO NOTHING`).bind(deliveryId,input.tenantId,input.effectKey,"meta_whatsapp",input.effectKey,input.conversationId,payloadHash,input.connectionId,input.recipientId).run();
+      if ((reserved.meta?.changes??0)!==1) {
+        const duplicate = await this.db.prepare(`SELECT id, payload_hash FROM messaging_outbound_deliveries WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(input.tenantId,input.effectKey,input.effectKey).first<{id:string;payload_hash:string}>();
+        if (duplicate) {
+          if (duplicate.payload_hash !== payloadHash) throw new MetaWhatsAppOutboundError("The idempotency key was already used for a different message.");
+          await this.persistCanonical(input, duplicate.id);
+        }
+        return {state:"unknown",code:"duplicate_effect"};
+      }
     }
     let outcome:MetaSendOutcome;
     try {
@@ -46,7 +58,7 @@ export class MetaWhatsAppOutboundService {
       outcome={state:"unknown",code:error instanceof MetaWhatsAppCredentialError ? "credential_unavailable" : "transport_exception"};
     }
     if(outcome.state==="accepted") await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status='sent',provider_delivery_status='accepted',provider_message_id=?,updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(outcome.providerMessageId,input.tenantId,input.effectKey,input.effectKey).run();
-    else await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status=?,last_error_code=?,updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(outcome.state==="permanent"?"failed":"unknown",outcome.code,input.tenantId,input.effectKey,input.effectKey).run();
+    else await this.db.prepare(`UPDATE messaging_outbound_deliveries SET status=?,last_error_code=?,updated_at=CURRENT_TIMESTAMP WHERE tenant_id=? AND event_id=? AND effect_key=?`).bind(outcome.state==="unknown"?"unknown":"failed",outcome.code,input.tenantId,input.effectKey,input.effectKey).run();
     await this.persistCanonical(input, deliveryId);
     return outcome;
   }

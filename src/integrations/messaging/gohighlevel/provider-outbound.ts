@@ -5,6 +5,12 @@ import { IntegrationEventRepository } from "../../../persistence/repositories/in
 import { resolveTenantByProviderLocation } from "../../../tenants/service";
 import { verifyGHLSignature } from "./signature";
 import { isGHLProviderPilotLocationAuthorized } from "./custom-provider-pilot-config";
+import { IntegrationEventProcessingError } from "../../../core/events/errors";
+import {
+  deliverGHLProviderOutboundToMeta,
+  isGHLMetaOutboundPilotEnabled,
+} from "./provider-outbound-meta";
+import type { MetaSendOutcome } from "../meta-whatsapp/outbound";
 
 export interface GHLProviderOutboundPayload {
   contactId: string;
@@ -62,14 +68,27 @@ export async function deliverGHLProviderOutboundMock(
   return { delivered: false, mode: "mock" };
 }
 
-export async function ghlProviderOutboundController(c: GHLProviderOutboundContext) {
+export interface GHLProviderOutboundControllerDependencies {
+  verifySignature?: typeof verifyGHLSignature;
+  resolveTenant?: typeof resolveTenantByProviderLocation;
+  deliver?: (
+    env: AppBindings,
+    tenant: Awaited<ReturnType<typeof resolveTenantByProviderLocation>>,
+    payload: GHLProviderOutboundPayload,
+  ) => Promise<MetaSendOutcome>;
+}
+
+export function createGHLProviderOutboundController(
+  dependencies: GHLProviderOutboundControllerDependencies = {},
+) {
+  return async function ghlProviderOutboundHandler(c: GHLProviderOutboundContext) {
   if (c.env.GHL_CUSTOM_PROVIDER_ENABLED !== "true") {
     return c.json({ success: false, message: "Custom provider bridge is disabled." }, 404);
   }
 
   const rawBody = await c.req.text();
   const signature = c.req.header("X-GHL-Signature");
-  if (!(await verifyGHLSignature(rawBody, signature))) {
+  if (!(await (dependencies.verifySignature ?? verifyGHLSignature)(rawBody, signature))) {
     return c.json({ success: false, message: "Invalid GHL webhook signature." }, 401);
   }
 
@@ -88,12 +107,13 @@ export async function ghlProviderOutboundController(c: GHLProviderOutboundContex
 
   let tenant;
   try {
-    tenant = await resolveTenantByProviderLocation(c.env.DB, "gohighlevel", payload.locationId);
+    tenant = await (dependencies.resolveTenant ?? resolveTenantByProviderLocation)(c.env.DB, "gohighlevel", payload.locationId);
   } catch {
     return c.json({ success: false, message: "Unknown GHL location." }, 403);
   }
 
-  const event = await new IntegrationEventService(new IntegrationEventRepository(c.env.DB)).accept({
+  const eventService = new IntegrationEventService(new IntegrationEventRepository(c.env.DB));
+  const event = await eventService.accept({
     eventId: payload.messageId,
     eventType: "gohighlevel.provider_outbound_message",
     aggregateType: "conversation_provider_message",
@@ -103,8 +123,54 @@ export async function ghlProviderOutboundController(c: GHLProviderOutboundContex
     occurredAt: new Date().toISOString(),
     payload,
   });
-  const delivery = event.duplicate
-    ? { delivered: false as const, mode: "mock" as const }
-    : await deliverGHLProviderOutboundMock(tenant.id, payload);
-  return c.json({ success: true, accepted: true, duplicate: event.duplicate, deliveryMode: delivery.mode });
+  if (!isGHLMetaOutboundPilotEnabled(c.env)) {
+    const delivery = event.duplicate
+      ? { delivered: false as const, mode: "mock" as const }
+      : await deliverGHLProviderOutboundMock(tenant.id, payload);
+    return c.json({ success: true, accepted: true, duplicate: event.duplicate, deliveryMode: delivery.mode });
+  }
+
+  const claim = await eventService.claimForProcessing(tenant.id, event.event.eventId);
+  if (claim.state === "processed") {
+    return c.json({ success: true, accepted: true, duplicate: true, deliveryMode: "meta" });
+  }
+  if (claim.state === "active") {
+    return c.json({ success: true, accepted: true, duplicate: true, deliveryMode: "meta", deliveryState: "processing" }, 202);
+  }
+  if (claim.state !== "claimed") {
+    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: claim.state }, 409);
+  }
+
+  try {
+    const outcome = await (dependencies.deliver ?? deliverGHLProviderOutboundToMeta)(c.env, tenant, payload);
+    if (outcome.state === "accepted" || outcome.state === "unknown") {
+      await eventService.markProcessed(tenant.id, event.event.eventId, claim.leaseToken);
+      return c.json({
+        success: outcome.state === "accepted",
+        accepted: true,
+        duplicate: event.duplicate,
+        deliveryMode: "meta",
+        deliveryState: outcome.state,
+      }, outcome.state === "accepted" ? 200 : 202);
+    }
+    const retryable = outcome.state === "retryable";
+    await eventService.markFailed(tenant.id, event.event.eventId, new IntegrationEventProcessingError({
+      code: retryable ? "PROVIDER_TRANSIENT" : "PROVIDER_REQUEST_REJECTED",
+      severity: "error",
+      message: retryable ? "Meta outbound delivery was rejected transiently." : "Meta outbound delivery was rejected permanently.",
+      retryable,
+    }), claim.leaseToken);
+    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: outcome.state }, retryable ? 503 : 422);
+  } catch {
+    await eventService.markFailed(tenant.id, event.event.eventId, new IntegrationEventProcessingError({
+      code: "PROVIDER_REQUEST_REJECTED",
+      severity: "error",
+      message: "The signed GHL provider reply was not authorized for Meta delivery.",
+      retryable: false,
+    }), claim.leaseToken);
+    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: "rejected" }, 422);
+  }
+  };
 }
+
+export const ghlProviderOutboundController = createGHLProviderOutboundController();

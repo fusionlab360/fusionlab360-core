@@ -95,6 +95,9 @@ export type AppBindings = {
   /** Exactly one GHL location ID authorized for the Custom Provider pilot. */
   GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST?: string;
 
+  /** Opt-in only: sends the single GHL provider pilot's agent replies through Meta. */
+  GHL_META_WHATSAPP_OUTBOUND_ENABLED?: string;
+
   /** Temporary, fail-closed operator diagnostic for a single contact pilot. */
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED?: string;
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_TENANT_ALLOWLIST?: string;
