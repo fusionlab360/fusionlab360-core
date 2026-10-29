@@ -33,12 +33,23 @@ function parseChannelResponse(value: unknown): GHLProviderInspectionResult {
   const sms = (channel as Record<string, unknown>).SMS;
   if (!Array.isArray(sms)) return emptyResult("malformed_response");
 
-  const matching = sms.find((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const providers: Record<string, unknown>[] = [];
+  for (const entry of sms) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return emptyResult("malformed_response");
+    }
     const provider = (entry as Record<string, unknown>).conversationProvider;
-    return !!provider && typeof provider === "object" && !Array.isArray(provider) &&
-      (provider as Record<string, unknown>)._id === GHL_PROVIDER_INSPECTION_ID;
-  });
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+      return emptyResult("malformed_response");
+    }
+    const providerRecord = provider as Record<string, unknown>;
+    if (typeof providerRecord._id !== "string" || providerRecord._id.length === 0) {
+      return emptyResult("malformed_response");
+    }
+    providers.push(providerRecord);
+  }
+
+  const matching = providers.find((provider) => provider._id === GHL_PROVIDER_INSPECTION_ID);
   if (!matching || typeof matching !== "object" || Array.isArray(matching)) {
     return {
       lookupSucceeded: true,
@@ -50,9 +61,7 @@ function parseChannelResponse(value: unknown): GHLProviderInspectionResult {
     };
   }
 
-  const provider = (matching as Record<string, unknown>).conversationProvider;
-  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return emptyResult("malformed_response");
-  const record = provider as Record<string, unknown>;
+  const record = matching;
   const registeredChannelType = record.type === "SMS" || record.type === "Email" ? record.type : null;
   const customProviderFlag = typeof record.isCustomConversationProvider === "boolean"
     ? record.isCustomConversationProvider
@@ -79,7 +88,7 @@ export async function inspectGHLProvider(
   const response = await ghlFetchAuthenticated<unknown>(
     context,
     `/locations/${encodeURIComponent(GHL_PROVIDER_INSPECTION_LOCATION)}/conversationChannels/SMS`,
-    { headers: { Version: "2023-02-21" } },
+    { headers: { Version: "v3" } },
   );
   return parseChannelResponse(response);
 }

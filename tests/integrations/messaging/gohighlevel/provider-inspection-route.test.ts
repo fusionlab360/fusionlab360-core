@@ -23,6 +23,7 @@ function fixture(options: {
   const locationId = options.locationId ?? GHL_PROVIDER_INSPECTION_LOCATION;
   const permissions = options.permissions ?? ["contacts:read", "integrations:test"];
   const resolveCalls: Array<{ forceRefresh?: boolean }> = [];
+  const providerRequests: Array<{ url: string; version: string | null }> = [];
   let fetchCalls = 0;
   const resolve = async (request: { forceRefresh?: boolean }) => {
     resolveCalls.push(request);
@@ -55,8 +56,12 @@ function fixture(options: {
       credentials: { resolve },
       httpTransport: {
         credentials: { resolve },
-        fetch: async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
           fetchCalls += 1;
+          providerRequests.push({
+            url: String(input),
+            version: new Headers(init?.headers).get("Version"),
+          });
           if (options.refreshOnUnauthorized && fetchCalls === 1) {
             return Response.json({ message: "sensitive upstream detail" }, { status: 401 });
           }
@@ -93,6 +98,7 @@ function fixture(options: {
     app,
     env: { GHL_OPERATOR_PROVIDER_INSPECTION_ENABLED: options.enabled ? "true" : "false" } as AppBindings,
     resolveCalls,
+    providerRequests,
     getFetchCalls: () => fetchCalls,
   };
 }
@@ -100,7 +106,29 @@ function fixture(options: {
 const path = "/integrations/gohighlevel/provider-inspection";
 
 test("provider inspection returns only safe matching-provider metadata", async () => {
-  const f = fixture({ enabled: true });
+  const f = fixture({
+    enabled: true,
+    body: {
+      conversationChannel: {
+        SMS: [
+          {
+            conversationProvider: {
+              _id: "another-provider-id",
+              type: "SMS",
+              isCustomConversationProvider: false,
+            },
+          },
+          {
+            conversationProvider: {
+              _id: GHL_PROVIDER_INSPECTION_ID,
+              type: "SMS",
+              isCustomConversationProvider: true,
+            },
+          },
+        ],
+      },
+    },
+  });
   const response = await f.app.request(path, {}, f.env);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
@@ -111,6 +139,12 @@ test("provider inspection returns only safe matching-provider metadata", async (
     providerOwnershipVerified: null,
     errorCode: null,
   });
+  assert.equal(f.providerRequests.length, 1);
+  assert.equal(f.providerRequests[0]?.version, "v3");
+  assert.equal(
+    new URL(f.providerRequests[0]?.url ?? "https://invalid.example").pathname,
+    `/locations/${GHL_PROVIDER_INSPECTION_LOCATION}/conversationChannels/SMS`,
+  );
 });
 
 test("provider inspection fails closed when disabled or outside gmmetro", async () => {
@@ -144,6 +178,19 @@ test("provider inspection distinguishes absent and malformed responses", async (
   const malformed = fixture({ enabled: true, body: { secret: "must not be returned" } });
   const malformedResponse = await malformed.app.request(path, {}, malformed.env);
   assert.deepEqual(await malformedResponse.json(), {
+    lookupSucceeded: false,
+    expectedProviderPresent: false,
+    registeredChannelType: null,
+    customProviderFlag: null,
+    providerOwnershipVerified: null,
+    errorCode: "malformed_response",
+  });
+
+  const malformedProvider = fixture({
+    enabled: true,
+    body: { conversationChannel: { SMS: [{ conversationProvider: { id: GHL_PROVIDER_INSPECTION_ID } }] } },
+  });
+  assert.deepEqual(await (await malformedProvider.app.request(path, {}, malformedProvider.env)).json(), {
     lookupSucceeded: false,
     expectedProviderPresent: false,
     registeredChannelType: null,
