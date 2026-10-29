@@ -35,6 +35,9 @@ function resolveOperatorContactDiagnosticTarget(env: AppBindings): { tenantId: s
   return tenantId && locationId && phone ? { tenantId, locationId, phone } : null;
 }
 
+// Fixed, sanitized comparison target for the approved Test 005 diagnosis.
+const TEST005_CALLBACK_CONTACT_ID = "82Mbs4PR7MgyXh5uaqre";
+
 function diagnosticErrorCode(error: unknown): string {
   if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
     return "GHL_AUTHORIZATION_FAILED";
@@ -74,11 +77,11 @@ routes.post("/diagnostics/gohighlevel/contact-lookup",
     const runtime=createIntegrationRuntime("gohighlevel",{DB:c.env.DB,GHL_OAUTH_CLIENT_ID:c.env.GHL_OAUTH_CLIENT_ID,GHL_OAUTH_CLIENT_SECRET:c.env.GHL_OAUTH_CLIENT_SECRET,GHL_OAUTH_REDIRECT_URI:c.env.GHL_OAUTH_REDIRECT_URI});
     const contactId=await lookupGHLContactByPhone(createIntegrationContext(tenant,"gohighlevel",runtime),target.phone);
     const refreshOutcome=refreshRequired ? "completed" : "not_required";
-    if(!contactId) return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:false,locationMatched:false,errorCode:"CONTACT_NOT_FOUND"});
-    return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:true,locationMatched:true,errorCode:null});
+    if(!contactId) return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:false,locationMatched:false,callbackContactMatches:false,errorCode:"CONTACT_NOT_FOUND"});
+    return c.json({oauthAuthorized:true,refreshOutcome,uniqueContactFound:true,locationMatched:true,callbackContactMatches:contactId===TEST005_CALLBACK_CONTACT_ID,errorCode:null});
   } catch(error) {
     const authorizationFailed=error instanceof ApiError && (error.status === 401 || error.status === 403);
-    return c.json({oauthAuthorized:authorizationFailed ? false : "unverified",refreshOutcome:"failed",uniqueContactFound:false,locationMatched:false,errorCode:diagnosticErrorCode(error)},502);
+    return c.json({oauthAuthorized:authorizationFailed ? false : "unverified",refreshOutcome:"failed",uniqueContactFound:false,locationMatched:false,callbackContactMatches:false,errorCode:diagnosticErrorCode(error)},502);
   }
 });
 

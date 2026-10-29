@@ -121,7 +121,7 @@ test("operator contact diagnostic accepts a normal tenant API key without the Co
   try {
     const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, errorCode: null });
+    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, callbackContactMatches: false, errorCode: null });
   } finally {
     globalThis.fetch = originalFetch;
     db.sqlite.close();
@@ -152,7 +152,23 @@ test("operator contact diagnostic returns sanitized unique-match result", async 
   try {
     const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, errorCode: null });
+    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, callbackContactMatches: false, errorCode: null });
+  } finally {
+    globalThis.fetch = originalFetch;
+    db.sqlite.close();
+  }
+});
+
+test("operator contact diagnostic compares the lookup result to the fixed Test 005 callback identity", async () => {
+  const { db, key, env } = await fixture({ enabled: "true" });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ contacts: [{ id: "82Mbs4PR7MgyXh5uaqre", locationId: "Npx2IdDDRjXz2QW3Svx4" }] }), { status: 200 });
+  try {
+    const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body, { oauthAuthorized: true, refreshOutcome: "not_required", uniqueContactFound: true, locationMatched: true, callbackContactMatches: true, errorCode: null });
+    assert.equal(JSON.stringify(body).includes("82Mbs4PR7MgyXh5uaqre"), false);
   } finally {
     globalThis.fetch = originalFetch;
     db.sqlite.close();
@@ -174,7 +190,7 @@ test("operator contact diagnostic uses the normal OAuth refresh runtime when req
   try {
     const response = await app().request("/internal/console/diagnostics/gohighlevel/contact-lookup", { method: "POST", headers: { Authorization: `Bearer ${key}` } }, env);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "completed", uniqueContactFound: true, locationMatched: true, errorCode: null });
+    assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "completed", uniqueContactFound: true, locationMatched: true, callbackContactMatches: false, errorCode: null });
     const stored = db.sqlite.prepare("SELECT api_key, refresh_token FROM integration_credentials WHERE tenant_id='gmmetro' AND provider='gohighlevel'").get() as { api_key: string; refresh_token: string };
     assert.equal(stored.api_key, "refreshed-access");
     assert.equal(stored.refresh_token, "refreshed-refresh");
