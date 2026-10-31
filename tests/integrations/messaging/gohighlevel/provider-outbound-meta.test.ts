@@ -87,7 +87,7 @@ function seedBridge(db: LocalD1): void {
     INSERT INTO messaging_connections(id,tenant_id,provider,integration_id,external_id,status)
       VALUES ('meta-connection','${GHL_META_OUTBOUND_TENANT}','meta_whatsapp','meta-integration','${GHL_META_OUTBOUND_PHONE_NUMBER_ID}','active');
     INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id,channel)
-      VALUES ('meta-conversation','${GHL_META_OUTBOUND_TENANT}','meta_whatsapp','meta-connection','${GHL_META_OUTBOUND_RECIPIENT}','whatsapp');
+      VALUES ('meta-conversation','${GHL_META_OUTBOUND_TENANT}','meta_whatsapp','meta-connection','${GHL_META_OUTBOUND_RECIPIENT.slice(1)}','whatsapp');
   `);
 }
 
@@ -110,7 +110,7 @@ test("signed pilot reply resolves the fixed contact, conversation, and Meta dest
       tenantId: GHL_META_OUTBOUND_TENANT,
       connectionId: "meta-connection",
       conversationId: "meta-conversation",
-      recipientId: GHL_META_OUTBOUND_RECIPIENT,
+      recipientId: GHL_META_OUTBOUND_RECIPIENT.slice(1),
       text: "agent reply",
       effectKey: "ghl-provider:ghl-agent-message",
     });

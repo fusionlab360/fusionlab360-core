@@ -136,7 +136,7 @@ export async function deliverGHLProviderOutboundToMeta(
       tenantId: tenant.id,
       connectionId: connection.id,
       conversationId: matching[0]!.id,
-      recipientId: GHL_META_OUTBOUND_RECIPIENT,
+      recipientId: matching[0]!.external_participant_id,
       text: payload.message,
       effectKey: `ghl-provider:${payload.messageId}`,
     });
