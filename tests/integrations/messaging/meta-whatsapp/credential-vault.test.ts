@@ -190,10 +190,10 @@ test("Meta credential rejects tampered ciphertext, unavailable keys, and non-act
 test("Meta credential replacement uses optimistic versions and credential status prevents later use", async () => {
   const { db, vault } = fixture();
   try {
-    const created = await vault.create({ ...owner(), accessToken: "first-token", metadata: { scopes: ["scope-a"] } });
+    const created = await vault.create({ ...owner(), accessToken: "first-token", metadata: { scopes: ["scope-a"], expiresAt: Date.now() + 60 * 60 * 1000, lifecycle: "expiring" } });
     const replaced = await vault.replace({ ...owner(), accessToken: "second-token", expectedVersion: created.credentialVersion });
     assert.equal(replaced.credentialVersion, 2);
-    assert.deepEqual(replaced.metadata, { scopes: ["scope-a"] });
+    assert.deepEqual(replaced.metadata, { scopes: ["scope-a"], expiresAt: created.metadata.expiresAt, lifecycle: "expiring" });
     assert.equal((await vault.resolve(owner())).accessToken, "second-token");
     await assert.rejects(
       vault.replace({ ...owner(), accessToken: "stale-token", expectedVersion: created.credentialVersion }),

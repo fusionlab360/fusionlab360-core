@@ -118,6 +118,7 @@ test("authorized developer token onboarding stores an encrypted, expiring tenant
       scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
       expiresAt: provider.authorization.expiresAt,
       developerTest: true,
+      lifecycle: "expiring",
     });
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM integrations WHERE id IN ('ghl-a', 'staah-a')").get()?.count, 2);
   } finally { db.close(); }
@@ -181,6 +182,29 @@ test("Graph developer token validation accepts the documented debug-token data e
   const authorization = await provider.validateDeveloperTestToken("temporary-test-token");
   assert.deepEqual(authorization.scopes, ["whatsapp_business_management", "whatsapp_business_messaging"]);
   assert.equal(authorization.expiresAt, expiresAt * 1000);
+});
+
+test("Graph authorization marks a token without authoritative expiry as unverified", async () => {
+  let call = 0;
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => {
+      call += 1;
+      return call === 1
+        ? new Response(JSON.stringify({ access_token: "synthetic-access-token" }), { status: 200 })
+        : new Response(JSON.stringify({ data: {
+          app_id: "expected-app",
+          is_valid: true,
+          scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+          expires_at: 0,
+        } }), { status: 200 });
+    },
+  );
+  const authorization = await provider.exchangeAuthorizationCode("synthetic-code");
+  assert.equal(authorization.expiresAt, undefined);
+  assert.equal(authorization.lifecycle, "unverified_non_expiring");
 });
 
 test("Graph provider invokes fetch without rebinding its receiver", async () => {

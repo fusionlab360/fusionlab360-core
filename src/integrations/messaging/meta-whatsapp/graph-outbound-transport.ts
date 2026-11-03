@@ -1,7 +1,16 @@
 import type { AppBindings } from "../../../config/app";
 import type { MetaSendOutcome, MetaWhatsAppTransport } from "./outbound";
+import { classifyMetaTransportError } from "./transport-diagnostics";
 
 const VERSION = /^v\d+\.\d+$/;
+
+function metaProviderErrorCode(body: unknown): number | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const error = (body as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const code = (error as Record<string, unknown>).code;
+  return typeof code === "number" && Number.isSafeInteger(code) && code >= 0 ? code : undefined;
+}
 
 /** Thin Graph API adapter; all durable effect and tenant checks stay in outbound.ts. */
 export class MetaWhatsAppGraphOutboundTransport implements MetaWhatsAppTransport {
@@ -13,9 +22,20 @@ export class MetaWhatsAppGraphOutboundTransport implements MetaWhatsAppTransport
   }
 
   async sendText(input: { phoneNumberId: string; recipientId: string; text: string; accessToken: string }): Promise<MetaSendOutcome> {
+    let endpoint: string;
+    try {
+      endpoint = new URL(`https://graph.facebook.com/${this.version}/${encodeURIComponent(input.phoneNumberId)}/messages`).toString();
+    } catch {
+      return { state: "unknown", code: "transport_exception", transportCategory: "invalid_url" };
+    }
+
     let response: Response;
     try {
-      response = await this.request(`https://graph.facebook.com/${this.version}/${encodeURIComponent(input.phoneNumberId)}/messages`, {
+      // Cloudflare's global fetch must not be invoked with the transport
+      // instance as its receiver. Keep dependency injection, but call the
+      // captured function as a bare fetch just like the read-only diagnostic.
+      const request = this.request;
+      response = await request(endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${input.accessToken}`,
@@ -29,13 +49,23 @@ export class MetaWhatsAppGraphOutboundTransport implements MetaWhatsAppTransport
           text: { body: input.text },
         }),
       });
-    } catch {
-      return { state: "unknown", code: "transport_exception" };
+    } catch (error) {
+      return {
+        state: "unknown",
+        code: "transport_exception",
+        transportCategory: classifyMetaTransportError(error),
+      };
     }
 
-    if (response.status === 401 || response.status === 403) return { state: "permanent", code: "provider_unauthorized" };
-    if (response.status === 429 || response.status >= 500) return { state: "retryable", code: `provider_http_${response.status}` };
-    if (!response.ok) return { state: "permanent", code: `provider_http_${response.status}` };
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const errorCode = metaProviderErrorCode(body);
+      // Meta error 190 is an authentication failure. A plain 403 can instead
+      // represent permissions or policy and must not be treated as revocation.
+      if (response.status === 401 || errorCode === 190) return { state: "permanent", code: "META_CREDENTIAL_INVALID" };
+      if (response.status === 429 || response.status >= 500) return { state: "retryable", code: `provider_http_${response.status}` };
+      return { state: "permanent", code: `provider_http_${response.status}` };
+    }
 
     const body: unknown = await response.json().catch(() => null);
     const messages = body && typeof body === "object" && !Array.isArray(body)

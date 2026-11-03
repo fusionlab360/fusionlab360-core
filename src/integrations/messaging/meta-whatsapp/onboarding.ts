@@ -1,6 +1,9 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { createOAuthStateToken, hashOAuthStateToken } from "../../../core/security/oauth-state";
-import { createMetaWhatsAppCredentialVault } from "./credential-vault";
+import {
+  createMetaWhatsAppCredentialVault,
+  type MetaWhatsAppCredentialLifecycle,
+} from "./credential-vault";
 import { MetaWhatsAppConnectionRepository } from "./persistence/connection-repository";
 import { OAuthAuthorizationStateRepository } from "../../../persistence/repositories/oauth-authorization-state-repository";
 import { IntegrationRepository } from "../../../persistence/repositories/integration-repository";
@@ -14,6 +17,8 @@ export interface MetaVerifiedAuthorization {
   accessToken: string;
   scopes: readonly string[];
   expiresAt?: number;
+  /** Provider-sourced lifecycle evidence; never accepted directly from an API request. */
+  lifecycle?: MetaWhatsAppCredentialLifecycle;
 }
 export interface MetaWhatsAppOnboardingProvider {
   exchangeAuthorizationCode(code: string): Promise<MetaVerifiedAuthorization>;
@@ -232,9 +237,18 @@ export class MetaWhatsAppOnboardingService {
     }
     let credential;
     try {
+      const metadata = {
+        scopes: authorization.scopes,
+        expiresAt: authorization.expiresAt,
+        ...(authorization.lifecycle ? { lifecycle: authorization.lifecycle } : {}),
+        ...(authorization.lifecycle === "verified_non_expiring"
+          ? { nonExpiringVerification: "provider_token_debug_verified" as const }
+          : {}),
+        ...(developerTest ? { developerTest: true, lifecycle: "expiring" as const } : {}),
+      };
       credential = usable
-        ? await vault.replace({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt, ...(developerTest ? { developerTest: true } : {}) }, expectedVersion: usable.credentialVersion })
-        : await vault.create({ ...owner, accessToken: authorization.accessToken, metadata: { scopes: authorization.scopes, expiresAt: authorization.expiresAt, ...(developerTest ? { developerTest: true } : {}) } });
+        ? await vault.replace({ ...owner, accessToken: authorization.accessToken, metadata, expectedVersion: usable.credentialVersion })
+        : await vault.create({ ...owner, accessToken: authorization.accessToken, metadata });
     } catch (error) {
       throw classifyMetaOnboardingError(error, { stage: "credential_encryption", code: "meta_credential_encryption_failed" }, "Meta credential could not be persisted.");
     }

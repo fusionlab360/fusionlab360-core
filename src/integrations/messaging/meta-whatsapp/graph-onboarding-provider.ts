@@ -24,6 +24,12 @@ function safeProviderErrorCode(body: unknown): number | undefined {
   const code = (error as Record<string, unknown>).code;
   return typeof code === "number" && Number.isSafeInteger(code) && code >= 0 ? code : undefined;
 }
+function expiresAtFromDebug(info: Record<string, unknown>): number | undefined {
+  const expiresAtSeconds = info.expires_at;
+  return typeof expiresAtSeconds === "number" && Number.isSafeInteger(expiresAtSeconds) && expiresAtSeconds > 0
+    ? expiresAtSeconds * 1000
+    : undefined;
+}
 export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestAuthorizationProvider {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version: string, private readonly request: typeof fetch = fetch) {
     if (!appId.trim() || !appSecret.trim() || !VERSION.test(version)) throw new Error("Meta WhatsApp Graph onboarding is not configured.");
@@ -69,7 +75,18 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
     const scopes = Array.isArray(info.scopes) ? info.scopes.filter((scope): scope is string => typeof scope === "string") : [];
     if (info.app_id !== this.appId) throw new MetaWhatsAppOnboardingError("Meta token validation failed.", { stage: "meta_app_validation", code: "meta_app_id_mismatch" });
     if (info.is_valid !== true) throw new MetaWhatsAppOnboardingError("Meta token validation failed.", { stage: "meta_token_debug", code: "meta_token_invalid_or_expired" });
-    return { accessToken, scopes, expiresAt: typeof tokenResponse.body.expires_in === "number" ? Date.now() + tokenResponse.body.expires_in * 1000 : undefined };
+    const debugExpiry = expiresAtFromDebug(info);
+    const tokenExpiry = typeof tokenResponse.body.expires_in === "number" && tokenResponse.body.expires_in > 0
+      ? Date.now() + tokenResponse.body.expires_in * 1000
+      : undefined;
+    // A zero/missing expiry is deliberately not considered a verified permanent token.
+    // This provider has no trusted system-user-token attestation contract yet.
+    return {
+      accessToken,
+      scopes,
+      expiresAt: debugExpiry ?? tokenExpiry,
+      lifecycle: debugExpiry || tokenExpiry ? "expiring" : "unverified_non_expiring",
+    };
   }
   async validateDeveloperTestToken(accessToken: string): Promise<MetaVerifiedAuthorization> {
     const token = typeof accessToken === "string" ? accessToken.trim() : "";
@@ -102,7 +119,7 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
           : { stage: "meta_token_debug", code: "meta_token_invalid_or_expired", upstreamHttpStatus: debugResponse.upstreamHttpStatus, providerRequestId: debugResponse.providerRequestId },
       );
     }
-    return { accessToken: token, scopes, expiresAt: expiresAtSeconds * 1000 };
+    return { accessToken: token, scopes, expiresAt: expiresAtSeconds * 1000, lifecycle: "expiring" };
   }
   async verifyWabaAccess(accessToken: string, wabaId: string): Promise<boolean> { return (await this.json(`/${encodeURIComponent(wabaId)}?access_token=${encodeURIComponent(accessToken)}`, "meta_waba_access")).body.id === wabaId; }
   async listPhoneNumbers(accessToken: string, wabaId: string): Promise<readonly string[]> { const data = (await this.json(`/${encodeURIComponent(wabaId)}/phone_numbers?access_token=${encodeURIComponent(accessToken)}`, "meta_phone_membership")).body.data; return Array.isArray(data) ? data.flatMap((item) => item && typeof item === "object" && typeof (item as Record<string, unknown>).id === "string" ? [(item as Record<string, unknown>).id as string] : []) : []; }
