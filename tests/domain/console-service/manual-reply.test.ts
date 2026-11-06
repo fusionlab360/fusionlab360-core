@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { SignJWT } from "jose";
@@ -9,8 +10,18 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import type { AppBindings, AppVariables } from "../../../src/config/app";
 import routes from "../../../src/domain/console-service/routes";
 import { createApplication } from "../../../src/bootstrap/routes";
-import consoleApi from "../../../../fusionlab360-console/console-api/src/index";
 import { hashApiKey } from "../../../src/core/security/api-key";
+
+const consoleApiPath = [
+  resolve(process.cwd(), "../fusionlab360-console/console-api/src/index.ts"),
+  resolve(process.cwd(), "../../../fusionlab360-console/console-api/src/index.ts"),
+].find(existsSync);
+
+if (!consoleApiPath) {
+  throw new Error("The sibling FusionLab360 Console API source is required for this integration test.");
+}
+
+const { default: consoleApi } = await import(pathToFileURL(consoleApiPath).href);
 
 class LocalD1 {
   readonly sqlite = new DatabaseSync(":memory:");

@@ -24,10 +24,10 @@ export function isGHLProviderPilotLocationAuthorized(
   locationId: string | undefined,
 ): boolean {
   if (configuration.GHL_CUSTOM_PROVIDER_ENABLED !== "true") return false;
-  const allowedLocation = resolveSingleGHLProviderPilotLocation(
-    configuration.GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST,
-  );
-  return Boolean(allowedLocation && locationId?.trim() === allowedLocation);
+  const configured = configuration.GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST?.trim() ?? "";
+  const locations = configured.split(",").map((item) => item.trim()).filter(Boolean);
+  if (!locations.length || locations.some((value) => !LOCATION_ID_PATTERN.test(value)) || new Set(locations).size !== locations.length) return false;
+  return Boolean(locationId?.trim() && locations.includes(locationId.trim()));
 }
 
 export function requireGHLProviderPilotLocation(

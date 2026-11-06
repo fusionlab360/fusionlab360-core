@@ -29,16 +29,13 @@ type GHLIntegrationContext =
   | RequestContext
   | IntegrationContext;
 
-/** Keep contact lookup values out of provider request logs. */
+/** Keep caller-controlled path and query identifiers out of provider logs. */
 export function sanitizeGHLLogUrl(value: string): string {
   try {
     const url = new URL(value);
-    for (const parameter of ["phone", "email", "contactId"]) {
-      if (url.searchParams.has(parameter)) url.searchParams.set(parameter, "[redacted]");
-    }
-    return url.toString();
+    return `${url.origin}/[redacted-path]`;
   } catch {
-    return value.split("?", 1)[0] ?? value;
+    return "[redacted-url]";
   }
 }
 
@@ -52,62 +49,21 @@ export function sanitizeGHLLogUrl(value: string): string {
 function extractErrorMessage(
   status:
     number,
-
-  body:
-    unknown,
 ): string {
+  return `GoHighLevel API request failed (${status}).`;
+}
 
-  if (
-    body &&
-    typeof body ===
-      "object" &&
-    "message" in
-      body &&
-    typeof (
-      body as {
-        message?:
-          unknown;
-      }
-    ).message ===
-      "string"
-  ) {
+function extractSafeProviderErrorCode(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
 
-    return (
-      body as {
-        message:
-          string;
-      }
-    ).message;
+  const record = body as Record<string, unknown>;
+  for (const key of ["code", "errorCode", "error_code"]) {
+    const value = record[key];
+    if (typeof value === "string" && /^[a-z0-9_.-]{1,64}$/i.test(value)) {
+      return value;
+    }
   }
-
-
-  if (
-    body &&
-    typeof body ===
-      "object" &&
-    "error" in
-      body &&
-    typeof (
-      body as {
-        error?:
-          unknown;
-      }
-    ).error ===
-      "string"
-  ) {
-
-    return (
-      body as {
-        error:
-          string;
-      }
-    ).error;
-  }
-
-
-  return (
-    `GoHighLevel API request failed (${status})`
-  );
+  return undefined;
 }
 
 
@@ -506,7 +462,7 @@ export async function ghlFetchAuthenticated<T>(
     logger.warn(
       "GHL OAuth request returned 401; forcing credential refresh.",
       {
-        endpoint,
+        endpoint: sanitizeGHLLogUrl(`${GHL.BASE_URL}${endpoint}`),
         tenantId:
           context.tenant.id,
       },
@@ -548,8 +504,8 @@ export async function ghlFetchAuthenticated<T>(
     const message =
       extractErrorMessage(
         response.status,
-        body,
       );
+    const providerErrorCode = extractSafeProviderErrorCode(body);
 
 
     logger.error(
@@ -580,7 +536,9 @@ export async function ghlFetchAuthenticated<T>(
     throw new ApiError(
       response.status,
       message,
-      body,
+      providerErrorCode
+        ? { code: providerErrorCode }
+        : undefined,
     );
   }
 

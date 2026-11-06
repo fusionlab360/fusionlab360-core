@@ -102,8 +102,6 @@ async function syncContactNotes(
   console.log(
     "GHL NOTES: starting",
     {
-      contactId,
-      userId,
       bodyLength: body.length,
     },
   );
@@ -117,13 +115,7 @@ async function syncContactNotes(
   console.log(
     "GHL NOTES: existing notes",
     {
-      count: response.notes?.length ?? 0,
-      notes:
-        response.notes?.map((note) => ({
-          id: note.id,
-          title: note.title,
-          bodyLength: note.body?.length ?? 0,
-        })),
+      existingNotesCount: response.notes?.length ?? 0,
     },
   );
 
@@ -137,13 +129,9 @@ async function syncContactNotes(
   if (existingNote?.id) {
     console.log(
       "GHL NOTES: updating existing note",
-      {
-        noteId: existingNote.id,
-      },
     );
 
-    const result =
-  await updateContactNote(
+    await updateContactNote(
     context,
 
     contactId,
@@ -162,11 +150,6 @@ async function syncContactNotes(
 
     console.log(
       "GHL NOTES: update successful",
-      {
-        noteId:
-          result.note?.id ??
-          existingNote.id,
-      },
     );
 
     return;
@@ -176,8 +159,7 @@ async function syncContactNotes(
     "GHL NOTES: creating new note",
   );
 
-  const result =
-    await createContactNote(
+  await createContactNote(
       context,
       contactId,
       {
@@ -190,10 +172,6 @@ async function syncContactNotes(
 
   console.log(
     "GHL NOTES: create successful",
-    {
-      noteId:
-        result.note?.id,
-    },
   );
 }
 
@@ -805,7 +783,6 @@ logger.info(
     provider: "gohighlevel",
     correlationId: context.requestId,
     outcome: "succeeded",
-    contactId,
   },
 );
 

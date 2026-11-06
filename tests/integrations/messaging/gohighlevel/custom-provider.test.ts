@@ -89,6 +89,15 @@ test("pilot location gate rejects other registered and unknown locations", () =>
   assert.equal(isGHLProviderPilotLocationAuthorized({ GHL_CUSTOM_PROVIDER_ENABLED: "true" }, "location-a"), false);
 });
 
+test("explicit location allowlists may safely name multiple locations for lifecycle-controlled routing", () => {
+  const config = { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a, location-b" };
+  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-a"), true);
+  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-b"), true);
+  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-c"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,*" }, "location-a"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,location-a" }, "location-a"), false);
+});
+
 test("inbound publisher fails before transport for an unauthorized location or missing provider configuration", async () => {
   const context = { tenant: tenant("location-b") } as IntegrationContext;
   await assert.rejects(

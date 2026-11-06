@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import type { AuthenticatedPrincipal } from "../../core/security/principal";
 import { authService } from "./service";
 import { LoginSchema, RefreshSchema } from "./schemas";
 
@@ -29,11 +30,22 @@ export async function logout(c: Context) {
 }
 
 export async function me(c: Context) {
-  const context = c.get("context");
+  const principal = c.get("principal") as AuthenticatedPrincipal | undefined;
 
-  const user = await authService.currentUser(
-    context.userId,
-  );
+  if (
+    principal?.type !== "user" ||
+    !principal.userId ||
+    !principal.clientId ||
+    !principal.role
+  ) {
+    return c.json({ success: false, message: "Forbidden." }, 403);
+  }
 
-  return c.json(user);
+  return c.json({
+    id: principal.userId,
+    tenantId: principal.tenantId,
+    clientId: principal.clientId,
+    role: principal.role,
+    permissions: [...principal.permissions],
+  });
 }

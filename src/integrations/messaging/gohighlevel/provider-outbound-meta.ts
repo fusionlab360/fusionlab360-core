@@ -8,6 +8,7 @@ import { MetaWhatsAppConnectionRepository } from "../meta-whatsapp/persistence/c
 import type { Tenant } from "../../../tenants/types";
 import type { GHLProviderOutboundPayload } from "./provider-outbound";
 import { resolveGHLConversationProviderId } from "./custom-conversation-provider";
+import { isMetaConnectionEligible } from "../meta-whatsapp/connection-eligibility";
 
 export const GHL_META_OUTBOUND_TENANT = "gmmetro";
 export const GHL_META_OUTBOUND_LOCATION = "Npx2IdDDRjXz2QW3Svx4";
@@ -51,6 +52,7 @@ type BridgeBindings = Pick<AppBindings,
   | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION"
   | "META_WHATSAPP_GRAPH_API_VERSION"
   | "GHL_META_WHATSAPP_OUTBOUND_ENABLED"
+  | "WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED"
 >;
 
 export interface GHLMetaOutboundDependencies {
@@ -79,14 +81,16 @@ export async function deliverGHLProviderOutboundToMeta(
   payload: GHLProviderOutboundPayload,
   dependencies: GHLMetaOutboundDependencies = {},
 ): Promise<MetaSendOutcome> {
-  if (!isGHLMetaOutboundPilotEnabled(env) || tenant.id !== GHL_META_OUTBOUND_TENANT) {
+  const lifecycleEnabled = env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED === "true";
+  if (!isGHLMetaOutboundPilotEnabled(env) || (!lifecycleEnabled && tenant.id !== GHL_META_OUTBOUND_TENANT)) {
     throw new GHLMetaOutboundFailure("PROVIDER_IDENTITY_REJECTED", false, "The outbound pilot identity is not authorized.");
   }
   const locationId = tenant.integrations.crm.credentials.locationId.trim();
-  if (locationId !== GHL_META_OUTBOUND_LOCATION || payload.locationId !== locationId) {
+  if ((!lifecycleEnabled && locationId !== GHL_META_OUTBOUND_LOCATION) || payload.locationId !== locationId) {
     throw new GHLMetaOutboundFailure("PROVIDER_IDENTITY_REJECTED", false, "The GHL location is not authorized.");
   }
-  if (resolveGHLConversationProviderId(tenant) !== GHL_META_OUTBOUND_PROVIDER) {
+  const providerId = resolveGHLConversationProviderId(tenant);
+  if (!providerId || (!lifecycleEnabled && providerId !== GHL_META_OUTBOUND_PROVIDER)) {
     throw new GHLMetaOutboundFailure("PROVIDER_IDENTITY_REJECTED", false, "The GHL provider is not authorized.");
   }
   if (payload.type !== "SMS") {
@@ -95,14 +99,23 @@ export async function deliverGHLProviderOutboundToMeta(
   if (!payload.userId?.trim()) {
     throw new GHLMetaOutboundFailure("PROVIDER_IDENTITY_REJECTED", false, "An identified GHL agent reply is required.");
   }
-  if (normalizeMetaSenderPhone(payload.phone) !== GHL_META_OUTBOUND_RECIPIENT) {
+  const recipientPhone = normalizeMetaSenderPhone(payload.phone);
+  if (!recipientPhone || (!lifecycleEnabled && recipientPhone !== GHL_META_OUTBOUND_RECIPIENT)) {
     throw new GHLMetaOutboundFailure("PROVIDER_IDENTITY_REJECTED", false, "The GHL recipient is not authorized.");
   }
 
-  const connection = await new MetaWhatsAppConnectionRepository(env.DB)
-    .findActiveByPhoneNumberId(GHL_META_OUTBOUND_PHONE_NUMBER_ID);
+  const connectionRepository = new MetaWhatsAppConnectionRepository(env.DB);
+  const connection = lifecycleEnabled
+    ? await connectionRepository.findActiveByTenantAndGHLBinding(tenant.id, locationId, providerId)
+    : await connectionRepository.findActiveByPhoneNumberId(GHL_META_OUTBOUND_PHONE_NUMBER_ID);
   if (!connection || connection.tenantId !== tenant.id) {
     throw new GHLMetaOutboundFailure("META_CONNECTION_UNAVAILABLE", false, "The Meta connection is unavailable.");
+  }
+  if (!await isMetaConnectionEligible(env.DB, env, tenant.id, connection.id)) {
+    throw new GHLMetaOutboundFailure("META_CONNECTION_DISABLED", false, "The Meta connection is not activated.");
+  }
+  if (!await isMetaConnectionEligible(env.DB, env, tenant.id, connection.id)) {
+    throw new GHLMetaOutboundFailure("META_CONNECTION_DISABLED", false, "The Meta connection is not activated.");
   }
 
   const runtime = createIntegrationRuntime("gohighlevel", {
@@ -114,7 +127,7 @@ export async function deliverGHLProviderOutboundToMeta(
   const context = createIntegrationContext(tenant, "gohighlevel", runtime);
   let contactId: string | null;
   try {
-    contactId = await (dependencies.lookupContact ?? lookupGHLContactByPhone)(context, GHL_META_OUTBOUND_RECIPIENT);
+    contactId = await (dependencies.lookupContact ?? lookupGHLContactByPhone)(context, recipientPhone);
   } catch (error) {
     const retryable = !(error instanceof ApiError) || error.status === 408 || error.status === 429 || error.status >= 500;
     throw new GHLMetaOutboundFailure("GHL_CONTACT_LOOKUP_FAILED", retryable, "The GHL contact lookup could not be completed.");
@@ -130,7 +143,7 @@ export async function deliverGHLProviderOutboundToMeta(
     ORDER BY updated_at DESC
   `).bind(tenant.id, connection.id).all<{ id: string; external_participant_id: string }>();
   const matching = (candidates.results ?? []).filter((candidate) =>
-    normalizeMetaSenderPhone(candidate.external_participant_id) === GHL_META_OUTBOUND_RECIPIENT,
+    normalizeMetaSenderPhone(candidate.external_participant_id) === recipientPhone,
   );
   if (matching.length !== 1) {
     throw new GHLMetaOutboundFailure("META_CONVERSATION_NOT_UNIQUE", false, "The Meta conversation is unavailable or ambiguous.");

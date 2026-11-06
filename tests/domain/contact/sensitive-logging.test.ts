@@ -306,6 +306,47 @@ test("GHL contact upsert diagnostics omit request and response payloads", async 
   });
 });
 
+test("GHL contact note diagnostics omit contact, user, note identifiers, and note content", async () => {
+  await withDebugLogging(async () => {
+    const { goHighLevelAdapter } = await import("../../../src/integrations/crm/gohighlevel/adapter");
+    const originalFetch = globalThis.fetch;
+    const contactId = "PRIVATE_CONTACT_ID_SENTINEL";
+    const userId = "PRIVATE_GHL_USER_ID_SENTINEL";
+    const noteId = "PRIVATE_NOTE_ID_SENTINEL";
+    const noteBody = "PRIVATE_CONTACT_NOTE_CONTENT_SENTINEL";
+    const context = makeContext();
+    context.tenant.integrations.crm.configuration!.providerConfiguration = { userId };
+
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/contacts/upsert")) {
+        return Response.json({ contact: { id: contactId, firstName: "Synthetic" } });
+      }
+      if (url.includes(`/contacts/${contactId}/notes`)) {
+        if (init?.method === "POST") {
+          return Response.json({ note: { id: noteId } });
+        }
+        return Response.json({ notes: [] });
+      }
+      throw new Error("Unexpected synthetic GHL request.");
+    };
+
+    try {
+      const { output } = await captureLogs(() => goHighLevelAdapter.upsertContact(
+        context,
+        { firstName: "Synthetic", email: "private@example.invalid", notes: noteBody },
+      ));
+
+      assert.match(output, /existingNotesCount/);
+      for (const privateValue of [contactId, userId, noteId, noteBody, "private@example.invalid"]) {
+        assert.equal(output.includes(privateValue), false, `Unexpected log value: ${privateValue}`);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test("GHL contact event sync logs omit event values on success and failure", async () => {
   await withDebugLogging(async () => {
     const { goHighLevelAdapter } = await import("../../../src/integrations/crm/gohighlevel/adapter");

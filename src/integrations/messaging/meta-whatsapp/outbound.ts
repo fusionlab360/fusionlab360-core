@@ -5,6 +5,7 @@ import { MessagingConversationRepository } from "../../../persistence/repositori
 import { createMetaWhatsAppGraphOutboundTransport } from "./graph-outbound-transport";
 import type { MetaTransportFailureCategory } from "./transport-diagnostics";
 import { formatMetaTransportErrorCode } from "./transport-diagnostics";
+import { isMetaConnectionEligible } from "./connection-eligibility";
 
 export type MetaSendOutcome =
   | { state: "accepted"; providerMessageId: string }
@@ -32,12 +33,13 @@ export class MetaWhatsAppOutboundError extends Error {
 }
 
 export class MetaWhatsAppOutboundService {
-  constructor(private readonly db: D1Database, private readonly bindings: Pick<AppBindings, "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION">, private readonly transport: MetaWhatsAppTransport) {}
+  constructor(private readonly db: D1Database, private readonly bindings: Pick<AppBindings, "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION" | "WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED">, private readonly transport: MetaWhatsAppTransport) {}
   async send(input: { tenantId: string; connectionId: string; conversationId: string; recipientId: string; text: string; effectKey: string }): Promise<MetaSendOutcome> {
     if (!input.text.trim() || input.text.length > 4096 || !input.recipientId.trim() || !input.effectKey.trim()) throw new MetaWhatsAppOutboundError("Outbound Meta message is invalid.", "PROVIDER_PAYLOAD_REJECTED");
     const connection = await new MetaWhatsAppConnectionRepository(this.db).findByTenantAndId(input.tenantId, input.connectionId);
     if (!connection) throw new MetaWhatsAppOutboundError("Meta connection is unavailable.", "META_CONNECTION_UNAVAILABLE");
     if (connection.status !== "active") throw new MetaWhatsAppOutboundError("Meta connection is disabled.", "META_CONNECTION_DISABLED");
+    if (!await isMetaConnectionEligible(this.db, this.bindings, input.tenantId, input.connectionId)) throw new MetaWhatsAppOutboundError("Meta connection is not activated.", "META_CONNECTION_DISABLED");
     const conversation = await this.db.prepare(`SELECT 1 FROM messaging_conversations WHERE id=? AND tenant_id=? AND provider='meta_whatsapp' AND connection_id=? AND external_participant_id=?`).bind(input.conversationId,input.tenantId,input.connectionId,input.recipientId).first();
     if (!conversation) throw new MetaWhatsAppOutboundError("Meta conversation is not authorized for this recipient.", "META_CONVERSATION_NOT_UNIQUE");
     const lastInbound = await this.db.prepare(`SELECT occurred_at FROM messaging_messages WHERE tenant_id=? AND conversation_id=? AND direction='inbound' AND content_type='text' ORDER BY occurred_at DESC LIMIT 1`).bind(input.tenantId,input.conversationId).first<{occurred_at:string}>();
@@ -101,7 +103,7 @@ export class MetaWhatsAppOutboundService {
   }
 }
 
-export function createMetaWhatsAppOutboundService(bindings: Pick<AppBindings, "DB" | "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION" | "META_WHATSAPP_GRAPH_API_VERSION">): MetaWhatsAppOutboundService {
+export function createMetaWhatsAppOutboundService(bindings: Pick<AppBindings, "DB" | "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION" | "META_WHATSAPP_GRAPH_API_VERSION" | "WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED">): MetaWhatsAppOutboundService {
   return new MetaWhatsAppOutboundService(
     bindings.DB,
     bindings,

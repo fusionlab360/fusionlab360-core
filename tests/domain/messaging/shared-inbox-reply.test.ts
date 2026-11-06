@@ -53,7 +53,14 @@ async function fixture(provider = "meta_whatsapp") {
   db.sqlite.prepare("INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id) VALUES (?,?,?,?,?)").run("conversation-b", "tenant-b", "meta_whatsapp", "connection-b", "participant-b");
   db.sqlite.prepare("INSERT INTO messaging_messages(id,tenant_id,conversation_id,provider,external_message_id,direction,occurred_at,content_type,text_content) VALUES (?,?,?,?,?,?,?,?,?)").run("inbound-a", "tenant-a", "conversation-a", "meta_whatsapp", "inbound-a", "inbound", new Date().toISOString(), "text", "hello");
   const vault = createMetaWhatsAppCredentialVault(db.binding(), bindings);
-  await vault.create({ tenantId: "tenant-a", integrationId: "integration-a", connectionId: "connection-a", provider: "meta_whatsapp", accessToken: "synthetic-token" });
+  await vault.create({
+    tenantId: "tenant-a",
+    integrationId: "integration-a",
+    connectionId: "connection-a",
+    provider: "meta_whatsapp",
+    accessToken: "synthetic-token",
+    metadata: { expiresAt: Date.now() + 3_600_000 },
+  });
   return db;
 }
 

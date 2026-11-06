@@ -33,10 +33,12 @@ class LocalD1 {
   binding(): D1Database { return this as unknown as D1Database; }
 }
 
-test("GHL request diagnostics redact contact lookup values", () => {
-  const sanitized = sanitizeGHLLogUrl("https://services.leadconnectorhq.com/contacts/lookup?locationId=location-a&phone=%2B60176177115");
+test("GHL request diagnostics redact caller-controlled path and query values", () => {
+  const sanitized = sanitizeGHLLogUrl("https://services.leadconnectorhq.com/contacts/contact-private/notes?locationId=location-a&phone=%2B60176177115");
   assert.equal(sanitized.includes("60176177115"), false);
-  assert.equal(sanitized.includes("%5Bredacted%5D"), true);
+  assert.equal(sanitized.includes("contact-private"), false);
+  assert.equal(sanitized.includes("location-a"), false);
+  assert.equal(sanitized.endsWith("/[redacted-path]"), true);
 });
 
 function app() {

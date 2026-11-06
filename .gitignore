@@ -27,6 +27,10 @@ coverage/
 *.sqlite
 *.sqlite-*
 
+# local worktree and recovered production-source material
+/.worktrees/
+/diagnostics/p01-source-recovery/production-worker-version.json
+
 # logs
 logs/
 *.log

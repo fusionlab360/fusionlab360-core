@@ -44,6 +44,32 @@ function mapRow(row: Record<string, unknown>): MetaWhatsAppCredentialRecord {
 }
 
 export class MetaWhatsAppCredentialRepository extends BaseRepository {
+  async findLifecycleForOwner(owner: MetaWhatsAppCredentialOwner): Promise<{ status: MetaWhatsAppCredentialStatus; configured: boolean; metadata: string } | null> {
+    const row = await this.db.prepare(`
+      SELECT credential.status,
+        CASE
+          WHEN credential.ciphertext IS NOT NULL AND TRIM(credential.ciphertext) <> ''
+            AND credential.nonce IS NOT NULL AND TRIM(credential.nonce) <> ''
+            AND credential.algorithm = 'AES-GCM'
+          THEN 1 ELSE 0
+        END AS configured,
+        credential.metadata
+      FROM meta_whatsapp_credentials credential
+      JOIN meta_whatsapp_connections connection ON connection.id = credential.connection_id
+      JOIN integrations integration ON integration.id = credential.integration_id
+      WHERE credential.tenant_id = ?
+        AND credential.integration_id = ?
+        AND credential.connection_id = ?
+        AND credential.provider = 'meta_whatsapp'
+        AND connection.tenant_id = credential.tenant_id
+        AND connection.integration_id = credential.integration_id
+        AND integration.tenant_id = credential.tenant_id
+        AND integration.provider = credential.provider
+      LIMIT 1
+    `).bind(owner.tenantId, owner.integrationId, owner.connectionId).first<{ status: MetaWhatsAppCredentialStatus; configured: number; metadata: string }>();
+    return row ? { status: row.status, configured: row.configured === 1, metadata: row.metadata } : null;
+  }
+
   async create(input: NewMetaWhatsAppCredential): Promise<boolean> {
     const result = await this.db.prepare(`
       INSERT INTO meta_whatsapp_credentials (
