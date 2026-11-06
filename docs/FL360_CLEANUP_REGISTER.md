@@ -27,12 +27,12 @@ The original main checkout already had modified architecture/readiness/roadmap d
 
 ## Registered worktree disposition
 
-Status counts below were collected before committing the consolidated candidate. `Changed vs candidate` compares each worktree's tracked modifications and nonignored untracked files by relative-path SHA-256; ignored local state is excluded. A content mismatch is not a semantic merge, so dirty worktrees are retained even when their paths appear in the candidate. No merge/rebase/cherry-pick operation was in progress. All listed heads had zero commits unique to `main`, except the candidate after its local commit; `fusionlab360-core-c2e` pointed to an ancestor of `main`.
+Status counts are from the post-source-commit inspection. `Changed vs candidate` compares each worktree's tracked modifications and nonignored untracked files by relative-path SHA-256; ignored local state is excluded. A content mismatch is not a semantic merge, so dirty worktrees are retained even when their paths appear in the candidate. No merge/rebase/cherry-pick operation was in progress. The candidate source commit is `763937b`; `fusionlab360-core-c2e` pointed to an ancestor of `main` before its safe normal removal.
 
 | Path | Branch / HEAD | Tracked / untracked / ignored files | Changed vs candidate (same / different / unique paths) | Disposition and reason |
 |---|---|---:|---:|---|
 | Main checkout `D:\Important Fusion Migration\fusionlab360-core` | `main` / `9381fb84` | 17 / 1,243 / 7,304 | Not compared; original dirty checkout | `KEEP_ACTIVE` — preserve all original dirty WABA changes. |
-| `.worktrees\fl360-clean-consolidation` | `integration/fl360-core-consolidated` / `9381fb84` before commit | 24 / 39 / 3,574 before commit | Canonical candidate | `KEEP_ACTIVE` — authoritative local consolidation. |
+| `.worktrees\fl360-clean-consolidation` | `integration/fl360-core-consolidated` / `763937b` source commit | 0 / 0 / 3,574 | Canonical candidate | `KEEP_ACTIVE` — authoritative local consolidation; clean after source commit. |
 | `.worktrees\ipaas-completion-remediation` | detached / `9381fb84` | 11 / 6 / 0 | 14 / 1 / 2 | `KEEP_UNMERGED` — 14 manifest files match; `src/config/app.ts` is the deliberate merged hunk; its unique register/manifest files remain in the source worktree. |
 | `.worktrees\p02-ghl-page` | detached / `9381fb84` | 34 / 2 / 3,474 | 3 / 20 / 13 | `KEEP_UNMERGED` — P0-2/P0-3 lifecycle/page work is distinct; 13 changed paths are absent from the candidate. |
 | `.worktrees\security-s1` | `codex/security-s1` / `9381fb84` | 35 / 9 / 0 | 0 / 35 / 9 | `KEEP_UNMERGED` — S1 implementation is intentionally excluded and has uncommitted source. |
@@ -46,7 +46,7 @@ Status counts below were collected before committing the consolidated candidate.
 | `D:\Important Fusion Migration\fusionlab360-core-p01-release` | detached / `9381fb84` | 2 / 2 / 3,367 | 2 / 2 / 0 | `KEEP_ROLLBACK` — P0-1 release source is a rollback/provenance artifact; preserve its ignored state. |
 | `D:\Important Fusion Migration\fusionlab360-core-c2e` | detached / `1c3cdeaa` | 0 / 0 / 3,367 before removal | 0 / 0 / 0 | `SAFE_TO_REMOVE`, removed with normal `git worktree remove` (no force): commit is an ancestor of `main`, no source changes or untracked files existed, `.wrangler` held zero files, and all ignored files were `node_modules`. |
 
-The original `main` and all remaining dirty/rollback worktrees are retained. No branch was deleted. `codex/security-s1` and `codex/waba-s1-p04-integration` remain checked out with uncommitted changes. The candidate's exact post-commit branch/HEAD and clean status are recorded in the release-source register.
+The original `main` and all remaining dirty/rollback worktrees are retained. No branch was deleted. `codex/security-s1` and `codex/waba-s1-p04-integration` remain checked out with uncommitted changes. The candidate source commit and clean status are recorded in the release-source register; this cleanup-register update is a documentation-only commit on the same candidate branch.
 
 ## Ignore and local-state policy
 
