@@ -8,6 +8,7 @@ import { MetaWhatsAppConnectionRepository } from "./persistence/connection-repos
 import { OAuthAuthorizationStateRepository } from "../../../persistence/repositories/oauth-authorization-state-repository";
 import { IntegrationRepository } from "../../../persistence/repositories/integration-repository";
 import type { AppBindings } from "../../../config/app";
+import { isMetaLifecycleSchemaMissing } from "./connection-eligibility";
 
 export const META_ONBOARDING_PERMISSION = "integrations:oauth:connect";
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -57,6 +58,7 @@ export type MetaOnboardingDiagnosticCode =
   | "meta_credential_encryption_failed"
   | "meta_connection_persistence_failed"
   | "meta_connection_activation_failed"
+  | "meta_lifecycle_schema_required"
   | "meta_authorization_exchange_failed"
   | "meta_state_invalid"
   | "meta_input_invalid"
@@ -117,7 +119,7 @@ export class MetaWhatsAppOnboardingService {
     return { state, expiresAt };
   }
 
-  async complete(input: { tenantId: string; operatorId: string; state: string; code: string; wabaId: string; phoneNumberId: string }): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
+  async complete(input: { tenantId: string; operatorId: string; state: string; code: string; wabaId: string; phoneNumberId: string }): Promise<{ connectionId: string; status: "active"; activationState: string; credentialVersion: number }> {
     return this.completeAuthorized(
       input,
       false,
@@ -128,7 +130,7 @@ export class MetaWhatsAppOnboardingService {
   async completeDeveloperTest(
     input: { tenantId: string; operatorId: string; state: string; accessToken: string; wabaId: string; phoneNumberId: string },
     provider: MetaDeveloperTestAuthorizationProvider,
-  ): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
+  ): Promise<{ connectionId: string; status: "active"; activationState: string; credentialVersion: number }> {
     return this.completeAuthorized(input, true, async () => {
       let authorization: MetaVerifiedAuthorization;
       try {
@@ -154,7 +156,7 @@ export class MetaWhatsAppOnboardingService {
     input: { tenantId: string; operatorId: string; state: string; wabaId: string; phoneNumberId: string },
     developerTest: boolean,
     loadAuthorization: () => Promise<MetaVerifiedAuthorization>,
-  ): Promise<{ connectionId: string; status: "active"; credentialVersion: number }> {
+  ): Promise<{ connectionId: string; status: "active"; activationState: string; credentialVersion: number }> {
     const state = await new OAuthAuthorizationStateRepository(this.db).consume(await hashOAuthStateToken(input.state));
     if (!state || state.provider !== "meta_whatsapp" || state.purpose !== "embedded_signup" || state.tenantId !== input.tenantId || state.context.operatorId !== input.operatorId || state.context.action !== "activate") {
       throw new MetaWhatsAppOnboardingError(
@@ -164,6 +166,49 @@ export class MetaWhatsAppOnboardingService {
     }
     const wabaId = identifier(input.wabaId); const phoneNumberId = identifier(input.phoneNumberId);
     if (!wabaId || !phoneNumberId) throw new MetaWhatsAppOnboardingError("Onboarding completion is incomplete.", { stage: "input_validation", code: "meta_input_invalid" });
+
+    const integrations = new IntegrationRepository(this.db);
+    const integration = await integrations.findByTenantAndProvider(input.tenantId, "meta_whatsapp");
+    if (!integration) throw new MetaWhatsAppOnboardingError("Meta WhatsApp integration was not found.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    if (integration.id !== state.integrationId) throw new MetaWhatsAppOnboardingError("The Meta WhatsApp integration no longer matches this onboarding attempt.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    const connections = new MetaWhatsAppConnectionRepository(this.db);
+    let connection = await connections.findByTenantIntegrationAndPhoneNumberId(input.tenantId, integration.id, phoneNumberId);
+    let lifecycleState: string | null = null;
+    let lifecycleSchemaReady = true;
+    try {
+      const existingLifecycle = await this.db.prepare(`
+        SELECT activation_state AS state FROM meta_whatsapp_connections
+        WHERE tenant_id = ? AND id = ? LIMIT 1
+      `).bind(input.tenantId, connection?.id ?? "").first<{ state: string }>();
+      if (connection) lifecycleState = existingLifecycle?.state ?? null;
+      if (connection && !existingLifecycle) lifecycleSchemaReady = false;
+    } catch (error) {
+      if (!isMetaLifecycleSchemaMissing(error)) {
+        throw new MetaWhatsAppOnboardingError(
+          "The Meta connection lifecycle state could not be verified.",
+          { stage: "connection_persistence", code: "meta_connection_persistence_failed" },
+        );
+      }
+      lifecycleSchemaReady = false;
+    }
+    if (!lifecycleSchemaReady && (!connection || connection.status !== "active")) {
+      throw new MetaWhatsAppOnboardingError(
+        "New Meta connections require the lifecycle schema and explicit activation.",
+        { stage: "connection_persistence", code: "meta_lifecycle_schema_required" },
+      );
+    }
+    if (lifecycleSchemaReady && connection && !lifecycleState) {
+      throw new MetaWhatsAppOnboardingError(
+        "The existing Meta connection lifecycle state could not be verified.",
+        { stage: "connection_persistence", code: "meta_connection_persistence_failed" },
+      );
+    }
+    if (lifecycleState === "suspended" || lifecycleState === "revoked") {
+      throw new MetaWhatsAppOnboardingError(
+        "Suspended or revoked Meta connections cannot be reactivated through onboarding.",
+        { stage: "connection_persistence", code: "meta_connection_persistence_failed" },
+      );
+    }
     let authorization: MetaVerifiedAuthorization;
     try {
       authorization = await loadAuthorization();
@@ -199,11 +244,6 @@ export class MetaWhatsAppOnboardingService {
     if (!hasWaba) throw new MetaWhatsAppOnboardingError("Meta ownership or webhook subscription verification failed.", { stage: "meta_waba_access", code: "meta_waba_access_failed" });
     if (!phones.includes(phoneNumberId)) throw new MetaWhatsAppOnboardingError("Meta ownership or webhook subscription verification failed.", { stage: "meta_phone_membership", code: "meta_phone_membership_failed" });
     if (!subscribed) throw new MetaWhatsAppOnboardingError("Meta ownership or webhook subscription verification failed.", { stage: "meta_app_subscription", code: "meta_app_subscription_failed" });
-    const integrations = new IntegrationRepository(this.db);
-    const integration = await integrations.findByTenantAndProvider(input.tenantId, "meta_whatsapp");
-    if (!integration || integration.id !== state.integrationId) throw new MetaWhatsAppOnboardingError("The Meta WhatsApp integration no longer matches this onboarding attempt.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
-    const connections = new MetaWhatsAppConnectionRepository(this.db);
-    let connection = await connections.findByTenantIntegrationAndPhoneNumberId(input.tenantId, integration.id, phoneNumberId);
     if (!connection) {
       const id = crypto.randomUUID();
       try {
@@ -259,7 +299,12 @@ export class MetaWhatsAppOnboardingService {
         throw classifyMetaOnboardingError(error, { stage: "connection_activation", code: "meta_connection_activation_failed" }, "Meta credential was stored but connection activation was not completed; retry authorization recovery.");
       }
     }
-    return { connectionId: connection.id, status: "active", credentialVersion: credential.credentialVersion };
+    return {
+      connectionId: connection.id,
+      status: "active",
+      activationState: lifecycleSchemaReady ? lifecycleState ?? "pending" : "not_migrated",
+      credentialVersion: credential.credentialVersion,
+    };
   }
 
   async disable(input: { tenantId: string; integrationId: string; connectionId: string; expectedCredentialVersion: number }): Promise<void> {

@@ -120,6 +120,8 @@ export type AppBindings = {
   /** Opt-in only: sends the single GHL provider pilot's agent replies through Meta. */
   GHL_META_WHATSAPP_OUTBOUND_ENABLED?: string;
   WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED?: string;
+  /** Exact operator-verified installation references permitted for activation. */
+  WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST?: string;
   /** Exact, operator-approved evidence references eligible for legacy review. */
   WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST?: string;
 

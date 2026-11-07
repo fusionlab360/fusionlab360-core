@@ -23,6 +23,8 @@ $version = @(
     'env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("false")',
     'env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("false")',
     'env.WABA_OPS_ALERTS_ENABLED ("false")',
+    'env.WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST ("")',
+    'env.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST ("")',
     'env.META_WHATSAPP_GHL_INBOUND_ENABLED ("true")',
     'env.META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST ("gmmetro")'
 ) + ($secretNames | ForEach-Object { "Secret Name: $_" }) + 'Secret Value: fake-token-value'
@@ -63,8 +65,10 @@ try {
     Check-Case 'context-verifier-enabled' ($valid.Replace('env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("false")', 'env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("true")')) $active 200 $false
     Check-Case 'lifecycle-enforcement-enabled' ($valid.Replace('env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("false")', 'env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("true")')) $active 200 $false
     Check-Case 'ops-alerts-enabled' ($valid.Replace('env.WABA_OPS_ALERTS_ENABLED ("false")', 'env.WABA_OPS_ALERTS_ENABLED ("true")')) $active 200 $false
+    Check-Case 'activation-evidence-not-empty' ($valid.Replace('env.WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST ("")', 'env.WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST ("operator-record")')) $active 200 $false
+    Check-Case 'legacy-review-evidence-not-empty' ($valid.Replace('env.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST ("")', 'env.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST ("tenant-a:operator-record")')) $active 200 $false
     Check-Case 'health-failed' $valid $active 503 $false
-    Write-Output 'Release verifier fixtures: 12/12 passed'
+    Write-Output 'Release verifier fixtures: 14/14 passed'
 } finally {
     $resolved = [IO.Path]::GetFullPath($root)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) {

@@ -11,7 +11,8 @@ import { createMetaWhatsAppRoutes } from "../../../../src/integrations/messaging
 
 const keyA = "fl360_review_tenant_a";
 const keyB = "fl360_review_tenant_b";
-const evidence = "operator-approved-record:review-2026-01";
+const evidenceA = "operator-approved-record:review-tenant-a";
+const evidenceB = "operator-approved-record:review-tenant-b";
 const endpoint = "/integrations/meta-whatsapp/connections/legacy-reviews";
 
 class TestD1 {
@@ -74,7 +75,7 @@ async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "
     await next();
   });
   app.route("/integrations/meta-whatsapp", createMetaWhatsAppRoutes());
-  return { db, request: (token?: string, path = endpoint, init: RequestInit = {}) => app.request(path, { ...init, headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, { DB: db.binding(), WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: evidence } as AppBindings) };
+  return { db, request: (token?: string, path = endpoint, init: RequestInit = {}) => app.request(path, { ...init, headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, { DB: db.binding(), WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${evidenceA},tenant-b:${evidenceB}` } as AppBindings) };
 }
 
 test("legacy review endpoints return sanitized SCHEMA_NOT_READY on all pre-0045 schemas after authorization", async () => {
@@ -108,10 +109,10 @@ test("legacy review endpoints remain usable on canonical 0042 plus 0045 schema",
 test("legacy review GET authenticates, scopes by tenant, bounds pages, and returns only safe fields", async () => {
   const { db, request } = await setup();
   try {
-    db.sqlite.prepare("INSERT INTO meta_whatsapp_legacy_approval_reviews(connection_id,tenant_id,ghl_location_id,ghl_provider_id,reviewer_client_id,evidence_ref) VALUES('conn-a','tenant-a','loc-a','provider-a','client-a',?)").run(evidence);
-    db.sqlite.prepare("INSERT INTO meta_whatsapp_legacy_approval_reviews(connection_id,tenant_id,ghl_location_id,ghl_provider_id,reviewer_client_id,evidence_ref) VALUES('conn-b','tenant-b','loc-b','provider-b','client-b',?)").run(evidence);
-    db.sqlite.prepare("INSERT INTO meta_whatsapp_connection_activation_audit(tenant_id,connection_id,ghl_location_id,actor_client_id,previous_state,new_state,reason) VALUES('tenant-a','conn-a','loc-a','client-a','legacy_active','legacy_review_approved',?)").run(JSON.stringify({ decision: "approve", evidenceReference: evidence, justification: "synthetic fixture" }));
-    db.sqlite.prepare("INSERT INTO meta_whatsapp_connection_activation_audit(tenant_id,connection_id,ghl_location_id,actor_client_id,previous_state,new_state,reason) VALUES('tenant-b','conn-b','loc-b','client-b','legacy_active','legacy_review_approved',?)").run(JSON.stringify({ decision: "approve", evidenceReference: evidence, justification: "synthetic fixture" }));
+    db.sqlite.prepare("INSERT INTO meta_whatsapp_legacy_approval_reviews(connection_id,tenant_id,ghl_location_id,ghl_provider_id,reviewer_client_id,evidence_ref) VALUES('conn-a','tenant-a','loc-a','provider-a','client-a',?)").run(evidenceA);
+    db.sqlite.prepare("INSERT INTO meta_whatsapp_legacy_approval_reviews(connection_id,tenant_id,ghl_location_id,ghl_provider_id,reviewer_client_id,evidence_ref) VALUES('conn-b','tenant-b','loc-b','provider-b','client-b',?)").run(evidenceB);
+    db.sqlite.prepare("INSERT INTO meta_whatsapp_connection_activation_audit(tenant_id,connection_id,ghl_location_id,actor_client_id,previous_state,new_state,reason) VALUES('tenant-a','conn-a','loc-a','client-a','legacy_active','legacy_review_approved',?)").run(JSON.stringify({ decision: "approve", evidenceReference: evidenceA, justification: "synthetic fixture" }));
+    db.sqlite.prepare("INSERT INTO meta_whatsapp_connection_activation_audit(tenant_id,connection_id,ghl_location_id,actor_client_id,previous_state,new_state,reason) VALUES('tenant-b','conn-b','loc-b','client-b','legacy_active','legacy_review_approved',?)").run(JSON.stringify({ decision: "approve", evidenceReference: evidenceB, justification: "synthetic fixture" }));
     assert.equal((await request(undefined)).status, 401);
     assert.equal((await request("fl360_read_only")).status, 403);
     const response = await request(keyA);
@@ -131,14 +132,15 @@ test("legacy review GET authenticates, scopes by tenant, bounds pages, and retur
 test("legacy review POST requires server-approved evidence, scopes tenant, and records approval/rejection idempotently", async () => {
   const { db, request } = await setup();
   try {
-    const post = (token: string, connectionId: string, decision: string, evidenceReference = evidence) => request(token, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connectionId, decision, evidenceReference, justification: "Operator verified archived onboarding approval record.", operatorId: "forged-client", tenantId: "tenant-b" }) });
+    const post = (token: string, connectionId: string, decision: string, evidenceReference = evidenceA) => request(token, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connectionId, decision, evidenceReference, justification: "Operator verified archived onboarding approval record.", operatorId: "forged-client", tenantId: "tenant-b" }) });
     assert.equal((await post(keyA, "conn-b", "approve")).status, 404);
     assert.equal((await post(keyA, "conn-a", "approve", "https://arbitrary.invalid/evidence")).status, 400);
     const approval = await post(keyA, "conn-a", "approve");
     assert.equal(approval.status, 200);
     assert.equal((await post(keyA, "conn-a", "approve")).status, 200);
     assert.equal(db.sqlite.prepare("SELECT reviewer_client_id FROM meta_whatsapp_legacy_approval_reviews WHERE connection_id='conn-a'").get()?.reviewer_client_id, "client-a");
-    const rejected = await post(keyB, "conn-b", "reject");
+    assert.equal((await post(keyB, "conn-b", "reject", evidenceA)).status, 400);
+    const rejected = await post(keyB, "conn-b", "reject", evidenceB);
     assert.equal(rejected.status, 200);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 1);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state LIKE 'legacy_review_%'").get()?.n, 2);
@@ -152,9 +154,9 @@ test("legacy review POST rejects suspended and revoked connections and ignores c
   const { db, request } = await setup();
   try {
     db.sqlite.exec("UPDATE meta_whatsapp_connections SET activation_state='suspended', activation_actor='seed-reviewer', activation_reason='seed suspension' WHERE id='conn-a'; UPDATE meta_whatsapp_connections SET activation_state='revoked', activation_actor='seed-reviewer', activation_reason='seed revocation' WHERE id='conn-b'");
-    const body = (connectionId: string) => JSON.stringify({ connectionId, decision: "approve", evidenceReference: evidence, justification: "Operator verified archived approval evidence.", operatorId: "forged-client", tenantId: "tenant-b" });
-    assert.equal((await request(keyA, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: body("conn-a") })).status, 409);
-    assert.equal((await request(keyB, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: body("conn-b") })).status, 409);
+    const body = (connectionId: string, evidenceReference: string) => JSON.stringify({ connectionId, decision: "approve", evidenceReference, justification: "Operator verified archived approval evidence.", operatorId: "forged-client", tenantId: "tenant-b" });
+    assert.equal((await request(keyA, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: body("conn-a", evidenceA) })).status, 409);
+    assert.equal((await request(keyB, endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: body("conn-b", evidenceB) })).status, 409);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 0);
   } finally { db.close(); }
 });

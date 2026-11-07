@@ -48,6 +48,8 @@ foreach ($flag in @(
 }
 Require-Match $version 'env\.META_WHATSAPP_GHL_INBOUND_ENABLED\s+\("true"\)' 'inbound enabled'
 Require-Match $version 'env\.META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST\s+\("gmmetro"\)' 'inbound tenant'
+Require-Match $version 'env\.WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST\s+\(""\)' 'activation evidence default empty'
+Require-Match $version 'env\.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST\s+\(""\)' 'legacy review evidence default empty'
 $secrets = @(
     'FL360_API_KEY', 'GEMINI_API_KEY', 'GHL_API_KEY', 'GHL_CUSTOM_PROVIDER_ENABLED',
     'GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST', 'GHL_LOCATION_ID', 'GHL_OAUTH_CLIENT_ID',

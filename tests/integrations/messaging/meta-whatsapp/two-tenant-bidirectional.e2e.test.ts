@@ -218,8 +218,8 @@ test("lifecycle enforcement rejects unapproved, suspended, and revoked connectio
     const legacyEvent = await new IntegrationEventRepository(f.db.binding()).find(revoked.id, legacyAccepted.event.eventId);
     assert.ok(legacyEvent);
     let legacyPublished = 0;
-    await processMetaWhatsAppInboundEvent(legacyEvent, f.db.binding(), legacyService, legacyEnv, async () => { legacyPublished++; });
-    assert.equal(legacyPublished, 1);
+    await assert.rejects(processMetaWhatsAppInboundEvent(legacyEvent, f.db.binding(), legacyService, legacyEnv, async () => { legacyPublished++; }));
+    assert.equal(legacyPublished, 0);
   } finally { f.db.close(); }
 });
 

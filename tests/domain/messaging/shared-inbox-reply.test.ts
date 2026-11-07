@@ -44,10 +44,15 @@ async function fixture(provider = "meta_whatsapp") {
   db.sqlite.exec(`
     INSERT INTO tenants(id,name,status) VALUES ('tenant-a','A','active'),('tenant-b','B','active');
     INSERT INTO integrations(id,tenant_id,provider,enabled) VALUES ('integration-a','tenant-a','meta_whatsapp',1),('integration-b','tenant-b','meta_whatsapp',1);
+    INSERT INTO integration_credentials(tenant_id,provider,auth_type,location_id) VALUES ('tenant-a','gohighlevel','oauth2','location-a');
     INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status)
       VALUES ('connection-a','tenant-a','integration-a','waba-a','phone-a','active'),('connection-b','tenant-b','integration-b','waba-b','phone-b','active');
     INSERT INTO messaging_connections(id,tenant_id,provider,integration_id,external_id,status)
       VALUES ('connection-a','tenant-a','meta_whatsapp','integration-a','phone-a','active'),('connection-b','tenant-b','meta_whatsapp','integration-b','phone-b','active');
+    UPDATE meta_whatsapp_connections
+      SET activation_state='active',ghl_location_id='location-a',ghl_provider_id='provider-a',
+        activation_actor='test-operator',activation_reason='synthetic authorized fixture'
+      WHERE id='connection-a';
   `);
   db.sqlite.prepare("INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id) VALUES (?,?,?,?,?)").run("conversation-a", "tenant-a", provider, "connection-a", "participant-a");
   db.sqlite.prepare("INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id) VALUES (?,?,?,?,?)").run("conversation-b", "tenant-b", "meta_whatsapp", "connection-b", "participant-b");

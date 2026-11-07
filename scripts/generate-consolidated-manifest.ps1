@@ -32,11 +32,14 @@ foreach ($line in [System.IO.File]::ReadAllLines($baselinePath)) {
   [void]$paths.Add($relativePath)
 }
 
-# These are the only new files outside the original WABA source snapshot that
-# belong in the consolidated source/test manifest. Administrative registers
-# remain outside the release manifest by design.
+# These files were added to the consolidated source snapshot after the original
+# WABA manifest. Include executable operator tooling, implementation guidance,
+# and regression tests; administrative registers remain excluded by design.
 $additionalPaths = @(
   "scripts/generate-consolidated-manifest.ps1",
+  "scripts/waba-connection.ps1",
+  "docs/WABA_DEVELOPER_CONTROL_PLANE.md",
+  "tests/integrations/messaging/meta-whatsapp/connection-management-routes.test.ts",
   "tests/bootstrap/request-logging.test.ts",
   "tests/domain/auth/me-route.test.ts",
   "tests/domain/booking/booking-intent-sensitive-logging.test.ts",

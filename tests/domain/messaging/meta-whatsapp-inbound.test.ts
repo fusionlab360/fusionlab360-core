@@ -13,8 +13,32 @@ import { processMetaWhatsAppInboundEvent } from "../../../src/integrations/messa
 import { IntegrationEventProcessingError } from "../../../src/core/events/errors";
 import { isMetaWhatsAppGHLInboundEnabled } from "../../../src/integrations/messaging/meta-whatsapp/gohighlevel-inbound-config";
 
-class D1 { readonly sqlite = new DatabaseSync(":memory:"); constructor() { for (const file of readdirSync(join(process.cwd(), "migrations")).filter((x) => x.endsWith(".sql")).sort()) this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8")); } prepare(sql: string): D1PreparedStatement { let values: unknown[]=[]; const s={ bind:(...v:unknown[])=>{values=v;return s;}, run:async()=>({meta:{changes:Number(this.sqlite.prepare(sql).run(...values as never[]).changes)}}), first:async<T>()=>(this.sqlite.prepare(sql).get(...values as never[]) as T|undefined)??null, all:async<T>()=>({results:this.sqlite.prepare(sql).all(...values as never[]) as T[]})}; return s as unknown as D1PreparedStatement;} async batch(statements: D1PreparedStatement[]){return Promise.all(statements.map((statement)=>statement.run()));} binding(){return this as unknown as D1Database;} close(){this.sqlite.close();} }
-function setup(){ const db=new D1(); db.sqlite.exec("INSERT INTO tenants(id,name) VALUES('a','A'),('b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('ia','a','meta_whatsapp'),('ib','b','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('ca','a','ia','wa','phone-a','active'),('cb','b','ib','wb','phone-b','active')"); return db; }
+class D1 {
+  readonly sqlite = new DatabaseSync(":memory:");
+  private readonly migrationFiles = readdirSync(join(process.cwd(), "migrations"))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+
+  constructor() {
+    // Seed the pre-0042 state, then apply the real migration so this fixture
+    // models connections that were active before lifecycle columns existed.
+    for (const file of this.migrationFiles.filter((name) => Number(name.slice(0, 4)) < 42)) {
+      this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8"));
+    }
+  }
+
+  applyLifecycleMigrations(): void {
+    for (const file of this.migrationFiles.filter((name) => Number(name.slice(0, 4)) >= 42)) {
+      this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8"));
+    }
+  }
+
+  prepare(sql: string): D1PreparedStatement { let values: unknown[]=[]; const s={ bind:(...v:unknown[])=>{values=v;return s;}, run:async()=>({meta:{changes:Number(this.sqlite.prepare(sql).run(...values as never[]).changes)}}), first:async<T>()=>(this.sqlite.prepare(sql).get(...values as never[]) as T|undefined)??null, all:async<T>()=>({results:this.sqlite.prepare(sql).all(...values as never[]) as T[]})}; return s as unknown as D1PreparedStatement; }
+  async batch(statements: D1PreparedStatement[]){return Promise.all(statements.map((statement)=>statement.run()));}
+  binding(){return this as unknown as D1Database;}
+  close(){this.sqlite.close();}
+}
+function setup(){ const db=new D1(); db.sqlite.exec("INSERT INTO tenants(id,name) VALUES('a','A'),('b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('ia','a','meta_whatsapp'),('ib','b','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('ca','a','ia','wa','phone-a','active'),('cb','b','ib','wb','phone-b','active')"); db.applyLifecycleMigrations(); return db; }
 function bindings(db: D1): AppBindings { return { DB: db.binding(), AI: {} as Ai, VECTORIZE: {} as Vectorize, VECTORIZE_V2: {} as Vectorize, JWT_SECRET: "test", JWT_ISSUER: "test", JWT_AUDIENCE: "test", GHL_OAUTH_CLIENT_ID: "test", GHL_OAUTH_CLIENT_SECRET: "test", GEMINI_API_KEY: "test" }; }
 function queueMessage(envelope: GHLInboundQueueEnvelope) { const calls: string[] = []; return { calls, message: { body: envelope, timestamp: new Date(), attempts: 1, ack() { calls.push("ack"); }, retry() { calls.push("retry"); } } }; }
 async function event(db:D1,id:string, tenant='a', overrides:Record<string,unknown>={}) { const repo=new IntegrationEventRepository(db.binding()); const payload={provider:"meta_whatsapp",phoneNumberId:"phone-a",contactId:"participant-a",providerMessageId:id,text:"private message",occurredAt:"2026-01-01T00:00:00.000Z",...overrides}; const accepted=await new IntegrationEventService(repo).accept({eventId:id,eventType:"messaging.meta_whatsapp.inbound",aggregateType:"message",aggregateId:id,tenantId:tenant,provider:"meta_whatsapp",occurredAt:"2026-01-01T00:00:00.000Z",payload}); return {repo, stored:await repo.find(tenant,accepted.event.eventId)}; }
