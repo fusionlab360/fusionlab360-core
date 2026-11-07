@@ -20,6 +20,9 @@ $version = @(
     'env.META_WHATSAPP_OPERATOR_DIAGNOSTIC_ENABLED ("false")',
     'env.NEW_QUEUE_ENVELOPES_ENABLED ("false")',
     'env.WABA_GHL_READONLY_ENABLED ("false")',
+    'env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("false")',
+    'env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("false")',
+    'env.WABA_OPS_ALERTS_ENABLED ("false")',
     'env.META_WHATSAPP_GHL_INBOUND_ENABLED ("true")',
     'env.META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST ("gmmetro")'
 ) + ($secretNames | ForEach-Object { "Secret Name: $_" }) + 'Secret Value: fake-token-value'
@@ -57,8 +60,11 @@ try {
     Check-Case 'missing-binding' ($valid.Replace('env.VECTORIZE_V2', 'env.OTHER')) $active 200 $false
     Check-Case 'inbound-disabled' ($valid.Replace('env.META_WHATSAPP_GHL_INBOUND_ENABLED ("true")', 'env.META_WHATSAPP_GHL_INBOUND_ENABLED ("false")')) $active 200 $false
     Check-Case 'outbound-enabled' ($valid.Replace('env.GHL_META_WHATSAPP_OUTBOUND_ENABLED ("false")', 'env.GHL_META_WHATSAPP_OUTBOUND_ENABLED ("true")')) $active 200 $false
+    Check-Case 'context-verifier-enabled' ($valid.Replace('env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("false")', 'env.WABA_GHL_CONTEXT_VERIFY_ENABLED ("true")')) $active 200 $false
+    Check-Case 'lifecycle-enforcement-enabled' ($valid.Replace('env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("false")', 'env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED ("true")')) $active 200 $false
+    Check-Case 'ops-alerts-enabled' ($valid.Replace('env.WABA_OPS_ALERTS_ENABLED ("false")', 'env.WABA_OPS_ALERTS_ENABLED ("true")')) $active 200 $false
     Check-Case 'health-failed' $valid $active 503 $false
-    Write-Output 'Release verifier fixtures: 9/9 passed'
+    Write-Output 'Release verifier fixtures: 12/12 passed'
 } finally {
     $resolved = [IO.Path]::GetFullPath($root)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) {
