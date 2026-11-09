@@ -1,6 +1,10 @@
 import {
   OAuthInstallationRepository,
 } from "../../../persistence/repositories/oauth-installation-repository";
+import {
+  createCredentialStorageConfiguration,
+  type CredentialKeyBindings,
+} from "../../../core/security/credential-storage";
 
 import type {
   OAuthInstallation,
@@ -14,7 +18,7 @@ import {
 } from "./oauth";
 
 
-export interface GHLCompanyOAuthRuntimeEnvironment {
+export interface GHLCompanyOAuthRuntimeEnvironment extends CredentialKeyBindings {
 
   GHL_OAUTH_CLIENT_ID:
     string;
@@ -264,6 +268,7 @@ export async function resolveGHLCompanyOAuthToken(
   const repository =
     new OAuthInstallationRepository(
       db,
+      createCredentialStorageConfiguration(env),
     );
 
 

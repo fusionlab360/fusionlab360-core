@@ -5,6 +5,18 @@ import {
 import type {
   IntegrationCredential,
 } from "../models/integration-credential";
+import {
+  CredentialCipherError,
+} from "../../core/security/encrypted-credential";
+import type {
+  CredentialStorageConfiguration,
+} from "../../core/security/credential-storage";
+import {
+  decryptCredentialValue,
+  encryptCredentialValue,
+  integrationCredentialContext,
+  isEncryptedCredential,
+} from "../../core/security/credential-storage";
 
 export type OAuthCredentialUpsertResult =
   | { status: "stored" }
@@ -13,6 +25,15 @@ export type OAuthCredentialUpsertResult =
 
 export class CredentialRepository
   extends BaseRepository {
+
+  constructor(
+    db: D1Database,
+    private readonly credentialStorage: CredentialStorageConfiguration = {
+      allowLegacyPlaintextReads: false,
+    },
+  ) {
+    super(db);
+  }
 
 
   async findByTenant(
@@ -52,17 +73,22 @@ export class CredentialRepository
           row.auth_type as
             IntegrationCredential["authType"],
 
+        // GHL secrets are loaded only by the provider credential resolver.
+        // Tenant aggregates are used broadly and must not carry token material.
         apiKey:
-          typeof row.api_key === "string"
-            ? row.api_key
-            : "",
+          row.provider === "gohighlevel"
+            ? ""
+            : typeof row.api_key === "string"
+              ? row.api_key
+              : "",
 
         locationId:
           row.location_id as string,
 
         refreshToken:
-          row.refresh_token as
-            string | null,
+          row.provider === "gohighlevel"
+            ? null
+            : row.refresh_token as string | null,
 
         accessTokenExpiresAt:
           row.access_token_expires_at as
@@ -175,6 +201,7 @@ export class CredentialRepository
   async findByTenantAndProvider(
     tenantId: string,
     provider: string,
+    options: { includeSecrets?: boolean } = {},
   ): Promise<
     IntegrationCredential | null
   > {
@@ -202,6 +229,31 @@ export class CredentialRepository
     }
 
 
+    const locationId =
+      typeof result.location_id === "string"
+        ? result.location_id
+        : null;
+    let apiKey = typeof result.api_key === "string" ? result.api_key : "";
+    let refreshToken = typeof result.refresh_token === "string" ? result.refresh_token : null;
+
+    if (provider === "gohighlevel" && options.includeSecrets !== false) {
+      apiKey = (await decryptCredentialValue(
+        this.credentialStorage.cipher,
+        integrationCredentialContext(tenantId, provider, locationId, "access"),
+        apiKey,
+        this.credentialStorage.allowLegacyPlaintextReads,
+      )) ?? "";
+      refreshToken = await decryptCredentialValue(
+        this.credentialStorage.cipher,
+        integrationCredentialContext(tenantId, provider, locationId, "refresh"),
+        refreshToken,
+        this.credentialStorage.allowLegacyPlaintextReads,
+      );
+    } else if (provider === "gohighlevel") {
+      apiKey = "";
+      refreshToken = null;
+    }
+
     return {
       tenantId:
         result.tenant_id as string,
@@ -213,17 +265,12 @@ export class CredentialRepository
         result.auth_type as
           IntegrationCredential["authType"],
 
-      apiKey:
-        typeof result.api_key === "string"
-          ? result.api_key
-          : "",
+      apiKey,
 
       locationId:
-        result.location_id as string,
+        locationId ?? "",
 
-      refreshToken:
-        result.refresh_token as
-          string | null,
+      refreshToken,
 
       accessTokenExpiresAt:
         result.access_token_expires_at as
@@ -419,9 +466,43 @@ export class CredentialRepository
     metadata: string | null,
     accessTokenExpiresAt: number | null = null,
   ): Promise<OAuthCredentialUpsertResult> {
+    let accessTokenToPersist = accessToken;
+    let refreshTokenToPersist = refreshToken;
     if (provider === "gohighlevel") {
       locationId = locationId.trim();
       await this.assertLocationOwnership(tenantId, provider, locationId);
+
+      const currentAuthType = await this.db.prepare(`
+        SELECT auth_type FROM integration_credentials
+        WHERE tenant_id = ? AND provider = ? LIMIT 1
+      `).bind(tenantId, provider).first<{ auth_type: string | null }>();
+      if (currentAuthType?.auth_type === "api_key") {
+        return { status: "skipped_legacy_pit" };
+      }
+
+      const cipher = this.credentialStorage.cipher;
+      if (!cipher) {
+        throw new CredentialCipherError("Credential encryption must be configured before GHL credentials can be written.");
+      }
+
+      const normalizedRefreshToken =
+        typeof refreshToken === "string" && refreshToken.trim()
+          ? refreshToken.trim()
+          : null;
+      // Keep NULL in the UPSERT so SQL COALESCE preserves the current stored
+      // value atomically. Reading and rewriting it here could overwrite a
+      // refresh-token rotation committed by a concurrent callback.
+      refreshTokenToPersist = normalizedRefreshToken;
+      accessTokenToPersist = (await encryptCredentialValue(
+        cipher,
+        integrationCredentialContext(tenantId, provider, locationId, "access"),
+        accessToken,
+      )) ?? "";
+      refreshTokenToPersist = await encryptCredentialValue(
+        cipher,
+        integrationCredentialContext(tenantId, provider, locationId, "refresh"),
+        refreshTokenToPersist,
+      );
     }
     const result = await this.db
       .prepare(
@@ -475,9 +556,9 @@ export class CredentialRepository
       .bind(
         tenantId,
         provider,
-        accessToken,
+        accessTokenToPersist,
         locationId,
-        refreshToken,
+        refreshTokenToPersist,
         accessTokenExpiresAt,
         metadata,
         provider,
@@ -764,6 +845,27 @@ export class CredentialRepository
         ? refreshToken.trim()
         : null;
 
+    let accessTokenToPersist = normalizedAccessToken;
+    let refreshTokenToPersist = normalizedRefreshToken;
+    if (provider === "gohighlevel") {
+      const cipher = this.credentialStorage.cipher;
+      if (!cipher) {
+        throw new CredentialCipherError("Credential encryption must be configured before GHL credentials can be written.");
+      }
+      const existing = await this.findByTenantAndProvider(tenantId, provider);
+      if (!existing || existing.authType !== "oauth2" || !existing.locationId.trim()) {
+        return false;
+      }
+      const context = (field: "access" | "refresh") =>
+        integrationCredentialContext(tenantId, provider, existing.locationId, field);
+      accessTokenToPersist = (await encryptCredentialValue(cipher, context("access"), normalizedAccessToken)) ?? "";
+      refreshTokenToPersist = await encryptCredentialValue(
+        cipher,
+        context("refresh"),
+        normalizedRefreshToken ?? existing.refreshToken,
+      );
+    }
+
     const result =
       await this.db
         .prepare(
@@ -802,8 +904,8 @@ export class CredentialRepository
 
         
         .bind(
-            normalizedAccessToken,
-            normalizedRefreshToken,
+            accessTokenToPersist,
+            refreshTokenToPersist,
             accessTokenExpiresAt,
             metadata,
             tenantId.trim(),
@@ -817,6 +919,49 @@ export class CredentialRepository
       (result.meta?.changes ?? 0) >
       0
     );
+  }
+
+  /** Encrypt one bounded batch of legacy GHL credentials; concurrent rotations win. */
+  async migratePlaintextBatch(limit = 50): Promise<number> {
+    const cipher = this.credentialStorage.cipher;
+    if (!cipher) {
+      throw new CredentialCipherError("Credential encryption must be configured before migration.");
+    }
+    const batchSize = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 200)) : 50;
+    const rows = await this.db.prepare(`
+      SELECT tenant_id, provider, location_id, api_key, refresh_token
+      FROM integration_credentials
+      WHERE provider = 'gohighlevel'
+        AND ((api_key IS NOT NULL AND api_key <> '' AND api_key NOT LIKE 'fl360enc:%')
+          OR (refresh_token IS NOT NULL AND refresh_token <> '' AND refresh_token NOT LIKE 'fl360enc:%'))
+      ORDER BY tenant_id, provider
+      LIMIT ?
+    `).bind(batchSize).all<{
+      tenant_id: string;
+      provider: string;
+      location_id: string | null;
+      api_key: string | null;
+      refresh_token: string | null;
+    }>();
+
+    let migrated = 0;
+    for (const row of rows.results ?? []) {
+      const context = (field: "access" | "refresh") =>
+        integrationCredentialContext(row.tenant_id, row.provider, row.location_id, field);
+      const access = row.api_key && !isEncryptedCredential(row.api_key)
+        ? await encryptCredentialValue(cipher, context("access"), row.api_key)
+        : row.api_key;
+      const refresh = row.refresh_token && !isEncryptedCredential(row.refresh_token)
+        ? await encryptCredentialValue(cipher, context("refresh"), row.refresh_token)
+        : row.refresh_token;
+      const result = await this.db.prepare(`
+        UPDATE integration_credentials SET api_key = ?, refresh_token = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND provider = 'gohighlevel' AND location_id IS ?
+          AND api_key IS ? AND refresh_token IS ?
+      `).bind(access, refresh, row.tenant_id, row.location_id, row.api_key, row.refresh_token).run();
+      migrated += result.meta?.changes ?? 0;
+    }
+    return migrated;
   }
 
 }

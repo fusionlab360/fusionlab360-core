@@ -83,7 +83,7 @@ function base64ToBytes(
 
 
 export async function verifyGHLSignature(
-  body: string,
+  body: string | Uint8Array,
   signature:
     string | undefined,
 ): Promise<boolean> {
@@ -111,6 +111,12 @@ export async function verifyGHLSignature(
         ["verify"],
       );
 
+    const messageBytes = typeof body === "string"
+      ? new TextEncoder().encode(body)
+      : body;
+    const messageBuffer = new ArrayBuffer(messageBytes.byteLength);
+    new Uint8Array(messageBuffer).set(messageBytes);
+
     return await crypto.subtle.verify(
       {
         name:
@@ -120,9 +126,7 @@ export async function verifyGHLSignature(
       base64ToBytes(
         signature,
       ),
-      new TextEncoder().encode(
-        body,
-      ),
+      messageBuffer,
     );
 
   } catch {

@@ -216,6 +216,9 @@ test("disconnected GHL OAuth credentials are blocked until reauthorization", asy
       {
         GHL_OAUTH_CLIENT_ID: "test-client",
         GHL_OAUTH_CLIENT_SECRET: "test-secret",
+        CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+        CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+        CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
       },
     );
 

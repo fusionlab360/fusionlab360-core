@@ -167,6 +167,9 @@ function makeBindings(db: LocalD1, deleteByIds: (ids: string[]) => Promise<void>
     JWT_AUDIENCE: "test-only",
     GHL_OAUTH_CLIENT_ID: "test-only",
     GHL_OAUTH_CLIENT_SECRET: "test-only",
+    CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+    CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+    CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
     GEMINI_API_KEY: "test-only",
   };
 }

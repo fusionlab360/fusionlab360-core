@@ -43,7 +43,15 @@ $additionalPaths = @(
   "tests/bootstrap/request-logging.test.ts",
   "tests/domain/auth/me-route.test.ts",
   "tests/domain/booking/booking-intent-sensitive-logging.test.ts",
-  "tests/integrations/crm/gohighlevel/sensitive-errors.test.ts"
+  "tests/integrations/crm/gohighlevel/sensitive-errors.test.ts",
+  "docs/META_WHATSAPP_PRODUCTION_READINESS_CHECKLIST.md",
+  "migrations/0046_meta_whatsapp_outbound_retry_cooldown.sql",
+  "src/core/http/bounded-body.ts",
+  "src/core/security/credential-storage.ts",
+  "tests/core/http/bounded-body.test.ts",
+  "tests/config/cors.test.ts",
+  "tests/integrations/messaging/gohighlevel/webhook-body-limit.test.ts",
+  "tests/persistence/repositories/credential-encryption.test.ts"
 )
 
 foreach ($relativePath in $additionalPaths) {

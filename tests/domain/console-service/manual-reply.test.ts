@@ -70,6 +70,9 @@ function environment(db: LocalD1): AppBindings {
     MANUAL_REPLY_ENABLED: "true",
     GHL_OAUTH_CLIENT_ID: "synthetic-client",
     GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
+    CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+    CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+    CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
   } as AppBindings;
 }
 
@@ -249,6 +252,9 @@ test("Console API manual reply reaches injected Core provider through the HTTP b
         JWT_AUDIENCE: "fusionlab360-core",
         GHL_OAUTH_CLIENT_ID: "synthetic-client",
         GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
+        CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+        CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+        CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
       } as AppBindings);
     }
     if (url.includes("/conversations/search")) {

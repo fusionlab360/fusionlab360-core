@@ -86,7 +86,9 @@ test("GHL OAuth failure paths redact endpoint identifiers and provider error pay
       assert.equal(responseText.includes(privateValue), false);
       assert.equal(logText.includes(privateValue), false);
     }
-    assert.match(responseText, /GoHighLevel API request failed \(400\)\./);
+    assert.match(responseText, /Invalid request\./);
+    assert.match(responseText, /"code":"API_ERROR"/);
+    assert.match(responseText, /"correlationId":"[0-9a-f-]{36}"/);
   } finally {
     globalThis.fetch = originalFetch;
     console.debug = originalLogs.debug;

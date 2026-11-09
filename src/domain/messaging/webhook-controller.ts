@@ -10,6 +10,11 @@ import type {
 import {
   verifyGHLSignature,
 } from "../../integrations/messaging/gohighlevel/signature";
+import {
+  decodeUtf8Body,
+  readBoundedBody,
+  RequestBodyTooLargeError,
+} from "../../core/http/bounded-body";
 
 import {
   parseGHLInboundMessage,
@@ -75,6 +80,8 @@ import {
 import {
   createTenantKnowledgeRetriever,
 } from "./tenant-knowledge-retriever";
+
+export const GHL_WEBHOOK_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 
 import {
   createIntegrationRuntime,
@@ -176,8 +183,25 @@ export async function ghlInboundMessageController(
    * --------------------------------------------------
    */
 
-  const rawBody =
-    await c.req.text();
+  let rawBytes: Uint8Array;
+  try {
+    rawBytes = await readBoundedBody(c.req.raw, GHL_WEBHOOK_BODY_LIMIT_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return c.json({ success: false, message: "Webhook payload is too large." }, 413);
+    }
+    if (error instanceof TypeError) {
+      return c.json({ success: false, message: "Malformed request body." }, 400);
+    }
+    return c.json({ success: false, message: "Unable to read webhook payload." }, 400);
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = decodeUtf8Body(rawBytes);
+  } catch {
+    return c.json({ success: false, message: "Invalid webhook payload encoding." }, 400);
+  }
 
   const signature =
     c.req.header(
@@ -202,7 +226,7 @@ export async function ghlInboundMessageController(
   "GHL WEBHOOK RECEIVED",
   {
     bodyLength:
-      rawBody.length,
+      rawBytes.byteLength,
 
     signaturePresent:
       Boolean(signature),
@@ -224,7 +248,7 @@ export async function ghlInboundMessageController(
 
   const signatureValid =
     await verifyGHLSignature(
-      rawBody,
+      rawBytes,
       signature,
     );
 
@@ -368,6 +392,15 @@ export async function ghlInboundMessageController(
 
           GHL_OAUTH_REDIRECT_URI:
             c.env.GHL_OAUTH_REDIRECT_URI,
+
+          CORE_CREDENTIAL_ENCRYPTION_KEYS:
+            c.env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+          CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+            c.env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+          CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+            c.env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
         },
 
         payload as
@@ -437,6 +470,15 @@ export async function ghlInboundMessageController(
 
           GHL_OAUTH_REDIRECT_URI:
             c.env.GHL_OAUTH_REDIRECT_URI,
+
+          CORE_CREDENTIAL_ENCRYPTION_KEYS:
+            c.env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+          CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+            c.env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+          CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+            c.env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
         },
 
         payload as
@@ -504,6 +546,15 @@ export async function ghlInboundMessageController(
 
         GHL_OAUTH_REDIRECT_URI:
           c.env.GHL_OAUTH_REDIRECT_URI,
+
+        CORE_CREDENTIAL_ENCRYPTION_KEYS:
+          c.env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+        CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+          c.env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+        CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+          c.env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
 
       },
 

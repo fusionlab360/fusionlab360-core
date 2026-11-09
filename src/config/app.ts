@@ -156,6 +156,16 @@ export type AppBindings = {
   /** Active key version used for new Meta WhatsApp credentials. */
   META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
 
+  /** Secret keyring for encrypted provider credentials stored by Core. */
+  CORE_CREDENTIAL_ENCRYPTION_KEYS?: string;
+  /** Active key version for new encrypted provider credentials. */
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
+  /** Temporary compatibility switch for pre-encryption GHL credentials. */
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED?: string;
+
+  /** Comma-separated exact browser origins; absent configuration denies cross-origin browser access. */
+  CORS_ALLOWED_ORIGINS?: string;
+
   /** Explicit, single-asset guard for temporary developer test tokens. */
   META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED?: string;
   META_WHATSAPP_DEVELOPER_TEST_TENANT_ALLOWLIST?: string;
@@ -175,6 +185,32 @@ export type AppVariables = {
 
 };
 
+export function corsOriginFor(
+  origin: string | undefined,
+  configuredOrigins: string | undefined,
+  path = "/",
+): string {
+  if (!origin || origin === "null") return "";
+  if (path.startsWith("/webhooks/") || path === "/health" || path === "/") return "";
+
+  const allowedOrigins = (configuredOrigins ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value || value === "*") return false;
+      try {
+        const parsed = new URL(value);
+        return parsed.origin === value && (
+          parsed.protocol === "https:" ||
+          (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
+        );
+      } catch {
+        return false;
+      }
+    });
+
+  return allowedOrigins.includes(origin) ? origin : "";
+}
 
 export function createApp() {
   const app = new Hono<{
@@ -252,7 +288,8 @@ app.use(
  * CORS
  */
 const defaultCors = cors({
-  origin: "*",
+  origin: (origin: string, context: { env: AppBindings; req: { path: string } }) =>
+    corsOriginFor(origin, context.env.CORS_ALLOWED_ORIGINS, context.req.path),
   allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowHeaders: ["Authorization", "Content-Type", "Accept", "Origin"],
 });
@@ -265,7 +302,7 @@ app.use("*", async (c, next) => {
     await next();
     return;
   }
-  await defaultCors(c, next);
+  return defaultCors(c, next);
 });
 
 

@@ -50,9 +50,9 @@ class LocalD1 {
   close() { this.sqlite.close(); }
 }
 
-async function hmac(body: string) {
+async function hmac(body: string | Uint8Array) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(metaSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, typeof body === "string" ? new TextEncoder().encode(body) : body));
   return `sha256=${Array.from(sig).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 

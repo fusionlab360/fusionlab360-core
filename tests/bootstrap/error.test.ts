@@ -61,3 +61,35 @@ test("unknown thrown values do not appear in the response", async () => {
     false,
   );
 });
+
+test("ApiError response and production log contain only allowlisted fields", async () => {
+  const { ApiError } = await import("../../src/core/errors/ApiError");
+  const captured: unknown[][] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => captured.push(args);
+  let response: Response;
+  try {
+    response = handleError(new ApiError(
+      502,
+      "Provider response included customer@example.test and access_token=synthetic-secret",
+      { body: "private provider response", authorization: "Bearer synthetic-secret" },
+      "UPSTREAM_FAILURE",
+    ));
+  } finally {
+    console.log = originalLog;
+  }
+
+  const body = await response.json() as Record<string, unknown>;
+  assert.equal(response.status, 502);
+  assert.deepEqual(Object.keys(body).sort(), ["code", "correlationId", "message", "success"]);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Internal Server Error");
+  assert.equal(body.code, "UPSTREAM_FAILURE");
+  assert.equal(typeof body.correlationId, "string");
+  assert.equal(response.headers.get("X-Correlation-ID"), body.correlationId);
+
+  const serialized = `${JSON.stringify(body)} ${JSON.stringify(captured)}`;
+  for (const sensitive of ["customer@example.test", "synthetic-secret", "private provider response", "authorization"]) {
+    assert.equal(serialized.includes(sensitive), false);
+  }
+});

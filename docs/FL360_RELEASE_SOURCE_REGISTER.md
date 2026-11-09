@@ -1,17 +1,17 @@
 # FL360 Release Source Register
 
-Updated 2026-11-07. This register distinguishes live deployment state from uploaded and local-only candidates. No release or production action was performed by this cleanup task.
+Updated 2026-11-09. This register distinguishes live deployment state from uploaded and local-only candidates. The latest gap-closure work performed read-only production metadata/schema checks only; it did not change production.
 
 ## Source and deployment states
 
 | Artifact | Identifier / path | State | Evidence and limitation |
 |---|---|---|---|
-| Production Worker | `fusionlab360-core`, version `b6d6c87d-1232-46b4-b33d-7cd0e3de0f49` | `DEPLOYED` | Last read-only verification: 100% traffic, health HTTP 200, deployment `cdb5cc7b-de96-4821-9bea-ce3dfdaabdf7`. No production operation occurred during this cleanup. |
+| Production Worker | `fusionlab360-core`, version `b6d6c87d-1232-46b4-b33d-7cd0e3de0f49` | `DEPLOYED` | Read-only verification 2026-11-09: 100% traffic, deployment `cdb5cc7b-de96-4821-9bea-ce3dfdaabdf7`, created 2026-11-05 13:40:07 UTC. No production write occurred. |
 | Integrated WABA candidate | version `385e660c-6efc-4085-9ebe-8d7ac7e1fc7d`, tag `fl360-waba-integrated-m2-m5-gates-off` | `UPLOADED_INACTIVE` | Version metadata showed it inactive. This version predates this cleanup's redaction and dependency-lock updates; it is not the consolidated source below. |
 | Original WABA source | `.worktrees/waba-integration-recovery` | `LOCAL_ONLY` | Base commit `9381fb84b1e1886467b0ff78c386fbc702d41453`; original 634-entry manifest SHA-256 `6eb9d2f8ab43ea630f94b80bed5399f4df83e2b340dd971a3342ea992af40ee3`; all 634 entries still match. Preserved unchanged. |
 | iPaaS remediation source | `.worktrees/ipaas-completion-remediation` | `LOCAL_ONLY` | Base commit `9381fb84b1e1886467b0ff78c386fbc702d41453`; 15-entry manifest SHA-256 `85f206a31c68ae0b55fd9e4fd1c63c1a032f934d4e7bf1e8c6b6579e927146e0`; all 15 entries still match. Preserved unchanged. |
-| Consolidated development candidate | `.worktrees/fl360-clean-consolidation`, branch `integration/fl360-core-consolidated` | `LOCAL_ONLY` | Latest implementation commit `afcab60b51566e40fd295e1bd43416ed34576be6` (`feat(waba): add developer-managed connection control plane`), based on prior consolidated source commit `763937b` and P0-1 base `9381fb84b1e1886467b0ff78c386fbc702d41453`. The verified 642-entry source manifest SHA-256 is `c33d08888d5dcb09775a7b1ebd3e22bb88f6c647aeca49c308bc4b3145be9fe2`; the manifest excludes the three administrative registers. The commit adds tenant-scoped connection inventory and lifecycle operations, safe pre-0042 compatibility, developer CLI/docs, evidence-gate verification, and regressions. |
-| Security S1 source | `.worktrees/security-s1` and `.worktrees/waba-s1-p04-integration` | `LOCAL_ONLY` | Registered worktrees; Security S1 changes were not merged into this candidate. No keyring or S1 migration dependency was introduced. |
+| Consolidated development candidate | `.worktrees/fl360-clean-consolidation`, branch `integration/fl360-core-consolidated` | `LOCAL_ONLY` | Current gap-closure implementation is based on verified minimum HEAD `6c82d2eb75463099f8d485d2a5660d84192be112`; final local commit SHA is in the task result. The regenerated 650-entry source manifest SHA-256 is `72880d885328e6258f8e883e4b0e20b18fe353823c2103fd7f8ad99674ec5eae`. The manifest excludes administrative release/decision registers. No upload or deployment corresponds to this local source. |
+| Security S1 reference source | `.worktrees/security-s1` and `.worktrees/waba-s1-p04-integration` | `LOCAL_ONLY` | Read-only reference worktrees remain unchanged. The selected GHL encryption, bounded webhook, error-sanitization, and CORS fixes are implemented in the consolidated candidate; no production key or migration was introduced. |
 | P0-4 snapshot | D:\Important Fusion Migration\FL360_Release_Archive\waba-p04-m2-20261107\release-snapshots\waba-p04-m2-20261105 | ARCHIVED_LOCAL_SOURCE | 609-file archive; all ARCHIVE_SHA256SUMS.txt entries verified with zero mismatches (index SHA-256 8bfbcd248577bae3d66d1180f53a0100b512a094ed18bf13a9068cf14d9d453f). Provenance remains P0-1 base 9381fb84b1e1886467b0ff78c386fbc702d41453; this is not a deployed rollback version or the integrated candidate. |
 | Production rollback target | version `b6d6c87d-1232-46b4-b33d-7cd0e3de0f49` | `DEPLOYED` | Current observed active safe version; use only with a separately approved rollback action if a later release is authorized. |
 
@@ -54,3 +54,11 @@ Commit `afcab60b51566e40fd295e1bd43416ed34576be6` was validated locally on `inte
 This is local implementation evidence only. Production release still requires a separate review of actual remote migration history, independently supported legacy-connection evidence, developer-test onboarding exposure, verified GHL provider installation and Meta ownership, plus separate approval for deployment/migration/configuration/live testing.
 
 Current release classification: consolidated candidate is `LOCAL_ONLY` and locally tested; not staged, not deployed, and not live-verified.
+
+## Core production gap closure — 2026-11-09
+
+Implemented locally on the canonical consolidated branch. GHL OAuth company/location credentials now use versioned AES-GCM envelopes with owner-bound associated data, strict key requirements for writes, controlled plaintext compatibility reads, and resumable compare-and-set migration batches. GHL inbound/provider-outbound requests now use bounded raw-byte reads. ApiError response/log disclosure is allowlisted. General CORS requires exact configured origins while preserving webhook and GHL verifier behavior.
+
+Validation: full Core suite 805/805 passed across 111 test files; `npx tsc --noEmit` passed; regenerated 650-entry manifest verified with zero missing/hash mismatches. The current production D1 was confirmed pre-0042 from schema metadata; no 0042/0045/0046 ledger rows were present and `retry_after_at` was absent. Queue names and producer/consumer counts were observed; backlog depth was not available from Wrangler. The active Worker remains `b6d6c87d` at 100%. The inactive versions `385e660c` and `6d24ac5b` remain separate from this source.
+
+See `FL360_CORE_PRODUCTION_GAP_CLOSURE.md` for the exact migration order, secret and CORS prerequisites, backup procedure, compatibility assessment, stop/rollback plan, and BLOCKED release decision. No secret values, credential rows, or Queue payloads were read. No production migration, Worker upload/deployment, secret/flag/traffic change, provider call, message send, Marketplace action, or WABA candidate modification occurred.

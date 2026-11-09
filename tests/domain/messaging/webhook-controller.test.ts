@@ -181,10 +181,15 @@ test("invalid GHL signature is rejected before Queue publication", async () => {
     locationId: "location-test",
     body: "private inbound body",
   });
+  const rawRequest = new Request("https://example.test/webhooks/gohighlevel", {
+    method: "POST",
+    headers: { "X-GHL-Signature": "N/A" },
+    body,
+  });
   const context = {
     req: {
-      async text() { return body; },
-      header() { return "N/A"; },
+      raw: rawRequest,
+      header(name: string) { return rawRequest.headers.get(name) ?? undefined; },
     },
     env: {
       GHL_INBOUND_QUEUE_ENABLED: "true",
