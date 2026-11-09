@@ -16,8 +16,11 @@ class SQLiteD1 {
 const key = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
 const bindings = { META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ v1: key }), META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION: "v1" };
 function provider(overrides: Partial<MetaWhatsAppOnboardingProvider> = {}): MetaWhatsAppOnboardingProvider { return {
-  exchangeAuthorizationCode: async () => ({ accessToken: "synthetic-secret-token", scopes: ["whatsapp_business_management", "whatsapp_business_messaging"] }),
-  verifyWabaAccess: async () => true, listPhoneNumbers: async () => ["phone-a"], verifyWebhookSubscription: async () => true, ...overrides,
+  exchangeAuthorizationCode: async () => ({ accessToken: "synthetic-secret-token", scopes: ["whatsapp_business_management", "whatsapp_business_messaging"], expiresAt: Date.now() + 60 * 60 * 1000, lifecycle: "expiring" }),
+  inspectToken: async () => ({ valid: true, appIdMatches: true, scopes: ["whatsapp_business_management", "whatsapp_business_messaging"] }),
+  verifyWabaAccess: async () => true, listPhoneNumbers: async () => ["phone-a"],
+  inspectPhoneNumber: async (_token, phoneNumberId) => ({ id: phoneNumberId, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" }),
+  verifyWebhookSubscription: async () => true, ...overrides,
 }; }
 function fixture(lifecycleSchema = true) { const db = new SQLiteD1(lifecycleSchema); db.sqlite.exec("INSERT INTO tenants (id,name) VALUES ('tenant-a','A'),('tenant-b','B'); INSERT INTO integrations (id,tenant_id,provider) VALUES ('meta-a','tenant-a','meta_whatsapp'),('meta-b','tenant-b','meta_whatsapp');"); return db; }
 async function started(db: SQLiteD1, p = provider()) { const service = new MetaWhatsAppOnboardingService(db.binding(), bindings, p); return { service, start: await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a" }) }; }
@@ -79,7 +82,9 @@ test("transient lifecycle schema query errors stop onboarding before provider ca
 test("Meta onboarding rejects cross-tenant/operator callbacks and every unverified provider assertion", async () => {
   const cases: Array<Partial<MetaWhatsAppOnboardingProvider>> = [
     { exchangeAuthorizationCode: async () => ({ accessToken: "token", scopes: ["whatsapp_business_messaging"] }) },
-    { verifyWabaAccess: async () => false }, { listPhoneNumbers: async () => ["another-phone"] }, { verifyWebhookSubscription: async () => false },
+    { verifyWabaAccess: async () => false }, { listPhoneNumbers: async () => ["another-phone"] },
+    { inspectPhoneNumber: async () => ({ id: "phone-a", status: "PENDING", platformType: "CLOUD_API", codeVerificationStatus: "NOT_VERIFIED" }) },
+    { verifyWebhookSubscription: async () => false },
   ];
   for (const override of cases) { const db = fixture(); try { const { service, start } = await started(db, provider(override)); await assert.rejects(service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: start.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" }), MetaWhatsAppOnboardingError); assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_connections").get()?.count, 0); } finally { db.close(); } }
   const db = fixture(); try { const { service, start } = await started(db); await assert.rejects(service.complete({ tenantId: "tenant-b", operatorId: "client-a", state: start.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" }), MetaWhatsAppOnboardingError); } finally { db.close(); }
@@ -100,10 +105,57 @@ test("Meta reauthorization replaces an encrypted credential after explicit disab
     const first = await service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: start.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" });
     await service.disable({ tenantId: "tenant-a", integrationId: "meta-a", connectionId: first.connectionId, expectedCredentialVersion: first.credentialVersion });
     assert.equal(db.sqlite.prepare("SELECT status FROM meta_whatsapp_connections WHERE id = ?").get(first.connectionId)?.status, "disabled");
-    const next = await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a" });
+    const next = await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a", connectionId: first.connectionId });
     const second = await service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: next.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" });
     assert.equal(second.connectionId, first.connectionId);
     assert.ok(second.credentialVersion > first.credentialVersion);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_connections").get()?.count, 1);
+  } finally { db.close(); }
+});
+
+test("Meta reauthorization rejects asset substitution and a stale credential version before exchanging OAuth code", async () => {
+  const db = fixture();
+  try {
+    let exchanges = 0;
+    const p = provider({ exchangeAuthorizationCode: async () => { exchanges += 1; return { accessToken: "new-token", scopes: ["whatsapp_business_management", "whatsapp_business_messaging"], expiresAt: Date.now() + 60 * 60 * 1000, lifecycle: "expiring" }; } });
+    const { service, start } = await started(db, p);
+    const first = await service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: start.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" });
+    const substitution = await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a", connectionId: first.connectionId });
+    await assert.rejects(service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: substitution.state, code: "code", wabaId: "waba-other", phoneNumberId: "phone-a" }), MetaWhatsAppOnboardingError);
+    assert.equal(exchanges, 1);
+
+    const stale = await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a", connectionId: first.connectionId });
+    const current = await service.start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: "meta-a", connectionId: first.connectionId });
+    await service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: current.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" });
+    await assert.rejects(service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: stale.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" }), MetaWhatsAppOnboardingError);
+    assert.equal(exchanges, 2);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_connections").get()?.count, 1);
+  } finally { db.close(); }
+});
+
+test("Meta asset verification is read-only, tenant-bound, and reports each production prerequisite", async () => {
+  const db = fixture();
+  try {
+    const { service, start } = await started(db);
+    const complete = await service.complete({ tenantId: "tenant-a", operatorId: "client-a", state: start.state, code: "code", wabaId: "waba-a", phoneNumberId: "phone-a" });
+    let inspections = 0;
+    const checking = new MetaWhatsAppOnboardingService(db.binding(), bindings, provider({
+      inspectToken: async () => ({ valid: true, appIdMatches: true, scopes: ["whatsapp_business_management", "whatsapp_business_messaging"] }),
+      verifyWebhookSubscription: async () => { inspections += 1; return false; },
+    }));
+    const before = db.sqlite.prepare("SELECT credential_version, status FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId) as { credential_version: number; status: string };
+    const result = await checking.verifyConnection({ tenantId: "tenant-a", connectionId: complete.connectionId });
+    assert.equal(result.ready, false);
+    assert.equal(result.checks.tokenValidity.status, "passed");
+    assert.equal(result.checks.requiredPermissions.status, "passed");
+    assert.equal(result.checks.expectedWabaAccess.status, "passed");
+    assert.equal(result.checks.phoneMembership.status, "passed");
+    assert.equal(result.checks.phoneRegistration.status, "passed");
+    assert.equal(result.checks.appSubscription.code, "meta_app_subscription_failed");
+    assert.match(result.checks.appSubscription.action, /authorized operator/);
+    assert.equal(inspections, 1);
+    const after = db.sqlite.prepare("SELECT credential_version, status FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId) as { credential_version: number; status: string };
+    assert.deepEqual(after, before);
+    await assert.rejects(checking.verifyConnection({ tenantId: "tenant-b", connectionId: complete.connectionId }), MetaWhatsAppOnboardingError);
   } finally { db.close(); }
 });

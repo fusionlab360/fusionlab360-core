@@ -232,9 +232,9 @@ routes.get("/diagnostics/verify-phone", requirePermission("integrations:test"), 
 routes.post("/onboarding/sessions", requireTenantClientPermission("integrations:oauth:connect"), async (c) => {
   let onboardingProvider: MetaWhatsAppOnboardingProvider; try { onboardingProvider = resolveProvider(c.env); } catch { return c.json({ success: false, message: "Meta WhatsApp onboarding is not configured." }, 503); }
   const principal = c.get("principal");
-  const body: { integrationId?: string } = await c.req.json<{ integrationId?: string }>().catch(() => ({}));
+  const body: { integrationId?: string; connectionId?: string } = await c.req.json<{ integrationId?: string; connectionId?: string }>().catch(() => ({}));
   try {
-    const result = await new MetaWhatsAppOnboardingService(c.env.DB, c.env, onboardingProvider).start({ tenantId: principal!.tenantId, operatorId: principal!.clientId!, integrationId: body.integrationId?.trim() ?? "" });
+    const result = await new MetaWhatsAppOnboardingService(c.env.DB, c.env, onboardingProvider).start({ tenantId: principal!.tenantId, operatorId: principal!.clientId!, integrationId: body.integrationId?.trim() ?? "", ...(body.connectionId?.trim() ? { connectionId: body.connectionId.trim() } : {}) });
     return c.json({ success: true, ...result }, 201);
   } catch (error) { return c.json({ success: false, message: error instanceof MetaWhatsAppOnboardingError ? error.message : "Meta WhatsApp onboarding could not be started." }, 409); }
 });
@@ -579,6 +579,25 @@ routes.get("/connections", requireTenantClientPermission("integrations:read"), a
     });
   } catch {
     return c.json({ success: false, code: "CONNECTION_STATUS_UNAVAILABLE" }, 503);
+  }
+});
+
+routes.get("/connections/:connectionId/verification", requireTenantClientPermission("integrations:test"), async (c) => {
+  let onboardingProvider: MetaWhatsAppOnboardingProvider;
+  try {
+    onboardingProvider = resolveProvider(c.env);
+  } catch {
+    return c.json({ success: false, code: "META_VERIFICATION_UNAVAILABLE" }, 503);
+  }
+  try {
+    const result = await new MetaWhatsAppOnboardingService(c.env.DB, c.env, onboardingProvider).verifyConnection({
+      tenantId: c.get("principal")!.tenantId,
+      connectionId: c.req.param("connectionId"),
+    });
+    return c.json({ success: true, ...result }, 200);
+  } catch (error) {
+    if (error instanceof MetaWhatsAppOnboardingError) return c.json({ success: false, code: "CONNECTION_NOT_FOUND" }, 404);
+    return c.json({ success: false, code: "META_VERIFICATION_UNAVAILABLE" }, 503);
   }
 });
 

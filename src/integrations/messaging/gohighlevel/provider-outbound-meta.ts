@@ -161,7 +161,8 @@ export async function deliverGHLProviderOutboundToMeta(
     });
   } catch (error) {
     if (error instanceof MetaWhatsAppOutboundError && error.code) {
-      throw new GHLMetaOutboundFailure(error.code, false, "The Meta outbound request was rejected before delivery.");
+      const code = error.code === "META_OUTBOUND_DISABLED" ? "META_CONNECTION_DISABLED" : error.code;
+      throw new GHLMetaOutboundFailure(code, false, "The Meta outbound request was rejected before delivery.");
     }
     throw error;
   }

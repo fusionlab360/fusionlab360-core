@@ -111,8 +111,10 @@ test("a provisioned integration satisfies the existing onboarding-session contra
     const body = await response.json() as { integration: { id: string } };
     const provider: MetaWhatsAppOnboardingProvider = {
       exchangeAuthorizationCode: async () => ({ accessToken: "unused", scopes: [] }),
+      inspectToken: async () => ({ valid: false, appIdMatches: true, scopes: [] }),
       verifyWabaAccess: async () => false,
       listPhoneNumbers: async () => [],
+      inspectPhoneNumber: async () => ({ id: null, status: null, platformType: null, codeVerificationStatus: null }),
       verifyWebhookSubscription: async () => false,
     };
     const start = await new MetaWhatsAppOnboardingService(db.binding(), {}, provider).start({ tenantId: "tenant-a", operatorId: "client-a", integrationId: body.integration.id });

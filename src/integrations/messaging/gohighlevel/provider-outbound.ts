@@ -162,7 +162,14 @@ export function createGHLProviderOutboundController(
       message: retryable ? "Meta outbound delivery was rejected transiently." : "Meta outbound delivery was rejected permanently.",
       retryable,
     }), claim.leaseToken);
-    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: outcome.state }, retryable ? 503 : 422);
+    return c.json({
+      success: false,
+      accepted: true,
+      duplicate: event.duplicate,
+      deliveryMode: "meta",
+      deliveryState: outcome.state,
+      ...(outcome.state === "retryable" && outcome.retryAfterSeconds !== undefined ? { retryAfterSeconds: outcome.retryAfterSeconds } : {}),
+    }, retryable ? 503 : 422);
   } catch (error) {
     const failure = error instanceof GHLMetaOutboundFailure ? error : null;
     await eventService.markFailed(tenant.id, event.event.eventId, new IntegrationEventProcessingError({

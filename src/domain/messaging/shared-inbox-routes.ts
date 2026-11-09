@@ -11,7 +11,7 @@ const MAX_PAGE_SIZE = 100;
 
 export type SharedInboxReplyOutcome =
   | { state: "accepted"; providerMessageId: string }
-  | { state: "retryable"; code: string }
+  | { state: "retryable"; code: string; retryAfterSeconds?: number }
   | { state: "permanent"; code: string }
   | { state: "unknown"; code: string };
 
@@ -125,6 +125,9 @@ export function createSharedInboxRoutes(replyServiceFactory?: SharedInboxReplySe
 
     const message = await repository.findOutboundByEffectKey(tenantId, conversationId, effectKey);
     const status = outcome.state === "permanent" ? 502 : outcome.state === "retryable" ? 503 : 202;
+    if (outcome.state === "retryable" && outcome.retryAfterSeconds !== undefined) {
+      c.header("Retry-After", String(Math.max(1, Math.min(86_400, Math.floor(outcome.retryAfterSeconds)))));
+    }
     return c.json({
       success: outcome.state === "accepted" || outcome.state === "unknown",
       deliveryState: outcome.state,

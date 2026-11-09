@@ -8,6 +8,9 @@ import { IntegrationEventService } from "../../../core/events/service";
 import type { GHLInboundQueueEnvelope } from "../../../domain/messaging/inbound-queue-contract";
 import { areNewQueueEnvelopesEnabled } from "../../../domain/messaging/inbound-queue";
 import { isMetaWhatsAppGHLInboundEnabled } from "./gohighlevel-inbound-config";
+import { decodeUtf8Body, readBoundedBody, RequestBodyTooLargeError } from "../../../core/http/bounded-body";
+
+const MAX_META_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 
 async function enqueuePendingMetaEvent(
   events: IntegrationEventRepository,
@@ -60,10 +63,18 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
     if (mode === "subscribe" && token && token === c.env.META_WHATSAPP_VERIFY_TOKEN && challenge) return c.text(challenge, 200);
     return c.text("Forbidden", 403);
   }
-  const rawBody = await c.req.text();
+  let rawBody: Uint8Array;
+  try {
+    rawBody = await readBoundedBody(c.req.raw, MAX_META_WEBHOOK_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return c.json({ success: false, message: "Webhook request body is too large." }, 413);
+    }
+    return c.json({ success: false, message: "Invalid webhook request body." }, 400);
+  }
   if (!await verifyMetaSignature(rawBody, c.req.header("X-Hub-Signature-256"), c.env.META_WHATSAPP_APP_SECRET)) return c.json({ success: false, message: "Invalid webhook signature." }, 401);
   let payload: unknown;
-  try { payload = JSON.parse(rawBody); } catch { return c.json({ success: false, message: "Invalid webhook payload." }, 400); }
+  try { payload = JSON.parse(decodeUtf8Body(rawBody)); } catch { return c.json({ success: false, message: "Invalid webhook payload." }, 400); }
   if (!payload || typeof payload !== "object" || (payload as MetaWebhookPayload).object !== "whatsapp_business_account") return c.json({ success: false, message: "Unsupported webhook payload." }, 400);
   const messages = parseMetaInboundText(payload as MetaWebhookPayload);
   const statuses = parseMetaStatusEvents(payload as MetaWebhookPayload);
@@ -72,6 +83,7 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
   const events = new IntegrationEventService(eventRepository);
   let accepted = 0;
   let queuePublicationFailed = false;
+  try {
   for (const message of messages) {
     const connection = await connections.findActiveByPhoneNumberId(message.phoneNumberId);
     if (!connection) continue;
@@ -123,6 +135,9 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       queuePublicationFailed = true;
     }
     accepted++;
+  }
+  } catch {
+    return c.json({ success: false, message: "Meta webhook processing could not be persisted." }, 503);
   }
   if (queuePublicationFailed) {
     return c.json({ success: false, message: "Meta event queue publication could not be confirmed." }, 503);

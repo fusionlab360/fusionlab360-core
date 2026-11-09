@@ -48,10 +48,14 @@ class TestProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestA
     scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
     expiresAt: Date.now() + 60 * 60 * 1000,
   };
+  async inspectToken(): Promise<{ valid: boolean; appIdMatches: boolean; scopes: readonly string[]; expiresAt?: number }> {
+    return { valid: true, appIdMatches: true, scopes: this.authorization.scopes, expiresAt: this.authorization.expiresAt };
+  }
   async exchangeAuthorizationCode(): Promise<MetaVerifiedAuthorization> { return this.authorization; }
   async validateDeveloperTestToken(): Promise<MetaVerifiedAuthorization> { return this.authorization; }
   async verifyWabaAccess(): Promise<boolean> { return true; }
   async listPhoneNumbers(): Promise<readonly string[]> { return [PHONE_ID]; }
+  async inspectPhoneNumber(_token: string, phoneNumberId: string) { return { id: phoneNumberId, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" }; }
   async verifyWebhookSubscription(): Promise<boolean> { return true; }
 }
 
@@ -88,8 +92,8 @@ function createApp(db: SQLiteD1, provider: TestProvider, tenantId: string, permi
   return app;
 }
 
-async function state(db: SQLiteD1, provider: TestProvider, tenantId = "tenant-a", operatorId = "client-tenant-a") {
-  return new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).start({ tenantId, operatorId, integrationId: "meta-a" });
+async function state(db: SQLiteD1, provider: TestProvider, tenantId = "tenant-a", operatorId = "client-tenant-a", connectionId?: string) {
+  return new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).start({ tenantId, operatorId, integrationId: "meta-a", ...(connectionId ? { connectionId } : {}) });
 }
 
 test("developer test configuration fails closed unless every exact value matches", () => {
@@ -235,24 +239,99 @@ test("Graph provider invokes fetch without rebinding its receiver", async () => 
   const authorization = await provider.validateDeveloperTestToken("temporary-test-token");
   assert.equal(receiver, undefined);
   assert.equal(authorization.expiresAt, expiresAt * 1000);
-  assert.equal(requestInit, undefined);
+  assert.equal(requestInit?.method, "GET");
+  assert.equal(requestInit?.redirect, "manual");
+  assert.equal(requestInit?.cache, "no-store");
   const url = new URL(requestUrl);
   assert.equal(url.protocol, "https:");
   assert.equal(url.hostname, "graph.facebook.com");
   assert.equal(url.pathname, "/v26.0/debug_token");
   assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
-  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+  assert.equal(url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requestInit?.headers).get("authorization"), "Bearer expected-app|synthetic-secret");
+});
+
+test("production authorization uses the Meta server-side code-exchange contract and validates its token", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const requests: Array<{ url: URL; init?: RequestInit }> = [];
+  const provider = new MetaWhatsAppGraphOnboardingProvider("expected-app", "synthetic-secret", "v26.0", async (input, init) => {
+    const url = new URL(String(input));
+    requests.push({ url, init });
+    if (url.pathname.endsWith("/oauth/access_token")) return new Response(JSON.stringify({ access_token: "synthetic-access-token", expires_in: 3600 }), { status: 200 });
+    return new Response(JSON.stringify({ data: {
+      app_id: "expected-app",
+      is_valid: true,
+      scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+      expires_at: expiresAt,
+    } }), { status: 200 });
+  });
+  const result = await provider.exchangeAuthorizationCode("synthetic-code");
+  assert.equal(result.accessToken, "synthetic-access-token");
+  assert.equal(requests.length, 2);
+  const exchange = requests[0]!;
+  assert.equal(exchange.init?.method ?? "GET", "GET");
+  assert.equal(exchange.url.searchParams.get("client_id"), "expected-app");
+  assert.equal(exchange.url.searchParams.get("client_secret"), "synthetic-secret");
+  assert.equal(exchange.url.searchParams.get("code"), "synthetic-code");
+  assert.equal(requests[1]!.url.searchParams.get("input_token"), "synthetic-access-token");
+  assert.equal(requests[1]!.url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requests[1]!.init?.headers).get("authorization"), "Bearer expected-app|synthetic-secret");
+});
+
+test("Graph asset verification uses read-only tenant-selected GETs including phone registration and app subscription", async () => {
+  const calls: Array<{ url: URL; init?: RequestInit }> = [];
+  const provider = new MetaWhatsAppGraphOnboardingProvider("expected-app", "synthetic-secret", "v26.0", async (input, init) => {
+    const url = new URL(String(input));
+    calls.push({ url, init });
+    if (url.pathname.endsWith("/debug_token")) return new Response(JSON.stringify({ data: {
+      app_id: "expected-app", is_valid: true,
+      scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    } }), { status: 200 });
+    if (url.pathname.endsWith(`/${WABA_ID}/phone_numbers`)) {
+      const data = url.searchParams.get("after")
+        ? [{ id: PHONE_ID }]
+        : Array.from({ length: 100 }, (_, index) => ({ id: `phone-${index}` }));
+      return new Response(JSON.stringify(url.searchParams.get("after") ? { data } : { data, paging: { cursors: { after: "cursor-1" } } }), { status: 200 });
+    }
+    if (url.pathname.endsWith(`/${WABA_ID}/subscribed_apps`)) return new Response(JSON.stringify({ data: [{ whatsapp_business_api_data: { id: "expected-app" } }] }), { status: 200 });
+    if (url.pathname.endsWith(`/${WABA_ID}`)) return new Response(JSON.stringify({ id: WABA_ID }), { status: 200 });
+    if (url.pathname.endsWith(`/${PHONE_ID}`)) return new Response(JSON.stringify({ id: PHONE_ID, status: "CONNECTED", platform_type: "CLOUD_API", code_verification_status: "VERIFIED" }), { status: 200 });
+    return new Response("unexpected asset", { status: 404 });
+  });
+
+  const token = await provider.inspectToken("synthetic-token");
+  assert.equal(token.valid && token.appIdMatches, true);
+  assert.deepEqual(token.scopes, ["whatsapp_business_management", "whatsapp_business_messaging"]);
+  assert.equal(await provider.verifyWabaAccess("synthetic-token", WABA_ID), true);
+  assert.ok((await provider.listPhoneNumbers("synthetic-token", WABA_ID)).includes(PHONE_ID));
+  assert.deepEqual(await provider.inspectPhoneNumber("synthetic-token", PHONE_ID), {
+    id: PHONE_ID, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED",
+  });
+  assert.equal(await provider.verifyWebhookSubscription("synthetic-token", WABA_ID), true);
+  assert.ok(calls.length >= 6);
+  for (const call of calls) {
+    assert.equal(call.init?.method ?? "GET", "GET");
+    assert.equal(call.init?.redirect, "manual");
+    assert.equal(call.url.searchParams.get("access_token"), null);
+    const expectedAuthorization = call.url.pathname.endsWith("/debug_token")
+      ? "Bearer expected-app|synthetic-secret"
+      : "Bearer synthetic-token";
+    assert.equal(new Headers(call.init?.headers).get("authorization"), expectedAuthorization);
+  }
 });
 
 test("Graph token-debug normalizes app credentials like the validated operator request", async () => {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
   let requestUrl = "";
+  let requestHeaders: HeadersInit | undefined;
   const provider = new MetaWhatsAppGraphOnboardingProvider(
     "  expected-app  ",
     " synthetic-secret\r\n",
     "v26.0",
-    async (input) => {
+    async (input, init) => {
       requestUrl = String(input);
+      requestHeaders = init?.headers;
       return new Response(JSON.stringify({
         data: {
           app_id: "expected-app",
@@ -268,7 +347,8 @@ test("Graph token-debug normalizes app credentials like the validated operator r
 
   const url = new URL(requestUrl);
   assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
-  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+  assert.equal(url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requestHeaders).get("authorization"), "Bearer expected-app|synthetic-secret");
 });
 
 test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
@@ -564,10 +644,48 @@ test("developer test reauthorization reuses the owned connection instead of crea
     const provider = new TestProvider();
     const service = new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider);
     const first = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
-    const second = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
+    const second = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider, "tenant-a", "client-tenant-a", first.connectionId)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
     assert.equal(second.connectionId, first.connectionId);
     assert.ok(second.credentialVersion > first.credentialVersion);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_connections").get()?.count, 1);
+  } finally { db.close(); }
+});
+
+test("read-only verification route is permission-gated, tenant-scoped, and never returns a credential", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    await seedClient(db, "tenant-a", ["integrations:test"], "fl360_tenant_a");
+    await seedClient(db, "tenant-b", ["integrations:test"], "fl360_tenant_b");
+    const started = await state(db, provider);
+    const complete = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+      accessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    const before = db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId)?.credential_version;
+    const allowed = await createApp(db, provider, "tenant-a", ["integrations:test"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_a" },
+      }, bindings(db));
+    assert.equal(allowed.status, 200, await allowed.clone().text());
+    const body = await allowed.json() as { ready: boolean; checks: { appSubscription: { status: string } } };
+    assert.equal(body.ready, true);
+    assert.equal(body.checks.appSubscription.status, "passed");
+    assert.doesNotMatch(JSON.stringify(body), /temporary-test-token|accessToken|ciphertext|synthetic-secret/);
+    assert.equal((db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId) as { credential_version: number }).credential_version, before);
+
+    db.sqlite.prepare("UPDATE clients SET permissions=? WHERE id=?")
+      .run(JSON.stringify(["integrations:read"]), "client-tenant-a");
+    const denied = await createApp(db, provider, "tenant-a", ["integrations:read"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_a" },
+      }, bindings(db));
+    assert.equal(denied.status, 403);
+    const crossTenant = await createApp(db, provider, "tenant-b", ["integrations:test"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_b" },
+      }, bindings(db));
+    assert.equal(crossTenant.status, 404);
   } finally { db.close(); }
 });
 

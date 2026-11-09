@@ -12,6 +12,17 @@ function metaProviderErrorCode(body: unknown): number | undefined {
   return typeof code === "number" && Number.isSafeInteger(code) && code >= 0 ? code : undefined;
 }
 
+function retryAfterSeconds(header: string | null): number {
+  if (header && /^\d{1,8}$/.test(header.trim())) {
+    return Math.max(1, Math.min(86_400, Number(header.trim())));
+  }
+  if (header) {
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) return Math.max(1, Math.min(86_400, Math.ceil((date - Date.now()) / 1000)));
+  }
+  return 30;
+}
+
 /** Thin Graph API adapter; all durable effect and tenant checks stay in outbound.ts. */
 export class MetaWhatsAppGraphOutboundTransport implements MetaWhatsAppTransport {
   constructor(
@@ -63,7 +74,10 @@ export class MetaWhatsAppGraphOutboundTransport implements MetaWhatsAppTransport
       // Meta error 190 is an authentication failure. A plain 403 can instead
       // represent permissions or policy and must not be treated as revocation.
       if (response.status === 401 || errorCode === 190) return { state: "permanent", code: "META_CREDENTIAL_INVALID" };
-      if (response.status === 429 || response.status >= 500) return { state: "retryable", code: `provider_http_${response.status}` };
+      if (response.status === 429) return { state: "retryable", code: "provider_http_429", retryAfterSeconds: retryAfterSeconds(response.headers.get("retry-after")) };
+      // A server error or timeout can arrive after the provider accepted the send.
+      // Keep it unknown so the same effect is never blindly delivered twice.
+      if (response.status === 408 || response.status >= 500) return { state: "unknown", code: `provider_http_${response.status}` };
       return { state: "permanent", code: `provider_http_${response.status}` };
     }
 

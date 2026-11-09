@@ -91,6 +91,12 @@ async function sign(body: string, secret: string): Promise<string> {
   return `sha256=${Array.from(digest).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+async function signBytes(body: Uint8Array, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, Uint8Array.from(body)));
+  return `sha256=${Array.from(digest).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 function controllerFixture(
   newEnvelopeEnabled = true,
   send?: (value: Record<string, unknown>, queue: Array<Record<string, unknown>>) => Promise<void>,
@@ -155,6 +161,59 @@ test("Meta webhook verifies GET, rejects unknown phone numbers, and queues a dur
   const unknown = await fixture.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await sign(unknownBody, "synthetic-secret") }, body: unknownBody }, fixture.env);
   assert.equal(unknown.status, 200);
   assert.equal(fixture.queue.length, 1);
+});
+
+test("Meta webhook rejects oversized and malformed bodies before persistence", async () => {
+  const fixture = controllerFixture();
+  const oversized = await fixture.app.request("/webhooks/meta-whatsapp", {
+    method: "POST",
+    headers: { "Content-Length": String(10 * 1024 * 1024 + 1) },
+    body: "{}",
+  }, fixture.env);
+  assert.equal(oversized.status, 413);
+  assert.equal(fixture.db.sqlite.prepare("SELECT COUNT(*) AS count FROM integration_events").get()?.count, 0);
+
+  const malformedLength = await fixture.app.request("/webhooks/meta-whatsapp", {
+    method: "POST",
+    headers: { "Content-Length": "not-a-length" },
+    body: "{}",
+  }, fixture.env);
+  assert.equal(malformedLength.status, 400);
+
+  const invalidUtf8 = new Uint8Array([0xff, 0xfe]);
+  const signature = await signBytes(invalidUtf8, "synthetic-secret");
+  const malformedPayload = await fixture.app.request("/webhooks/meta-whatsapp", {
+    method: "POST",
+    headers: { "X-Hub-Signature-256": signature },
+    body: invalidUtf8,
+  }, fixture.env);
+  assert.equal(malformedPayload.status, 400);
+  assert.equal(fixture.db.sqlite.prepare("SELECT COUNT(*) AS count FROM integration_events").get()?.count, 0);
+});
+
+test("Meta webhook returns a safe retry response when event persistence fails", async () => {
+  const fixture = controllerFixture();
+  const normalDb = fixture.db.binding();
+  const failingDb = {
+    prepare(sql: string) {
+      if (/INSERT\s+(?:OR\s+IGNORE\s+)?INTO integration_events/i.test(sql)) {
+        return {
+          bind() { return this; },
+          run: async () => { throw new Error("synthetic private database detail"); },
+        };
+      }
+      return normalDb.prepare(sql);
+    },
+  } as unknown as D1Database;
+  const body = webhookBody();
+  const signature = await sign(body, "synthetic-secret");
+  const response = await fixture.app.request("/webhooks/meta-whatsapp", {
+    method: "POST",
+    headers: { "X-Hub-Signature-256": signature },
+    body,
+  }, { ...fixture.env, DB: failingDb });
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /private database detail|recipient|hello/i);
 });
 
 test("duplicate Meta webhook delivery does not enqueue a second event", async () => {

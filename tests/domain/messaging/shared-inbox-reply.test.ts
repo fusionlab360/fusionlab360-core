@@ -37,6 +37,7 @@ const key = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
 const bindings = {
   META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ v1: key }),
   META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION: "v1",
+  GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true",
 };
 
 async function fixture(provider = "meta_whatsapp") {
