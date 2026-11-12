@@ -39,28 +39,41 @@ class TestD1 {
   }
   prepare(sql: string): D1PreparedStatement {
     let args: unknown[] = [];
+    const execute = () => ({ meta: { changes: Number(this.sqlite.prepare(sql).run(...args as never[]).changes) } });
     const stmt = {
       bind: (...next: unknown[]) => { args = next; return stmt; },
       first: async <T>() => (this.sqlite.prepare(sql).get(...args as never[]) as T | undefined) ?? null,
       all: async <T>() => ({ results: this.sqlite.prepare(sql).all(...args as never[]) as T[] }),
-      run: async () => ({ meta: { changes: Number(this.sqlite.prepare(sql).run(...args as never[]).changes) } }),
+      run: async () => execute(),
+      execute,
     };
     return stmt as unknown as D1PreparedStatement;
   }
   async batch(statements: D1PreparedStatement[]) {
-    return Promise.all(statements.map((statement) => statement.run()));
+    this.sqlite.exec("BEGIN");
+    try {
+      const results = statements.map((statement) =>
+        (statement as D1PreparedStatement & { execute: () => unknown }).execute());
+      this.sqlite.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
   binding() { return this as unknown as D1Database; }
   close() { this.sqlite.close(); }
 }
 
-async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical") {
+async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical", seedBindings = true) {
   const db = new TestD1(schemaShape);
   if (schemaShape === "canonical") db.sqlite.exec(`
       INSERT INTO integration_credentials(tenant_id,provider,auth_type,location_id) VALUES('tenant-a','gohighlevel','oauth2','loc-a'),('tenant-b','gohighlevel','oauth2','loc-b');
-      UPDATE meta_whatsapp_connections SET ghl_location_id='loc-a',ghl_provider_id='provider-a' WHERE id='conn-a';
-      UPDATE meta_whatsapp_connections SET ghl_location_id='loc-b',ghl_provider_id='provider-b' WHERE id='conn-b';
     `);
+  if (schemaShape === "canonical" && seedBindings) db.sqlite.exec(`
+    UPDATE meta_whatsapp_connections SET ghl_location_id='loc-a',ghl_provider_id='provider-a' WHERE id='conn-a';
+    UPDATE meta_whatsapp_connections SET ghl_location_id='loc-b',ghl_provider_id='provider-b' WHERE id='conn-b';
+  `);
   for (const [id, tenant, token, permissions] of [
     ["client-a", "tenant-a", keyA, ["integrations:write"]],
     ["client-b", "tenant-b", keyB, ["integrations:write"]],
@@ -75,8 +88,95 @@ async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "
     await next();
   });
   app.route("/integrations/meta-whatsapp", createMetaWhatsAppRoutes());
-  return { db, request: (token?: string, path = endpoint, init: RequestInit = {}) => app.request(path, { ...init, headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, { DB: db.binding(), WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${evidenceA},tenant-b:${evidenceB}` } as AppBindings) };
+  return { db, request: (token?: string, path = endpoint, init: RequestInit = {}, env: Partial<AppBindings> = {}) => app.request(path, { ...init, headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, { DB: db.binding(), WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${evidenceA},tenant-b:${evidenceB}`, ...env } as AppBindings) };
 }
+
+async function setupLegacyBinding() {
+  const { db, request } = await setup("canonical", false);
+  for (const suffix of ["a", "b"]) {
+    db.sqlite.prepare("INSERT INTO integrations(id,tenant_id,provider,enabled,settings) VALUES(?,?,'gohighlevel',1,?)")
+      .run(`ghl-${suffix}`, `tenant-${suffix}`, JSON.stringify({ providerConfiguration: { conversationProviderId: `provider-${suffix}` } }));
+    db.sqlite.prepare("UPDATE integration_credentials SET api_key = 'fixture', metadata = ? WHERE tenant_id = ? AND provider = 'gohighlevel'")
+      .run(JSON.stringify({ connectionStatus: "connected", companyId: "fixture-company" }), `tenant-${suffix}`);
+  }
+  const justification = "Verified tenant ownership and historical provider installation.";
+  const bind = (token: string | undefined = keyA, id = "conn-a", fields: Record<string, unknown> = {}, env: Partial<AppBindings> = {}) =>
+    request(token, `/integrations/meta-whatsapp/connections/${id}/legacy-binding`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ghlLocationId: "loc-a", ghlProviderId: "provider-a", evidenceReference: evidenceA, justification, ...fields }),
+    }, { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a,loc-b", ...env });
+  return { db, request, bind, justification };
+}
+
+test("legacy binding claims both NULL fields once, audits the authenticated operator, and leaves review separate", async () => {
+  const { db, request, bind, justification } = await setupLegacyBinding();
+  try {
+    const review = () => request(keyA, endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId: "conn-a", decision: "approve", evidenceReference: evidenceA, justification }),
+    });
+    assert.equal((await review()).status, 409);
+    const results = await Promise.all([bind(keyA, "conn-a", { operatorId: "forged" }), bind()]);
+    assert.deepEqual(results.map((response) => response.status).sort(), [201, 409]);
+    const connection = db.sqlite.prepare("SELECT status, activation_state, activation_version, ghl_location_id, ghl_provider_id FROM meta_whatsapp_connections WHERE id='conn-a'").get();
+    assert.deepEqual({ ...connection }, { status: "active", activation_state: "legacy_active", activation_version: 0, ghl_location_id: "loc-a", ghl_provider_id: "provider-a" });
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 0);
+    const audits = db.sqlite.prepare("SELECT tenant_id, actor_client_id, previous_state, new_state, reason FROM meta_whatsapp_connection_activation_audit").all();
+    assert.equal(audits.length, 1);
+    assert.deepEqual({ ...audits[0] }, {
+      tenant_id: "tenant-a", actor_client_id: "client-a", previous_state: "legacy_active",
+      new_state: "legacy_binding_established", reason: JSON.stringify({ evidenceReference: evidenceA, justification, ghlProviderId: "provider-a" }),
+    });
+    assert.throws(() => db.sqlite.exec("UPDATE meta_whatsapp_connection_activation_audit SET reason='tampered'"), /append-only/);
+    assert.throws(() => db.sqlite.exec("DELETE FROM meta_whatsapp_connection_activation_audit"), /append-only/);
+    assert.throws(() => db.sqlite.exec("UPDATE meta_whatsapp_connections SET ghl_provider_id='other' WHERE id='conn-a'"), /immutable/);
+    assert.equal((await bind()).status, 409);
+    assert.equal((await bind(keyA, "conn-a", { ghlProviderId: "different" })).status, 409);
+    assert.equal((await review()).status, 200);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 1);
+    assert.equal(db.sqlite.prepare("SELECT activation_state FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.activation_state, "legacy_active");
+
+    // Even a duplicate allowlist entry cannot authorize reusing another tenant's evidence.
+    assert.equal((await bind(keyB, "conn-b", { ghlLocationId: "loc-b", ghlProviderId: "provider-b" },
+      { WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-b:${evidenceA}` })).status, 409);
+  } finally { db.close(); }
+});
+
+test("legacy binding rejects unauthorized operators, mismatches, evidence failures, and ineligible connections", async () => {
+  const { db, bind } = await setupLegacyBinding();
+  try {
+    assert.equal((await bind("fl360_read_only")).status, 403);
+    assert.equal((await bind(keyA, "conn-b")).status, 404);
+    assert.equal((await bind(keyA, "conn-a", { ghlLocationId: "loc-b" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", { ghlProviderId: "provider-b" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", {}, { GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-b" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", { evidenceReference: undefined })).status, 400);
+    assert.equal((await bind(keyA, "conn-a", { evidenceReference: evidenceB })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", { justification: "too short" })).status, 400);
+    db.sqlite.exec("UPDATE integration_credentials SET metadata='invalid' WHERE tenant_id='tenant-a'");
+    assert.equal((await bind()).status, 409);
+    db.sqlite.exec("UPDATE integration_credentials SET metadata=json_object('connectionStatus','connected','companyId','fixture') WHERE tenant_id='tenant-a'");
+    db.sqlite.exec("UPDATE meta_whatsapp_connections SET status='disabled' WHERE id='conn-a'");
+    assert.equal((await bind()).status, 409);
+    db.sqlite.exec("UPDATE meta_whatsapp_connections SET status='active', ghl_location_id='loc-a' WHERE id='conn-a'");
+    assert.equal((await bind()).status, 409);
+    for (const state of ["suspended", "revoked"]) {
+      db.sqlite.prepare("UPDATE meta_whatsapp_connections SET activation_state=?, activation_actor='fixture', activation_reason='fixture transition' WHERE id='conn-a'").run(state);
+      assert.equal((await bind()).status, 409);
+    }
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state='legacy_binding_established'").get()?.n, 0);
+  } finally { db.close(); }
+});
+
+test("legacy binding rolls back its audit if the binding pair is already claimed", async () => {
+  const { db, bind } = await setupLegacyBinding();
+  try {
+    db.sqlite.exec("UPDATE meta_whatsapp_connections SET ghl_location_id='loc-a', ghl_provider_id='provider-a' WHERE id='conn-b'");
+    assert.equal((await bind()).status, 409);
+    assert.equal(db.sqlite.prepare("SELECT ghl_location_id FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.ghl_location_id, null);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit").get()?.n, 0);
+  } finally { db.close(); }
+});
 
 test("legacy review endpoints return sanitized SCHEMA_NOT_READY on all pre-0045 schemas after authorization", async () => {
   for (const schemaShape of ["pre0042", "original0042", "revised0042"] as const) {

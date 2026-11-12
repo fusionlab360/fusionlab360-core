@@ -15,6 +15,78 @@ function mapRow(row: Record<string, unknown>): MetaWhatsAppConnectionRecord {
 }
 
 export class MetaWhatsAppConnectionRepository extends BaseRepository {
+  async bindLegacyConnection(input: {
+    tenantId: string; connectionId: string; locationId: string; providerId: string;
+    actorId: string; evidenceReference: string; justification: string;
+  }): Promise<boolean> {
+    const operationId = crypto.randomUUID();
+    const reason = JSON.stringify({
+      evidenceReference: input.evidenceReference,
+      justification: input.justification,
+      ghlProviderId: input.providerId,
+    });
+
+    // D1 executes the batch sequentially in one transaction. The audit insert
+    // claims the eligible row and the update is scoped to that exact claim.
+    const [audit, update] = await this.db.batch([
+      this.db.prepare(`
+        WITH binding(tenant_id, connection_id, location_id, provider_id,
+          evidence_ref, actor_id, reason, operation_id) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?))
+        INSERT INTO meta_whatsapp_connection_activation_audit
+          (tenant_id, connection_id, ghl_location_id, actor_client_id, previous_state, new_state, reason, trace_id)
+        SELECT b.tenant_id, b.connection_id, b.location_id, b.actor_id,
+          'legacy_active', 'legacy_binding_established', b.reason, b.operation_id
+        FROM binding b
+        JOIN meta_whatsapp_connections c ON c.id = b.connection_id AND c.tenant_id = b.tenant_id
+        JOIN integrations meta ON meta.id = c.integration_id AND meta.tenant_id = c.tenant_id
+          AND meta.provider = 'meta_whatsapp'
+        WHERE c.status = 'active' AND c.activation_state = 'legacy_active'
+          AND c.ghl_location_id IS NULL AND c.ghl_provider_id IS NULL
+          AND (
+            SELECT COUNT(*) FROM integrations ghl
+            JOIN integration_credentials credential ON credential.tenant_id = ghl.tenant_id
+              AND credential.provider = ghl.provider
+            WHERE ghl.tenant_id = b.tenant_id AND ghl.provider = 'gohighlevel' AND ghl.enabled = 1
+              AND credential.auth_type = 'oauth2' AND credential.location_id = b.location_id
+              AND TRIM(credential.api_key) <> ''
+              AND CASE WHEN json_valid(credential.metadata) THEN
+                json_extract(credential.metadata, '$.connectionStatus') = 'connected'
+                AND json_extract(credential.metadata, '$.companyId') IS NOT NULL END
+              AND CASE WHEN json_valid(ghl.settings) THEN
+                json_type(ghl.settings, '$.providerConfiguration.conversationProviderId') = 'text'
+                AND TRIM(json_extract(ghl.settings, '$.providerConfiguration.conversationProviderId')) = b.provider_id END
+          ) = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM meta_whatsapp_legacy_approval_reviews review
+            WHERE (review.tenant_id = b.tenant_id AND review.connection_id = b.connection_id)
+              OR (review.tenant_id <> b.tenant_id AND review.evidence_ref = b.evidence_ref)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM meta_whatsapp_connection_activation_audit prior
+            WHERE prior.tenant_id <> b.tenant_id
+              AND prior.new_state IN ('legacy_binding_established', 'legacy_review_approved',
+                'legacy_review_rejected', 'legacy_review_conflict', 'active')
+              AND CASE WHEN json_valid(prior.reason) THEN
+                json_extract(prior.reason, '$.evidenceReference') = b.evidence_ref END
+          )
+      `).bind(input.tenantId, input.connectionId, input.locationId, input.providerId,
+        input.evidenceReference, input.actorId, reason, operationId),
+      this.db.prepare(`
+        UPDATE meta_whatsapp_connections
+        SET ghl_location_id = ?, ghl_provider_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND status = 'active' AND activation_state = 'legacy_active'
+          AND ghl_location_id IS NULL AND ghl_provider_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM meta_whatsapp_connection_activation_audit audit
+            WHERE audit.tenant_id = meta_whatsapp_connections.tenant_id
+              AND audit.connection_id = meta_whatsapp_connections.id
+              AND audit.new_state = 'legacy_binding_established' AND audit.trace_id = ?
+          )
+      `).bind(input.locationId, input.providerId, input.tenantId, input.connectionId, operationId),
+    ]);
+    return audit?.meta.changes === 1 && update?.meta.changes === 1;
+  }
+
   async findUniqueStatusByTenant(tenantId: string): Promise<{
     id: string;
     integrationId: string;

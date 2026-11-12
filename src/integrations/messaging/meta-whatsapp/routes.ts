@@ -392,6 +392,51 @@ routes.get("/connections/legacy-reviews", requireTenantClientPermission("integra
   return c.json({ success: true, reviews, pagination: { limit: parsedLimit, offset: parsedOffset } });
 });
 
+routes.post("/connections/:connectionId/legacy-binding", requireTenantClientPermission("integrations:write"), async (c) => {
+  const principal = c.get("principal");
+  if (principal?.type !== "client" || !principal.clientId) {
+    return c.json({ success: false, message: "Unauthorized." }, 401);
+  }
+  if (!await hasLifecycleSchema(c.env.DB) || !await hasLegacyReviewSchema(c.env.DB)) {
+    return c.json({ success: false, code: "SCHEMA_NOT_READY" }, 503);
+  }
+  const body = await c.req.json<{
+    ghlLocationId?: unknown; ghlProviderId?: unknown; evidenceReference?: unknown; justification?: unknown;
+  }>().catch(() => null);
+  const locationId = typeof body?.ghlLocationId === "string" ? body.ghlLocationId.trim() : "";
+  const providerId = normalizeGHLConversationProviderId(body?.ghlProviderId);
+  if (!body || !locationId || locationId.length > 128 || !providerId ||
+      !validLifecycleEvidence(body.evidenceReference) || !validLifecycleJustification(body.justification)) {
+    return c.json({ success: false, code: "INVALID_LEGACY_BINDING_REQUEST" }, 400);
+  }
+  const approvedEvidence = (c.env.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST ?? "")
+    .split(",").map((item) => item.trim());
+  if (!approvedEvidence.includes(`${principal.tenantId}:${body.evidenceReference}`)) {
+    return c.json({ success: false, code: "EVIDENCE_NOT_APPROVED" }, 409);
+  }
+  if (!isGHLProviderPilotLocationAuthorized(c.env, locationId)) {
+    return c.json({ success: false, code: "GHL_INSTALLATION_UNVERIFIED" }, 409);
+  }
+  const connectionId = c.req.param("connectionId").trim();
+  const repository = new MetaWhatsAppConnectionRepository(c.env.DB);
+  if (!connectionId || connectionId.length > 128 ||
+      !await repository.findByTenantAndId(principal.tenantId, connectionId)) {
+    return c.json({ success: false, code: "CONNECTION_NOT_FOUND" }, 404);
+  }
+  try {
+    const bound = await repository.bindLegacyConnection({
+      tenantId: principal.tenantId, connectionId, locationId, providerId,
+      actorId: principal.clientId, evidenceReference: body.evidenceReference,
+      justification: body.justification.trim(),
+    });
+    if (bound) return c.json({ success: true, activationState: "legacy_active" }, 201);
+  } catch {
+    // The unique active binding index can reject a binding already in use.
+    // D1 rolls back the corresponding audit insert with the rejected update.
+  }
+  return c.json({ success: false, code: "LEGACY_BINDING_CONFLICT" }, 409);
+});
+
 routes.post("/connections/legacy-reviews", requireTenantClientPermission("integrations:write"), async (c) => {
   const principal = c.get("principal")!;
   if (!await hasLegacyReviewSchema(c.env.DB)) return c.json({ success: false, code: "SCHEMA_NOT_READY" }, 503);
