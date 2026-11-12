@@ -19,29 +19,119 @@ export class MetaWhatsAppConnectionRepository extends BaseRepository {
     tenantId: string; connectionId: string; locationId: string; providerId: string;
     actorId: string; evidenceReference: string; justification: string;
   }): Promise<boolean> {
+    return this.bindConnection(input, { kind: "legacy" });
+  }
+
+  async bindDeveloperTestLegacyConnection(input: {
+    tenantId: string; connectionId: string; locationId: string; providerId: string;
+    actorId: string; evidenceReference: string; justification: string;
+    wabaId: string; phoneNumberId: string;
+  }): Promise<boolean> {
+    return this.bindConnection(input, {
+      kind: "developer_test", wabaId: input.wabaId, phoneNumberId: input.phoneNumberId,
+    });
+  }
+
+  async findDeveloperTestBindingTarget(tenantId: string, connectionId: string): Promise<{
+    integrationId: string; wabaId: string; phoneNumberId: string; developerTest: boolean;
+  } | null> {
+    const row = await this.db.prepare(`
+      SELECT connection.integration_id AS integrationId,
+        connection.waba_id AS wabaId,
+        connection.phone_number_id AS phoneNumberId,
+        CASE WHEN json_valid(meta_credential.metadata)
+          THEN json_type(meta_credential.metadata, '$.developerTest') = 'true'
+          ELSE 0 END AS developerTest
+      FROM meta_whatsapp_connections connection
+      JOIN integrations meta ON meta.id = connection.integration_id
+        AND meta.tenant_id = connection.tenant_id AND meta.provider = 'meta_whatsapp'
+      JOIN meta_whatsapp_credentials meta_credential
+        ON meta_credential.connection_id = connection.id
+        AND meta_credential.tenant_id = connection.tenant_id
+        AND meta_credential.integration_id = connection.integration_id
+        AND meta_credential.provider = 'meta_whatsapp'
+      WHERE connection.tenant_id = ? AND connection.id = ?
+      LIMIT 1
+    `).bind(tenantId, connectionId).first<{
+      integrationId: string; wabaId: string; phoneNumberId: string; developerTest: number;
+    }>();
+    return row ? {
+      integrationId: row.integrationId,
+      wabaId: row.wabaId,
+      phoneNumberId: row.phoneNumberId,
+      developerTest: row.developerTest === 1,
+    } : null;
+  }
+
+  private async bindConnection(
+    input: {
+      tenantId: string; connectionId: string; locationId: string; providerId: string;
+      actorId: string; evidenceReference: string; justification: string;
+    },
+    mode: { kind: "legacy" } | { kind: "developer_test"; wabaId: string; phoneNumberId: string },
+  ): Promise<boolean> {
     const operationId = crypto.randomUUID();
     const reason = JSON.stringify({
       evidenceReference: input.evidenceReference,
       justification: input.justification,
       ghlProviderId: input.providerId,
+      ...(mode.kind === "developer_test" ? {
+        bindingType: "developer_test",
+        wabaId: mode.wabaId,
+        phoneNumberId: mode.phoneNumberId,
+      } : {}),
     });
+    const auditState = mode.kind === "developer_test"
+      ? "developer_test_binding_established"
+      : "legacy_binding_established";
+    const evidenceType = mode.kind;
+    const expectedWabaId = mode.kind === "developer_test" ? mode.wabaId : null;
+    const expectedPhoneNumberId = mode.kind === "developer_test" ? mode.phoneNumberId : null;
 
     // D1 executes the batch sequentially in one transaction. The audit insert
     // claims the eligible row and the update is scoped to that exact claim.
     const [audit, update] = await this.db.batch([
       this.db.prepare(`
         WITH binding(tenant_id, connection_id, location_id, provider_id,
-          evidence_ref, actor_id, reason, operation_id) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?))
+          evidence_ref, actor_id, reason, operation_id, evidence_type,
+          expected_waba_id, expected_phone_number_id, audit_state)
+          AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))
         INSERT INTO meta_whatsapp_connection_activation_audit
           (tenant_id, connection_id, ghl_location_id, actor_client_id, previous_state, new_state, reason, trace_id)
         SELECT b.tenant_id, b.connection_id, b.location_id, b.actor_id,
-          'legacy_active', 'legacy_binding_established', b.reason, b.operation_id
+          'legacy_active', b.audit_state, b.reason, b.operation_id
         FROM binding b
         JOIN meta_whatsapp_connections c ON c.id = b.connection_id AND c.tenant_id = b.tenant_id
         JOIN integrations meta ON meta.id = c.integration_id AND meta.tenant_id = c.tenant_id
           AND meta.provider = 'meta_whatsapp'
         WHERE c.status = 'active' AND c.activation_state = 'legacy_active'
           AND c.ghl_location_id IS NULL AND c.ghl_provider_id IS NULL
+          AND (
+            (b.evidence_type = 'developer_test'
+              AND c.waba_id = b.expected_waba_id
+              AND c.phone_number_id = b.expected_phone_number_id
+              AND EXISTS (
+                SELECT 1 FROM meta_whatsapp_credentials meta_credential
+                WHERE meta_credential.tenant_id = b.tenant_id
+                  AND meta_credential.integration_id = c.integration_id
+                  AND meta_credential.connection_id = c.id
+                  AND meta_credential.provider = 'meta_whatsapp'
+                  AND CASE WHEN json_valid(meta_credential.metadata)
+                    THEN json_type(meta_credential.metadata, '$.developerTest') = 'true'
+                    ELSE 0 END
+              ))
+            OR (b.evidence_type = 'legacy'
+              AND NOT EXISTS (
+                SELECT 1 FROM meta_whatsapp_credentials meta_credential
+                WHERE meta_credential.tenant_id = b.tenant_id
+                  AND meta_credential.integration_id = c.integration_id
+                  AND meta_credential.connection_id = c.id
+                  AND meta_credential.provider = 'meta_whatsapp'
+                  AND CASE WHEN json_valid(meta_credential.metadata)
+                    THEN json_type(meta_credential.metadata, '$.developerTest') = 'true'
+                    ELSE 0 END
+              ))
+          )
           AND (
             SELECT COUNT(*) FROM integrations ghl
             JOIN integration_credentials credential ON credential.tenant_id = ghl.tenant_id
@@ -65,12 +155,14 @@ export class MetaWhatsAppConnectionRepository extends BaseRepository {
             SELECT 1 FROM meta_whatsapp_connection_activation_audit prior
             WHERE prior.tenant_id <> b.tenant_id
               AND prior.new_state IN ('legacy_binding_established', 'legacy_review_approved',
-                'legacy_review_rejected', 'legacy_review_conflict', 'active')
+                'legacy_review_rejected', 'legacy_review_conflict',
+                'developer_test_binding_established', 'active')
               AND CASE WHEN json_valid(prior.reason) THEN
                 json_extract(prior.reason, '$.evidenceReference') = b.evidence_ref END
           )
       `).bind(input.tenantId, input.connectionId, input.locationId, input.providerId,
-        input.evidenceReference, input.actorId, reason, operationId),
+        input.evidenceReference, input.actorId, reason, operationId, evidenceType,
+        expectedWabaId, expectedPhoneNumberId, auditState),
       this.db.prepare(`
         UPDATE meta_whatsapp_connections
         SET ghl_location_id = ?, ghl_provider_id = ?, updated_at = CURRENT_TIMESTAMP
@@ -80,9 +172,9 @@ export class MetaWhatsAppConnectionRepository extends BaseRepository {
             SELECT 1 FROM meta_whatsapp_connection_activation_audit audit
             WHERE audit.tenant_id = meta_whatsapp_connections.tenant_id
               AND audit.connection_id = meta_whatsapp_connections.id
-              AND audit.new_state = 'legacy_binding_established' AND audit.trace_id = ?
+              AND audit.new_state = ? AND audit.trace_id = ?
           )
-      `).bind(input.locationId, input.providerId, input.tenantId, input.connectionId, operationId),
+      `).bind(input.locationId, input.providerId, input.tenantId, input.connectionId, auditState, operationId),
     ]);
     return audit?.meta.changes === 1 && update?.meta.changes === 1;
   }

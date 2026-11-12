@@ -124,6 +124,8 @@ export type AppBindings = {
   WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST?: string;
   /** Exact, operator-approved evidence references eligible for legacy review. */
   WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST?: string;
+  /** Tenant-qualified evidence restricted to developer-test legacy binding. */
+  META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST?: string;
 
   /** Temporary, fail-closed operator diagnostic for a single contact pilot. */
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED?: string;

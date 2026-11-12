@@ -7,7 +7,11 @@ import { IntegrationRepository } from "../../../persistence/repositories/integra
 import { MetaWhatsAppConnectionRepository } from "./persistence/connection-repository";
 import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaWhatsAppOnboardingProvider } from "./onboarding";
 import { createMetaWhatsAppGraphOnboardingProvider } from "./graph-onboarding-provider";
-import { isMetaWhatsAppDeveloperTestAuthorized } from "./developer-test-config";
+import {
+  isMetaWhatsAppDeveloperTestAuthorized,
+  isMetaWhatsAppDeveloperTestBindingEvidenceAuthorized,
+  isMetaWhatsAppDeveloperTestBindingEvidenceReference,
+} from "./developer-test-config";
 import { classifyMetaWhatsAppCredentialLifecycle, createMetaWhatsAppCredentialVault, MetaWhatsAppCredentialError } from "./credential-vault";
 import { MetaWhatsAppCredentialRepository } from "./persistence/credential-repository";
 import { isGHLProviderPilotLocationAuthorized } from "../gohighlevel/custom-provider-pilot-config";
@@ -392,6 +396,64 @@ routes.get("/connections/legacy-reviews", requireTenantClientPermission("integra
   return c.json({ success: true, reviews, pagination: { limit: parsedLimit, offset: parsedOffset } });
 });
 
+routes.post("/connections/:connectionId/developer-test-binding", requireTenantClientPermission("integrations:write"), async (c) => {
+  const principal = c.get("principal");
+  if (principal?.type !== "client" || !principal.clientId) {
+    return c.json({ success: false, message: "Unauthorized." }, 401);
+  }
+  if (!await hasLifecycleSchema(c.env.DB) || !await hasLegacyReviewSchema(c.env.DB)) {
+    return c.json({ success: false, code: "SCHEMA_NOT_READY" }, 503);
+  }
+  const body = await c.req.json<{
+    ghlLocationId?: unknown; ghlProviderId?: unknown; evidenceReference?: unknown; justification?: unknown;
+  }>().catch(() => null);
+  const locationId = typeof body?.ghlLocationId === "string" ? body.ghlLocationId.trim() : "";
+  const providerId = normalizeGHLConversationProviderId(body?.ghlProviderId);
+  const evidenceReference = typeof body?.evidenceReference === "string" ? body.evidenceReference.trim() : "";
+  if (!body || !locationId || locationId.length > 128 || !providerId ||
+      !validLifecycleEvidence(evidenceReference) || !validLifecycleJustification(body.justification)) {
+    return c.json({ success: false, code: "INVALID_DEVELOPER_TEST_BINDING_REQUEST" }, 400);
+  }
+  if (!isMetaWhatsAppDeveloperTestBindingEvidenceAuthorized(c.env, {
+    tenantId: principal.tenantId, evidenceReference,
+  })) {
+    return c.json({ success: false, code: "DEVELOPER_TEST_EVIDENCE_NOT_APPROVED" }, 409);
+  }
+  if (!isGHLProviderPilotLocationAuthorized(c.env, locationId)) {
+    return c.json({ success: false, code: "GHL_INSTALLATION_UNVERIFIED" }, 409);
+  }
+
+  const connectionId = c.req.param("connectionId").trim();
+  if (!connectionId || connectionId.length > 128) {
+    return c.json({ success: false, code: "CONNECTION_NOT_FOUND" }, 404);
+  }
+  const repository = new MetaWhatsAppConnectionRepository(c.env.DB);
+  let target: Awaited<ReturnType<typeof repository.findDeveloperTestBindingTarget>>;
+  try {
+    target = await repository.findDeveloperTestBindingTarget(principal.tenantId, connectionId);
+  } catch {
+    return c.json({ success: false, code: "DEVELOPER_TEST_BINDING_UNAVAILABLE" }, 409);
+  }
+  if (!target) return c.json({ success: false, code: "CONNECTION_NOT_FOUND" }, 404);
+  if (!target.developerTest || !isMetaWhatsAppDeveloperTestAuthorized(c.env, {
+    tenantId: principal.tenantId, wabaId: target.wabaId, phoneNumberId: target.phoneNumberId,
+  })) {
+    return c.json({ success: false, code: "DEVELOPER_TEST_RESOURCE_NOT_AUTHORIZED" }, 409);
+  }
+
+  try {
+    const bound = await repository.bindDeveloperTestLegacyConnection({
+      tenantId: principal.tenantId, connectionId, locationId, providerId,
+      actorId: principal.clientId, evidenceReference, justification: body.justification.trim(),
+      wabaId: target.wabaId, phoneNumberId: target.phoneNumberId,
+    });
+    if (bound) return c.json({ success: true, activationState: "legacy_active", developerTest: true }, 201);
+  } catch {
+    // The repository batch rolls back both the audit and binding on conflict.
+  }
+  return c.json({ success: false, code: "DEVELOPER_TEST_BINDING_CONFLICT" }, 409);
+});
+
 routes.post("/connections/:connectionId/legacy-binding", requireTenantClientPermission("integrations:write"), async (c) => {
   const principal = c.get("principal");
   if (principal?.type !== "client" || !principal.clientId) {
@@ -408,6 +470,11 @@ routes.post("/connections/:connectionId/legacy-binding", requireTenantClientPerm
   if (!body || !locationId || locationId.length > 128 || !providerId ||
       !validLifecycleEvidence(body.evidenceReference) || !validLifecycleJustification(body.justification)) {
     return c.json({ success: false, code: "INVALID_LEGACY_BINDING_REQUEST" }, 400);
+  }
+  if (isMetaWhatsAppDeveloperTestBindingEvidenceReference(c.env, {
+    tenantId: principal.tenantId, evidenceReference: body.evidenceReference,
+  })) {
+    return c.json({ success: false, code: "EVIDENCE_NOT_APPROVED" }, 409);
   }
   const approvedEvidence = (c.env.WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST ?? "")
     .split(",").map((item) => item.trim());
@@ -453,6 +520,11 @@ routes.post("/connections/legacy-reviews", requireTenantClientPermission("integr
   if (evidenceReference.length > 240 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,239}$/.test(evidenceReference) ||
       justification.length < 20 || justification.length > 1000 || /https?:\/\//i.test(evidenceReference)) {
     return c.json({ success: false, message: "Evidence reference or justification is invalid." }, 400);
+  }
+  if (isMetaWhatsAppDeveloperTestBindingEvidenceReference(c.env, {
+    tenantId: principal.tenantId, evidenceReference,
+  })) {
+    return c.json({ success: false, message: "Evidence reference is not approved." }, 400);
   }
 
   const connection = await c.env.DB.prepare(`
@@ -693,6 +765,12 @@ routes.post(
         ghlLocationId: string | null; ghlProviderId: string | null;
       }>();
       if (!connection) return c.json({ success: false, code: "CONNECTION_NOT_FOUND" }, 404);
+
+      if (action === "activate" && isMetaWhatsAppDeveloperTestBindingEvidenceReference(c.env, {
+        tenantId: principal.tenantId, evidenceReference,
+      })) {
+        return c.json({ success: false, code: "EVIDENCE_NOT_APPROVED" }, 409);
+      }
 
       // Each evidence reference is scoped to one tenant in configuration so
       // a shared identifier cannot authorize a different tenant's connection.

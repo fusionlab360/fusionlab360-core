@@ -14,14 +14,28 @@ const keyB = "fl360_review_tenant_b";
 const evidenceA = "operator-approved-record:review-tenant-a";
 const evidenceB = "operator-approved-record:review-tenant-b";
 const endpoint = "/integrations/meta-whatsapp/connections/legacy-reviews";
+const developerTestEvidence = "gmmetro-waba-devtest-20261112";
+const developerTestBindingEndpoint = "/integrations/meta-whatsapp/connections/conn-a/developer-test-binding";
+const developerTestWabaId = "2182329942321588";
+const developerTestPhoneNumberId = "1452502451268655";
 
 class TestD1 {
   sqlite = new DatabaseSync(":memory:");
-  constructor(private readonly schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical") {
+  constructor(
+    private readonly schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical",
+    developerTestAssets = false,
+  ) {
     let seeded = false;
+    const seed = () => {
+      this.sqlite.exec("INSERT INTO tenants(id,name) VALUES('tenant-a','A'),('tenant-b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('meta-a','tenant-a','meta_whatsapp'),('meta-b','tenant-b','meta_whatsapp')");
+      this.sqlite.prepare(`
+        INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status)
+        VALUES('conn-a','tenant-a','meta-a',?,?,'active'),('conn-b','tenant-b','meta-b','waba-b','phone-b','active')
+      `).run(developerTestAssets ? developerTestWabaId : "waba-a", developerTestAssets ? developerTestPhoneNumberId : "phone-a");
+    };
     for (const file of readdirSync(join(process.cwd(), "migrations")).filter((name) => name.endsWith(".sql")).sort()) {
       if (!seeded && file.startsWith("0042_")) {
-        this.sqlite.exec("INSERT INTO tenants(id,name) VALUES('tenant-a','A'),('tenant-b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('meta-a','tenant-a','meta_whatsapp'),('meta-b','tenant-b','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('conn-a','tenant-a','meta-a','waba-a','phone-a','active'),('conn-b','tenant-b','meta-b','waba-b','phone-b','active')");
+        seed();
         seeded = true;
       }
       if (file.startsWith("0042_") && (schemaShape === "pre0042" || schemaShape === "original0042")) {
@@ -34,7 +48,7 @@ class TestD1 {
       this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8"));
     }
     if (!seeded) {
-      this.sqlite.exec("INSERT INTO tenants(id,name) VALUES('tenant-a','A'),('tenant-b','B'); INSERT INTO integrations(id,tenant_id,provider) VALUES('meta-a','tenant-a','meta_whatsapp'),('meta-b','tenant-b','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('conn-a','tenant-a','meta-a','waba-a','phone-a','active'),('conn-b','tenant-b','meta-b','waba-b','phone-b','active')");
+      seed();
     }
   }
   prepare(sql: string): D1PreparedStatement {
@@ -65,8 +79,8 @@ class TestD1 {
   close() { this.sqlite.close(); }
 }
 
-async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical", seedBindings = true) {
-  const db = new TestD1(schemaShape);
+async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "canonical" = "canonical", seedBindings = true, developerTestAssets = false) {
+  const db = new TestD1(schemaShape, developerTestAssets);
   if (schemaShape === "canonical") db.sqlite.exec(`
       INSERT INTO integration_credentials(tenant_id,provider,auth_type,location_id) VALUES('tenant-a','gohighlevel','oauth2','loc-a'),('tenant-b','gohighlevel','oauth2','loc-b');
     `);
@@ -91,8 +105,8 @@ async function setup(schemaShape: "pre0042" | "original0042" | "revised0042" | "
   return { db, request: (token?: string, path = endpoint, init: RequestInit = {}, env: Partial<AppBindings> = {}) => app.request(path, { ...init, headers: { ...(init.headers ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, { DB: db.binding(), WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${evidenceA},tenant-b:${evidenceB}`, ...env } as AppBindings) };
 }
 
-async function setupLegacyBinding() {
-  const { db, request } = await setup("canonical", false);
+async function setupLegacyBinding(developerTestAssets = false) {
+  const { db, request } = await setup("canonical", false, developerTestAssets);
   for (const suffix of ["a", "b"]) {
     db.sqlite.prepare("INSERT INTO integrations(id,tenant_id,provider,enabled,settings) VALUES(?,?,'gohighlevel',1,?)")
       .run(`ghl-${suffix}`, `tenant-${suffix}`, JSON.stringify({ providerConfiguration: { conversationProviderId: `provider-${suffix}` } }));
@@ -106,6 +120,38 @@ async function setupLegacyBinding() {
       body: JSON.stringify({ ghlLocationId: "loc-a", ghlProviderId: "provider-a", evidenceReference: evidenceA, justification, ...fields }),
     }, { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a,loc-b", ...env });
   return { db, request, bind, justification };
+}
+
+async function setupDeveloperTestBinding() {
+  const { db, request, justification } = await setupLegacyBinding(true);
+  db.sqlite.prepare(`
+    INSERT INTO meta_whatsapp_credentials
+      (id,tenant_id,integration_id,connection_id,provider,status,ciphertext,nonce,algorithm,key_version,credential_version,metadata)
+    VALUES('meta-credential-a','tenant-a','meta-a','conn-a','meta_whatsapp','active',
+      'synthetic-ciphertext','synthetic-nonce','AES-GCM','fixture-key',1,?)
+  `).run(JSON.stringify({ developerTest: true, lifecycle: "expiring" }));
+  const developerTestEnv: Partial<AppBindings> = {
+    GHL_CUSTOM_PROVIDER_ENABLED: "true",
+    GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a,loc-b",
+    META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED: "true",
+    META_WHATSAPP_DEVELOPER_TEST_TENANT_ALLOWLIST: "tenant-a",
+    META_WHATSAPP_DEVELOPER_TEST_WABA_ID_ALLOWLIST: developerTestWabaId,
+    META_WHATSAPP_DEVELOPER_TEST_PHONE_NUMBER_ID_ALLOWLIST: developerTestPhoneNumberId,
+    META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`,
+  };
+  const bind = (
+    token: string | undefined = keyA,
+    connectionId = "conn-a",
+    fields: Record<string, unknown> = {},
+    env: Partial<AppBindings> = {},
+  ) => request(token, `/integrations/meta-whatsapp/connections/${connectionId}/developer-test-binding`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ghlLocationId: "loc-a", ghlProviderId: "provider-a", evidenceReference: developerTestEvidence,
+      justification: "Operator authorized this isolated developer-test binding.", ...fields,
+    }),
+  }, { ...developerTestEnv, ...env });
+  return { db, request, bind, developerTestEnv, justification };
 }
 
 test("legacy binding claims both NULL fields once, audits the authenticated operator, and leaves review separate", async () => {
@@ -175,6 +221,135 @@ test("legacy binding rolls back its audit if the binding pair is already claimed
     assert.equal((await bind()).status, 409);
     assert.equal(db.sqlite.prepare("SELECT ghl_location_id FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.ghl_location_id, null);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit").get()?.n, 0);
+  } finally { db.close(); }
+});
+
+test("developer-test binding is isolated, tenant scoped, and leaves the connection legacy_active", async () => {
+  const { db, bind } = await setupDeveloperTestBinding();
+  try {
+    assert.equal((await bind()).status, 201);
+    const connection = db.sqlite.prepare("SELECT status,activation_state,activation_version,ghl_location_id,ghl_provider_id FROM meta_whatsapp_connections WHERE id='conn-a'").get();
+    assert.deepEqual({ ...connection }, {
+      status: "active", activation_state: "legacy_active", activation_version: 0,
+      ghl_location_id: "loc-a", ghl_provider_id: "provider-a",
+    });
+    const audit = db.sqlite.prepare("SELECT tenant_id,actor_client_id,previous_state,new_state,reason FROM meta_whatsapp_connection_activation_audit WHERE connection_id='conn-a'").get() as Record<string, unknown>;
+    assert.equal(audit.tenant_id, "tenant-a");
+    assert.equal(audit.actor_client_id, "client-a");
+    assert.equal(audit.previous_state, "legacy_active");
+    assert.equal(audit.new_state, "developer_test_binding_established");
+    assert.deepEqual(JSON.parse(String(audit.reason)), {
+      evidenceReference: developerTestEvidence,
+      justification: "Operator authorized this isolated developer-test binding.",
+      ghlProviderId: "provider-a",
+      bindingType: "developer_test",
+      wabaId: developerTestWabaId,
+      phoneNumberId: developerTestPhoneNumberId,
+    });
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 0);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state LIKE 'legacy_review_%'").get()?.n, 0);
+  } finally { db.close(); }
+});
+
+test("developer-test binding rejects unauthorized tenants, non-test connections, and mismatched Meta resources", async () => {
+  const { db, request, bind } = await setupDeveloperTestBinding();
+  try {
+    assert.equal((await bind("")).status, 401);
+    assert.equal((await bind("fl360_read_only")).status, 403);
+    assert.equal((await bind(keyA, "conn-b")).status, 404);
+
+    db.sqlite.prepare("UPDATE meta_whatsapp_credentials SET metadata=? WHERE connection_id='conn-a'")
+      .run(JSON.stringify({ developerTest: false }));
+    assert.equal((await bind()).status, 409);
+    db.sqlite.prepare("UPDATE meta_whatsapp_credentials SET metadata=? WHERE connection_id='conn-a'")
+      .run(JSON.stringify({ developerTest: true }));
+
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_WABA_ID_ALLOWLIST: "2182329942321589" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_PHONE_NUMBER_ID_ALLOWLIST: "1452502451268656" })).status, 409);
+
+    assert.equal((await bind(keyA, "conn-a", { evidenceReference: undefined })).status, 400);
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST: "" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED: "false" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`, WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}` })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", {}, { META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`, WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}` })).status, 409);
+
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state='developer_test_binding_established'").get()?.n, 0);
+  } finally { db.close(); }
+});
+
+test("developer-test binding requires the approved GHL installation and pilot location", async () => {
+  const { db, bind } = await setupDeveloperTestBinding();
+  try {
+    assert.equal((await bind(keyA, "conn-a", { ghlLocationId: "other-location" })).status, 409);
+    assert.equal((await bind(keyA, "conn-a", { ghlProviderId: "other-provider" })).status, 409);
+    db.sqlite.prepare("DELETE FROM integration_credentials WHERE tenant_id='tenant-a' AND provider='gohighlevel'").run();
+    assert.equal((await bind()).status, 409);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state='developer_test_binding_established'").get()?.n, 0);
+  } finally { db.close(); }
+});
+
+test("developer-test binding rejects partial and duplicate bindings and is single-winner under concurrency", async () => {
+  const { db, bind } = await setupDeveloperTestBinding();
+  try {
+    db.sqlite.prepare("UPDATE meta_whatsapp_connections SET ghl_location_id='loc-a' WHERE id='conn-a'").run();
+    assert.equal((await bind()).status, 409);
+    db.sqlite.prepare("UPDATE meta_whatsapp_connections SET ghl_location_id=NULL,ghl_provider_id=NULL WHERE id='conn-a'").run();
+
+    db.sqlite.prepare("UPDATE meta_whatsapp_connections SET ghl_location_id='loc-a',ghl_provider_id='provider-a' WHERE id='conn-a'").run();
+    assert.equal((await bind()).status, 409);
+    db.sqlite.prepare("UPDATE meta_whatsapp_connections SET ghl_location_id=NULL,ghl_provider_id=NULL WHERE id='conn-a'").run();
+
+    const results = await Promise.all([bind(), bind()]);
+    assert.deepEqual(results.map((response) => response.status).sort(), [201, 409]);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state='developer_test_binding_established'").get()?.n, 1);
+    assert.equal(db.sqlite.prepare("SELECT activation_state FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.activation_state, "legacy_active");
+  } finally { db.close(); }
+});
+
+test("developer-test evidence cannot be reused for legacy review or activation", async () => {
+  const { db, request, bind } = await setupDeveloperTestBinding();
+  try {
+    const overlappingEvidence = {
+      META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`,
+      WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`,
+      WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST: `tenant-a:${developerTestEvidence}`,
+    };
+    const review = await request(keyA, endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId: "conn-a", decision: "approve", evidenceReference: developerTestEvidence, justification: "Operator authorized this isolated developer-test binding." }),
+    }, overlappingEvidence);
+    assert.equal(review.status, 400);
+
+    const activation = await request(keyA, "/integrations/meta-whatsapp/connections/conn-a/lifecycle", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "activate", evidenceReference: developerTestEvidence, justification: "Operator authorized this isolated developer-test binding.", ghlLocationId: "loc-a", ghlProviderId: "provider-a" }),
+    }, {
+      ...overlappingEvidence,
+      WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true",
+      GHL_CUSTOM_PROVIDER_ENABLED: "true",
+      GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a",
+    });
+    assert.equal(activation.status, 409);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_legacy_approval_reviews").get()?.n, 0);
+    assert.equal(db.sqlite.prepare("SELECT activation_state FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.activation_state, "legacy_active");
+    assert.equal((await bind()).status, 201);
+  } finally { db.close(); }
+});
+
+test("production legacy binding rejects developer-test credentials even with production evidence", async () => {
+  const { db, request, justification } = await setupDeveloperTestBinding();
+  try {
+    const legacyResponse = await request(keyA, "/integrations/meta-whatsapp/connections/conn-a/legacy-binding", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ghlLocationId: "loc-a", ghlProviderId: "provider-a", evidenceReference: evidenceA, justification }),
+    }, {
+      GHL_CUSTOM_PROVIDER_ENABLED: "true",
+      GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a",
+      WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST: `tenant-a:${evidenceA}`,
+    });
+    assert.equal(legacyResponse.status, 409);
+    assert.equal(db.sqlite.prepare("SELECT ghl_location_id FROM meta_whatsapp_connections WHERE id='conn-a'").get()?.ghl_location_id, null);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM meta_whatsapp_connection_activation_audit WHERE new_state='legacy_binding_established'").get()?.n, 0);
   } finally { db.close(); }
 });
 
