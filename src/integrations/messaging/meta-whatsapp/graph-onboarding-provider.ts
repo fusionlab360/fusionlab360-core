@@ -158,20 +158,35 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
   async inspectPhoneNumber(accessToken: string, phoneNumberId: string): Promise<MetaPhoneNumberInspection> {
     const fields = "id,status,platform_type,code_verification_status";
     const response = await this.json(`/${encodeURIComponent(phoneNumberId)}?fields=${fields}`, "meta_phone_registration", { headers: { Authorization: `Bearer ${accessToken}` } });
-    const safeValue = (value: unknown, allowed: readonly string[]): string | null =>
-      typeof value === "string" && allowed.includes(value) ? value : null;
-    // Keep omitted fields separate from present values that did not pass normalization.
-    const missingRegistrationFields = ([
-      ["status", "status"],
-      ["platformType", "platform_type"],
-      ["codeVerificationStatus", "code_verification_status"],
-    ] as const).filter(([, graphField]) => !Object.hasOwn(response.body, graphField)).map(([field]) => field);
+    const registration: Pick<MetaPhoneNumberInspection, "status" | "platformType" | "codeVerificationStatus"> = {
+      status: null, platformType: null, codeVerificationStatus: null,
+    };
+    const missingRegistrationFields: (keyof typeof registration)[] = [];
+    const invalidRegistrationValues: NonNullable<MetaPhoneNumberInspection["invalidRegistrationValues"]> = {};
+    const registrationFields: readonly [keyof typeof registration, string, readonly string[]][] = [
+      ["status", "status", ["CONNECTED", "PENDING", "DELETED", "MIGRATED", "BANNED", "RESTRICTED", "RATE_LIMITED", "FLAGGED", "DISCONNECTED", "UNKNOWN", "UNVERIFIED"]],
+      ["platformType", "platform_type", ["CLOUD_API", "ON_PREMISE", "NOT_APPLICABLE"]],
+      ["codeVerificationStatus", "code_verification_status", ["VERIFIED", "NOT_VERIFIED", "EXPIRED"]],
+    ];
+    for (const [field, graphField, allowed] of registrationFields) {
+      const value = response.body[graphField];
+      if (!Object.hasOwn(response.body, graphField)) {
+        missingRegistrationFields.push(field);
+      } else if (value === null) {
+        invalidRegistrationValues[field] = "null";
+      } else if (typeof value !== "string") {
+        invalidRegistrationValues[field] = "wrong_type";
+      } else if (!allowed.includes(value)) {
+        invalidRegistrationValues[field] = "unrecognized";
+      } else {
+        registration[field] = value;
+      }
+    }
     return {
       id: typeof response.body.id === "string" ? response.body.id : null,
-      status: safeValue(response.body.status, ["CONNECTED", "PENDING", "DELETED", "MIGRATED", "BANNED", "RESTRICTED", "RATE_LIMITED", "FLAGGED", "DISCONNECTED", "UNKNOWN", "UNVERIFIED"]),
-      platformType: safeValue(response.body.platform_type, ["CLOUD_API", "ON_PREMISE", "NOT_APPLICABLE"]),
-      codeVerificationStatus: safeValue(response.body.code_verification_status, ["VERIFIED", "NOT_VERIFIED", "EXPIRED"]),
+      ...registration,
       ...(missingRegistrationFields.length ? { missingRegistrationFields } : {}),
+      ...(Object.keys(invalidRegistrationValues).length ? { invalidRegistrationValues } : {}),
     };
   }
   async verifyWebhookSubscription(accessToken: string, wabaId: string): Promise<boolean> {

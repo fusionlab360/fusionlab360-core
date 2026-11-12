@@ -29,12 +29,16 @@ export interface MetaTokenInspection {
   scopes: readonly string[];
   expiresAt?: number;
 }
+type MetaRegistrationField = "status" | "platformType" | "codeVerificationStatus";
+type InvalidMetaRegistrationValue = "null" | "wrong_type" | "unrecognized";
+
 export interface MetaPhoneNumberInspection {
   id: string | null;
   status: string | null;
   platformType: string | null;
   codeVerificationStatus: string | null;
-  missingRegistrationFields?: readonly ("status" | "platformType" | "codeVerificationStatus")[];
+  missingRegistrationFields?: readonly MetaRegistrationField[];
+  invalidRegistrationValues?: Partial<Record<MetaRegistrationField, InvalidMetaRegistrationValue>>;
 }
 export interface MetaWhatsAppOnboardingProvider {
   exchangeAuthorizationCode(code: string): Promise<MetaVerifiedAuthorization>;
@@ -90,6 +94,8 @@ export interface MetaOnboardingDiagnostic {
   providerErrorCode?: number;
   providerRequestId?: string;
   phoneValidationFailure?: "upstream_lookup" | "identity_mismatch" | "registration_metadata_invalid";
+  phoneRegistrationField?: MetaRegistrationField;
+  phoneRegistrationValueKind?: InvalidMetaRegistrationValue | "unexpected_state" | "unclassified";
 }
 
 export type MetaAssetCheckStatus = "passed" | "failed" | "unavailable" | "not_checked";
@@ -236,6 +242,10 @@ export class MetaWhatsAppOnboardingService {
           (phone[field] === null && phone.missingRegistrationFields?.includes(field))) continue;
       throw new MetaWhatsAppOnboardingError("Meta returned invalid phone registration metadata.", {
         stage: "meta_phone_registration", code: "meta_phone_registration_failed", phoneValidationFailure: "registration_metadata_invalid",
+        phoneRegistrationField: field,
+        phoneRegistrationValueKind: phone[field] === null
+          ? phone.invalidRegistrationValues?.[field] ?? "unclassified"
+          : "unexpected_state",
       });
     }
     if (!subscribed) {
