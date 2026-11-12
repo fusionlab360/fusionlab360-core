@@ -126,8 +126,8 @@ export class MetaWhatsAppOutboundService {
       text: input.text,
     });
   }
-  async reconcileStatus(input:{tenantId:string;connectionId:string;providerMessageId:string;status:string}):Promise<void>{
-    await reconcileMetaWhatsAppStatus(this.db, input);
+  async reconcileStatus(input:{tenantId:string;connectionId:string;providerMessageId:string;status:string}):Promise<MetaStatusReconciliationResult>{
+    return reconcileMetaWhatsAppStatus(this.db, input);
   }
 }
 
@@ -152,11 +152,24 @@ export function createMetaWhatsAppOutboundService(bindings: Pick<AppBindings, "D
     createMetaWhatsAppGraphOutboundTransport(bindings),
   );
 }
-export async function reconcileMetaWhatsAppStatus(db:D1Database,input:{tenantId:string;connectionId:string;providerMessageId:string;status:string}):Promise<void>{
-  const rank:Record<string,number>={accepted:1,sent:2,delivered:3,read:4,failed:5}; const next=rank[input.status]; if(!next)return;
-  const connection=await new MetaWhatsAppConnectionRepository(db).findByTenantAndId(input.tenantId,input.connectionId); if(!connection||connection.status!=="active")throw new MetaWhatsAppOutboundError("Meta connection is unavailable.");
-  const row=await db.prepare(`SELECT id,status,provider_delivery_status FROM messaging_outbound_deliveries WHERE tenant_id=? AND provider='meta_whatsapp' AND connection_id=? AND provider_message_id=? LIMIT 1`).bind(input.tenantId,input.connectionId,input.providerMessageId).first<{id:string;status:string;provider_delivery_status:string|null}>(); if(!row)return;
-  const current=rank[row.provider_delivery_status??"accepted"]??0; if(next<current)return;
-  await db.prepare(`UPDATE messaging_outbound_deliveries SET status=?,provider_delivery_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?`).bind(input.status==="failed"?"failed":"sent",input.status,row.id,input.tenantId).run();
+export type MetaStatusReconciliationResult = "applied" | "already_current" | "older_ignored" | "temporarily_unmatched" | "invalid";
+
+export async function reconcileMetaWhatsAppStatus(db:D1Database,input:{tenantId:string;connectionId:string;providerMessageId:string;status:string}):Promise<MetaStatusReconciliationResult>{
+  const statuses = ["accepted", "sent", "delivered", "read", "failed"];
+  const next = statuses.indexOf(input.status);
+  if (next < 0 || !input.providerMessageId.trim()) return "invalid";
+  const connection = await new MetaWhatsAppConnectionRepository(db).findByTenantAndId(input.tenantId,input.connectionId);
+  if (!connection || connection.status !== "active") throw new MetaWhatsAppOutboundError("Meta connection is unavailable.");
+  const row = await db.prepare(`SELECT id,provider_delivery_status FROM messaging_outbound_deliveries WHERE tenant_id=? AND provider='meta_whatsapp' AND connection_id=? AND provider_message_id=? LIMIT 1`).bind(input.tenantId,input.connectionId,input.providerMessageId).first<{id:string;provider_delivery_status:string|null}>();
+  if (!row) return "temporarily_unmatched";
+  const current = statuses.indexOf(row.provider_delivery_status ?? "accepted");
+  if (next < current) return "older_ignored";
+  if (next === current) return "already_current";
+  const older = statuses.slice(0, next);
+  const updated = await db.prepare(`UPDATE messaging_outbound_deliveries SET status=?,provider_delivery_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND (provider_delivery_status IS NULL OR provider_delivery_status IN (${older.map(() => "?").join(",")}))`).bind(input.status === "failed" ? "failed" : "sent",input.status,row.id,input.tenantId,...older).run();
+  if (updated.meta.changes === 1) return "applied";
+  const latest = await db.prepare(`SELECT provider_delivery_status FROM messaging_outbound_deliveries WHERE id=? AND tenant_id=?`).bind(row.id,input.tenantId).first<{provider_delivery_status:string|null}>();
+  const latestRank = statuses.indexOf(latest?.provider_delivery_status ?? "accepted");
+  return latestRank > next ? "older_ignored" : "already_current";
 }
 async function hash(value:string){const data=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value));return Array.from(new Uint8Array(data),x=>x.toString(16).padStart(2,"0")).join("");}

@@ -170,6 +170,51 @@ test("two-tenant bidirectional path isolates messages, deduplicates events, and 
   } finally { globalThis.fetch = originalFetch; f.db.close(); }
 });
 
+test("early Meta status retries through the bounded event policy and reconciles when its row arrives", async () => {
+  const f = await fixture();
+  try {
+    const body = metaStatus(tenants[0].phone, "early-provider-id", "delivered");
+    assert.equal((await f.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await hmac(body) }, body }, f.env)).status, 200);
+    assert.equal(f.queue.length, 1);
+    const item = f.queue[0]!;
+    const batch = { messages: [{ body: item.body, attempts: 1, timestamp: new Date(), ack: () => { item.acked = true; }, retry: () => { item.retried = true; } }] } as unknown as MessageBatch<import("../../../../src/domain/messaging/inbound-queue-contract").GHLInboundQueueEnvelope>;
+    await consumeGHLInboundQueue(batch, f.env, undefined, undefined, new Map([["meta_whatsapp", createMetaWhatsAppInboundHandler()]]));
+    assert.equal(item.retried, true);
+    assert.equal(f.db.sqlite.prepare("SELECT processing_status FROM integration_events WHERE event_id=?").get(String(item.body.sourceEventId))?.processing_status, "failed");
+    f.db.sqlite.prepare("INSERT INTO messaging_outbound_deliveries(id,tenant_id,event_id,provider,effect_key,conversation_id,payload_hash,status,connection_id,recipient_id,provider_message_id) VALUES('early-row',?,'early-event','meta_whatsapp','early-event',?,'h','sent',?,?,'early-provider-id')").run(tenants[0].id, tenants[0].conversation, tenants[0].connection, tenants[0].participant);
+    item.retried = false;
+    await consumeGHLInboundQueue(batch, f.env, undefined, undefined, new Map([["meta_whatsapp", createMetaWhatsAppInboundHandler()]]));
+    assert.equal(item.acked, true);
+    assert.equal(item.retried, false);
+    assert.equal(f.db.sqlite.prepare("SELECT provider_delivery_status FROM messaging_outbound_deliveries WHERE id='early-row'").get()?.provider_delivery_status, "delivered");
+    assert.equal(f.publish.length, 0);
+    assert.equal(f.sendsByTenant.size, 0);
+  } finally { f.db.close(); }
+});
+
+test("unmatched Meta status exhausts event attempts and retains terminal evidence", async () => {
+  const f = await fixture();
+  try {
+    const body = metaStatus(tenants[0].phone, "never-persisted", "read");
+    assert.equal((await f.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await hmac(body) }, body }, f.env)).status, 200);
+    const item = f.queue[0]!;
+    const batch = { messages: [{ body: item.body, attempts: 1, timestamp: new Date(), ack: () => { item.acked = true; }, retry: () => { item.retried = true; } }] } as unknown as MessageBatch<import("../../../../src/domain/messaging/inbound-queue-contract").GHLInboundQueueEnvelope>;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      item.retried = false;
+      await consumeGHLInboundQueue(batch, f.env, undefined, undefined, new Map([["meta_whatsapp", createMetaWhatsAppInboundHandler()]]));
+      assert.equal(item.retried, true);
+    }
+    assert.equal(f.db.sqlite.prepare("SELECT processing_status,processing_attempts,last_error_code FROM integration_events WHERE event_id=?").get(String(item.body.sourceEventId))?.processing_status, "dead_letter");
+    assert.equal(f.db.sqlite.prepare("SELECT COUNT(*) AS count FROM integration_event_dead_letters WHERE event_id=?").get(String(item.body.sourceEventId))?.count, 1);
+    item.retried = false;
+    await consumeGHLInboundQueue(batch, f.env, undefined, undefined, new Map([["meta_whatsapp", createMetaWhatsAppInboundHandler()]]));
+    assert.equal(item.acked, true);
+    assert.equal(item.retried, false);
+    assert.equal(f.sendsByTenant.size, 0);
+    assert.equal(f.publish.length, 0);
+  } finally { f.db.close(); }
+});
+
 test("lifecycle enforcement rejects unapproved, suspended, and revoked connections while gate-off preserves legacy inbound", async () => {
   const f = await fixture();
   try {

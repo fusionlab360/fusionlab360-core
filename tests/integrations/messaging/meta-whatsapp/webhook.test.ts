@@ -85,6 +85,13 @@ function webhookBody(phoneNumberId = "phone-a") {
   } }] }] });
 }
 
+function statusWebhookBody(phoneNumberId = "phone-a") {
+  return JSON.stringify({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: {
+    metadata: { phone_number_id: phoneNumberId },
+    statuses: [{ id: "outbound-provider-id", status: "delivered", timestamp: "1700000000" }],
+  } }] }] });
+}
+
 async function sign(body: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
@@ -297,4 +304,67 @@ test("concurrent Meta webhook deliveries cannot publish the same pending event t
   releaseQueuePublication?.();
   assert.equal((await first).status, 200);
   assert.equal(fixture.queue.length, 1);
+});
+
+function authorizeStatusFixture(fixture: ReturnType<typeof controllerFixture>) {
+  fixture.db.sqlite.prepare("INSERT INTO integrations(id,tenant_id,provider,settings) VALUES('ghl-a','tenant-a','gohighlevel',?)")
+    .run(JSON.stringify({ providerConfiguration: { conversationProviderId: "pilot-provider" } }));
+  fixture.db.sqlite.exec("INSERT INTO integration_credentials(tenant_id,provider,auth_type,location_id) VALUES('tenant-a','gohighlevel','oauth2','pilot-location')");
+  fixture.db.sqlite.exec("UPDATE meta_whatsapp_connections SET activation_state='active', ghl_location_id='pilot-location', ghl_provider_id='pilot-provider', activation_actor='synthetic-review', activation_reason='synthetic-test-approval' WHERE id='connection-a'");
+}
+
+test("outbound-only authorization dispatches statuses but never inbound text", async () => {
+  const fixture = controllerFixture(false);
+  authorizeStatusFixture(fixture);
+  const env = { ...fixture.env, WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true", GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true", GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "pilot-location" };
+  const post = async (body: string) => fixture.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await sign(body, "synthetic-secret") }, body }, env);
+  assert.equal((await post(webhookBody())).status, 200);
+  assert.equal(fixture.queue.length, 0);
+  const status = statusWebhookBody();
+  const updateProvider = fixture.db.sqlite.prepare("UPDATE integrations SET settings=? WHERE id='ghl-a'");
+  updateProvider.run(JSON.stringify({ providerConfiguration: { conversationProviderId: "other-provider" } }));
+  assert.equal((await post(status)).status, 200);
+  assert.equal(fixture.queue.length, 0);
+  updateProvider.run(JSON.stringify({ providerConfiguration: { conversationProviderId: "pilot-provider" } }));
+  const updateLocation = fixture.db.sqlite.prepare("UPDATE integration_credentials SET location_id=? WHERE tenant_id='tenant-a' AND provider='gohighlevel'");
+  updateLocation.run("other-location");
+  assert.equal((await post(status)).status, 200);
+  assert.equal(fixture.queue.length, 0);
+  updateLocation.run("pilot-location");
+  assert.equal((await post(status)).status, 200);
+  assert.equal(fixture.queue.length, 1);
+  assert.equal(fixture.queue[0]?.tenantId, "tenant-a");
+  const eventId = fixture.queue[0]?.sourceEventId;
+  assert.equal((await post(status)).status, 200);
+  assert.equal(fixture.queue.length, 1);
+  assert.equal(fixture.db.sqlite.prepare("SELECT last_error_code FROM integration_events WHERE event_id=?").get(String(eventId))?.last_error_code, "QUEUE_DISPATCH_CONFIRMED");
+  assert.equal((await post(statusWebhookBody("unknown"))).status, 200);
+  assert.equal(fixture.queue.length, 1);
+  fixture.db.sqlite.exec("UPDATE meta_whatsapp_connections SET status='disabled' WHERE id='connection-a'");
+  assert.equal((await post(status)).status, 200);
+  assert.equal(fixture.queue.length, 1);
+});
+
+test("eligible received status dispatches once when the outbound gate later enables", async () => {
+  const fixture = controllerFixture(false);
+  authorizeStatusFixture(fixture);
+  const env = { ...fixture.env, WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true", GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "pilot-location" };
+  const body = statusWebhookBody();
+  const request = { method: "POST", headers: { "X-Hub-Signature-256": await sign(body, "synthetic-secret") }, body };
+  assert.equal((await fixture.app.request("/webhooks/meta-whatsapp", request, env)).status, 200);
+  assert.equal(fixture.queue.length, 0);
+  assert.equal((await fixture.app.request("/webhooks/meta-whatsapp", request, { ...env, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true" })).status, 200);
+  assert.equal(fixture.queue.length, 1);
+  assert.equal((await fixture.app.request("/webhooks/meta-whatsapp", request, { ...env, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true" })).status, 200);
+  assert.equal(fixture.queue.length, 1);
+});
+
+test("global Queue capability alone does not authorize Meta status dispatch", async () => {
+  const fixture = controllerFixture(true);
+  authorizeStatusFixture(fixture);
+  const body = statusWebhookBody();
+  const response = await fixture.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await sign(body, "synthetic-secret") }, body }, fixture.env);
+  assert.equal(response.status, 200);
+  assert.equal(fixture.queue.length, 0);
+  assert.equal(fixture.db.sqlite.prepare("SELECT COUNT(*) AS count FROM integration_events").get()?.count, 1);
 });

@@ -125,19 +125,22 @@ export class IntegrationEventRepository
     tenantId: string,
     eventId: string,
     leaseToken: string,
+    // Status events can be redispatched after a gate turns on; retain a durable
+    // confirmation so later webhook duplicates do not publish another envelope.
+    retainConfirmation = false,
   ): Promise<boolean> {
     const result = await this.db.prepare(`
       UPDATE integration_events
       SET processing_started_at = NULL,
           processing_lease_token = NULL,
           processing_lease_expires_at = NULL,
-          last_error_code = NULL,
+          last_error_code = CASE WHEN ? = 1 THEN 'QUEUE_DISPATCH_CONFIRMED' ELSE NULL END,
           last_error_message = NULL
       WHERE tenant_id = ? AND event_id = ?
         AND processing_status = 'received'
         AND last_error_code = 'QUEUE_DISPATCH_PENDING'
         AND processing_lease_token = ?
-    `).bind(tenantId, eventId, leaseToken).run();
+    `).bind(retainConfirmation ? 1 : 0, tenantId, eventId, leaseToken).run();
     return result.meta.changes === 1;
   }
 

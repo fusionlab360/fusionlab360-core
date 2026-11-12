@@ -8,9 +8,31 @@ import { IntegrationEventService } from "../../../core/events/service";
 import type { GHLInboundQueueEnvelope } from "../../../domain/messaging/inbound-queue-contract";
 import { areNewQueueEnvelopesEnabled } from "../../../domain/messaging/inbound-queue";
 import { isMetaWhatsAppGHLInboundEnabled } from "./gohighlevel-inbound-config";
+import { isMetaConnectionEligible } from "./connection-eligibility";
+import { isGHLProviderPilotLocationAuthorized } from "../gohighlevel/custom-provider-pilot-config";
+import { GHL_META_OUTBOUND_PHONE_NUMBER_ID, GHL_META_OUTBOUND_TENANT } from "../gohighlevel/provider-outbound-meta";
+import { resolveTenant } from "../../../tenants/service";
+import { resolveGHLConversationProviderId } from "../gohighlevel/custom-conversation-provider";
 import { decodeUtf8Body, readBoundedBody, RequestBodyTooLargeError } from "../../../core/http/bounded-body";
 
 const MAX_META_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
+
+async function isOutboundStatusDispatchEnabled(env: AppBindings, tenantId: string, connectionId: string, phoneNumberId: string): Promise<boolean> {
+  if (env.GHL_META_WHATSAPP_OUTBOUND_ENABLED !== "true") return false;
+  if (env.WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED !== "true") {
+    return tenantId === GHL_META_OUTBOUND_TENANT && phoneNumberId === GHL_META_OUTBOUND_PHONE_NUMBER_ID;
+  }
+  const binding = await env.DB.prepare(`SELECT ghl_location_id, ghl_provider_id FROM meta_whatsapp_connections WHERE id=? AND tenant_id=? AND phone_number_id=? AND status='active'`).bind(connectionId, tenantId, phoneNumberId).first<{ghl_location_id:string|null;ghl_provider_id:string|null}>();
+  if (!binding?.ghl_provider_id?.trim() || !isGHLProviderPilotLocationAuthorized(env, binding.ghl_location_id ?? undefined)) return false;
+  try {
+    const tenant = await resolveTenant(env.DB, tenantId);
+    return tenant.id === tenantId && tenant.integrations.crm.provider === "gohighlevel" &&
+      tenant.integrations.crm.credentials.locationId.trim() === binding.ghl_location_id &&
+      resolveGHLConversationProviderId(tenant) === binding.ghl_provider_id;
+  } catch {
+    return false;
+  }
+}
 
 async function enqueuePendingMetaEvent(
   events: IntegrationEventRepository,
@@ -18,6 +40,7 @@ async function enqueuePendingMetaEvent(
   tenantId: string,
   eventId: string,
   allowInitialDispatch: boolean,
+  retainConfirmation = false,
 ): Promise<boolean> {
   const event = await events.find(tenantId, eventId);
   if (!event || event.tenantId !== tenantId || event.provider !== "meta_whatsapp") return false;
@@ -47,7 +70,7 @@ async function enqueuePendingMetaEvent(
     return false;
   }
   try {
-    await events.completeQueueDispatch(tenantId, eventId, leaseToken);
+    await events.completeQueueDispatch(tenantId, eventId, leaseToken, retainConfirmation);
   } catch {
     // Queue acceptance is already durable. A stale dispatch marker is safe:
     // consumer-side event idempotency fences any later recovery enqueue.
@@ -113,6 +136,7 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
   for (const status of statuses) {
     const connection = await connections.findActiveByPhoneNumberId(status.phoneNumberId);
     if (!connection) continue;
+    if (!await isMetaConnectionEligible(c.env.DB, c.env, connection.tenantId, connection.id)) continue;
     const result = await events.accept({
       eventId: `${status.providerMessageId}:${status.status}`,
       eventType: "messaging.meta_whatsapp.status",
@@ -123,14 +147,15 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
       occurredAt: status.occurredAt,
       payload: { providerMessageId: status.providerMessageId, status: status.status, phoneNumberId: status.phoneNumberId },
     });
-    const metaDispatchEnabled = areNewQueueEnvelopesEnabled(c.env) ||
-      isMetaWhatsAppGHLInboundEnabled(c.env, connection.tenantId);
+    const metaDispatchEnabled = isMetaWhatsAppGHLInboundEnabled(c.env, connection.tenantId) ||
+      await isOutboundStatusDispatchEnabled(c.env, connection.tenantId, connection.id, connection.phoneNumberId);
     if (metaDispatchEnabled && !await enqueuePendingMetaEvent(
       eventRepository,
       c.env.GHL_INBOUND_QUEUE,
       connection.tenantId,
       result.event.eventId,
-      result.accepted,
+      true,
+      true,
     )) {
       queuePublicationFailed = true;
     }

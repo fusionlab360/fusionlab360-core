@@ -99,7 +99,10 @@ export async function processMetaWhatsAppInboundEvent(
     if (env && !await isMetaConnectionEligible(db, env, event.tenantId, connection.id)) throw new IntegrationEventProcessingError({ code: "TENANT_CONTEXT_INVALID", severity: "error", message: "Meta connection is not activated.", retryable: false });
     if (event.eventType === "messaging.meta_whatsapp.status") {
       if (typeof value.providerMessageId !== "string" || typeof value.status !== "string") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta status payload is unsupported.", retryable: false });
-      await reconcileMetaWhatsAppStatus(db, { tenantId: event.tenantId, connectionId: connection.id, providerMessageId: value.providerMessageId, status: value.status }); return;
+      const result = await reconcileMetaWhatsAppStatus(db, { tenantId: event.tenantId, connectionId: connection.id, providerMessageId: value.providerMessageId, status: value.status });
+      if (result === "temporarily_unmatched") throw new IntegrationEventProcessingError({ code: "PROVIDER_TRANSIENT", severity: "error", message: "Meta delivery status is awaiting its outbound delivery.", retryable: true });
+      if (result === "invalid") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta status payload is unsupported.", retryable: false });
+      return;
     }
     if (event.eventType !== "messaging.meta_whatsapp.inbound" || value.provider !== "meta_whatsapp" || typeof value.contactId !== "string" || typeof value.providerMessageId !== "string" || typeof value.text !== "string" || typeof value.occurredAt !== "string") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta event payload is unsupported.", retryable: false });
     await new MessagingConversationRepository(db).upsertInbound({
