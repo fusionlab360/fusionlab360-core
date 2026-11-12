@@ -160,11 +160,18 @@ export class MetaWhatsAppGraphOnboardingProvider implements MetaWhatsAppOnboardi
     const response = await this.json(`/${encodeURIComponent(phoneNumberId)}?fields=${fields}`, "meta_phone_registration", { headers: { Authorization: `Bearer ${accessToken}` } });
     const safeValue = (value: unknown, allowed: readonly string[]): string | null =>
       typeof value === "string" && allowed.includes(value) ? value : null;
+    // Keep omitted fields separate from present values that did not pass normalization.
+    const missingRegistrationFields = ([
+      ["status", "status"],
+      ["platformType", "platform_type"],
+      ["codeVerificationStatus", "code_verification_status"],
+    ] as const).filter(([, graphField]) => !Object.hasOwn(response.body, graphField)).map(([field]) => field);
     return {
       id: typeof response.body.id === "string" ? response.body.id : null,
       status: safeValue(response.body.status, ["CONNECTED", "PENDING", "DELETED", "MIGRATED", "BANNED", "RESTRICTED", "RATE_LIMITED", "FLAGGED", "DISCONNECTED", "UNKNOWN", "UNVERIFIED"]),
       platformType: safeValue(response.body.platform_type, ["CLOUD_API", "ON_PREMISE", "NOT_APPLICABLE"]),
       codeVerificationStatus: safeValue(response.body.code_verification_status, ["VERIFIED", "NOT_VERIFIED", "EXPIRED"]),
+      ...(missingRegistrationFields.length ? { missingRegistrationFields } : {}),
     };
   }
   async verifyWebhookSubscription(accessToken: string, wabaId: string): Promise<boolean> {

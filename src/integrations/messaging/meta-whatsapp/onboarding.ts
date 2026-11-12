@@ -34,6 +34,7 @@ export interface MetaPhoneNumberInspection {
   status: string | null;
   platformType: string | null;
   codeVerificationStatus: string | null;
+  missingRegistrationFields?: readonly ("status" | "platformType" | "codeVerificationStatus")[];
 }
 export interface MetaWhatsAppOnboardingProvider {
   exchangeAuthorizationCode(code: string): Promise<MetaVerifiedAuthorization>;
@@ -88,6 +89,7 @@ export interface MetaOnboardingDiagnostic {
   upstreamHttpStatus?: number;
   providerErrorCode?: number;
   providerRequestId?: string;
+  phoneValidationFailure?: "upstream_lookup" | "identity_mismatch" | "registration_metadata_invalid";
 }
 
 export type MetaAssetCheckStatus = "passed" | "failed" | "unavailable" | "not_checked";
@@ -207,7 +209,14 @@ export class MetaWhatsAppOnboardingService {
       [hasWaba, phones, phone, subscribed] = await Promise.all([
         this.provider.verifyWabaAccess(authorization.accessToken, connection.wabaId),
         this.provider.listPhoneNumbers(authorization.accessToken, connection.wabaId),
-        this.provider.inspectPhoneNumber(authorization.accessToken, connection.phoneNumberId),
+        this.provider.inspectPhoneNumber(authorization.accessToken, connection.phoneNumberId).catch((error: unknown) => {
+          throw new MetaWhatsAppOnboardingError("Meta phone lookup failed.", {
+            ...(error instanceof MetaWhatsAppOnboardingError ? error.diagnostic : {}),
+            stage: "meta_phone_registration",
+            code: "meta_phone_registration_failed",
+            phoneValidationFailure: "upstream_lookup",
+          });
+        }),
         this.provider.verifyWebhookSubscription(authorization.accessToken, connection.wabaId),
       ]);
     } catch (error) {
@@ -216,8 +225,18 @@ export class MetaWhatsAppOnboardingService {
     if (!hasWaba || !phones.includes(connection.phoneNumberId)) {
       throw new MetaWhatsAppOnboardingError("Meta authorization does not match the existing WABA and phone number.", { stage: "meta_phone_membership", code: "meta_phone_membership_failed" });
     }
-    if (phone.id !== connection.phoneNumberId || phone.status !== "CONNECTED" || phone.platformType !== "CLOUD_API" || phone.codeVerificationStatus !== "VERIFIED") {
-      throw new MetaWhatsAppOnboardingError("The existing Meta phone number is not verified for Cloud API use.", { stage: "meta_phone_registration", code: "meta_phone_registration_failed" });
+    if (phone.id !== connection.phoneNumberId) {
+      throw new MetaWhatsAppOnboardingError("Meta phone lookup did not confirm the connection phone ID.", {
+        stage: "meta_phone_registration", code: "meta_phone_registration_failed", phoneValidationFailure: "identity_mismatch",
+      });
+    }
+    const expectedRegistration = { status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" } as const;
+    for (const field of ["status", "platformType", "codeVerificationStatus"] as const) {
+      if (phone[field] === expectedRegistration[field] ||
+          (phone[field] === null && phone.missingRegistrationFields?.includes(field))) continue;
+      throw new MetaWhatsAppOnboardingError("Meta returned invalid phone registration metadata.", {
+        stage: "meta_phone_registration", code: "meta_phone_registration_failed", phoneValidationFailure: "registration_metadata_invalid",
+      });
     }
     if (!subscribed) {
       throw new MetaWhatsAppOnboardingError("The Meta application is not subscribed to the existing WABA.", { stage: "meta_app_subscription", code: "meta_app_subscription_failed" });

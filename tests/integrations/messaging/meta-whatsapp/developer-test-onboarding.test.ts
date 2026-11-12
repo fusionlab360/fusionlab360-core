@@ -10,7 +10,7 @@ import type { AuthenticatedPrincipal } from "../../../../src/core/security/princ
 import type { RequestContext } from "../../../../src/context";
 import { hashApiKey } from "../../../../src/core/security/api-key";
 import { isMetaWhatsAppDeveloperTestAuthorized } from "../../../../src/integrations/messaging/meta-whatsapp/developer-test-config";
-import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaVerifiedAuthorization, type MetaWhatsAppOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/onboarding";
+import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaPhoneNumberInspection, type MetaVerifiedAuthorization, type MetaWhatsAppOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/onboarding";
 import { createMetaWhatsAppRoutes } from "../../../../src/integrations/messaging/meta-whatsapp/routes";
 import { createMetaWhatsAppCredentialVault } from "../../../../src/integrations/messaging/meta-whatsapp/credential-vault";
 import { MetaWhatsAppGraphOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/graph-onboarding-provider";
@@ -64,7 +64,7 @@ class TestProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestA
   }
   async verifyWabaAccess(): Promise<boolean> { return this.wabaAccess; }
   async listPhoneNumbers(): Promise<readonly string[]> { return this.phoneNumbers; }
-  async inspectPhoneNumber(_token: string, phoneNumberId: string) { return { id: phoneNumberId, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" }; }
+  async inspectPhoneNumber(_token: string, phoneNumberId: string): Promise<MetaPhoneNumberInspection> { return { id: phoneNumberId, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" }; }
   async verifyWebhookSubscription(): Promise<boolean> { return this.subscription; }
 }
 
@@ -678,6 +678,9 @@ test("developer-test credential refresh is write-authorized, tenant-scoped, asse
       scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
       expiresAt: Date.now() + 60 * 60 * 1000,
     };
+    const graph = new MetaWhatsAppGraphOnboardingProvider("test-app", "test-secret", "v26.0", async () =>
+      Response.json({ id: PHONE_ID, platform_type: "CLOUD_API" }));
+    provider.inspectPhoneNumber = graph.inspectPhoneNumber.bind(graph);
     const app = createApp(db, provider, "tenant-a", ["integrations:write"]);
     const response = await app.request(`https://core.test${endpoint}`, {
       method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
@@ -715,6 +718,44 @@ test("developer-test credential refresh is write-authorized, tenant-scoped, asse
     }, bindings(db));
     assert.equal(denied.status, 403);
     assert.equal(provider.validationCalls, validationsBeforeRefresh + 1);
+  } finally { db.close(); }
+});
+
+test("developer-test refresh rejects failed phone lookups, mismatched identity, and present invalid registration metadata", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    const service = new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider);
+    const connected = await service.completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state,
+      accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    const cases = [
+      { body: { error: { code: 100, message: "raw-provider-message" } }, status: 400, reason: "upstream_lookup" },
+      { body: { id: "99999999" }, status: 200, reason: "identity_mismatch" },
+      { body: { id: PHONE_ID, status: "DISCONNECTED" }, status: 200, reason: "registration_metadata_invalid" },
+      { body: { id: PHONE_ID, platform_type: "ON_PREMISE" }, status: 200, reason: "registration_metadata_invalid" },
+      { body: { id: PHONE_ID, code_verification_status: "NOT_VERIFIED" }, status: 200, reason: "registration_metadata_invalid" },
+      { body: { id: PHONE_ID, status: "NEW_UNRECOGNIZED_STATE" }, status: 200, reason: "registration_metadata_invalid" },
+      { body: { id: PHONE_ID, code_verification_status: null }, status: 200, reason: "registration_metadata_invalid" },
+    ];
+    for (const { body, status, reason } of cases) {
+      const graph = new MetaWhatsAppGraphOnboardingProvider("test-app", "test-secret", "v26.0", async () =>
+        Response.json(body, { status }));
+      provider.inspectPhoneNumber = graph.inspectPhoneNumber.bind(graph);
+      await assert.rejects(service.refreshDeveloperTestCredential({
+        tenantId: "tenant-a", connectionId: connected.connectionId, accessToken: "rejected-token",
+      }, provider), (error: unknown) => {
+        assert.ok(error instanceof MetaWhatsAppOnboardingError);
+        assert.equal(error.diagnostic.code, "meta_phone_registration_failed");
+        assert.equal(error.diagnostic.phoneValidationFailure, reason);
+        assert.equal(error.diagnostic.upstreamHttpStatus, status === 400 ? 400 : undefined);
+        assert.equal(error.diagnostic.providerErrorCode, status === 400 ? 100 : undefined);
+        assert.doesNotMatch(JSON.stringify(error.diagnostic), /raw-provider-message|rejected-token/);
+        return true;
+      });
+      assert.equal(db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId)?.credential_version, connected.credentialVersion);
+    }
   } finally { db.close(); }
 });
 
