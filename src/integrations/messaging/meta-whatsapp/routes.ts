@@ -309,6 +309,73 @@ routes.post(
   },
 );
 
+routes.post("/connections/:connectionId/developer-test-credential/refresh", requireTenantClientPermission("integrations:write"), async (c) => {
+  if (new URL(c.req.url).protocol !== "https:") {
+    return c.json({ success: false, code: "HTTPS_REQUIRED" }, 400);
+  }
+  const principal = c.get("principal");
+  const maxBodyBytes = 16 * 1024;
+  const contentLength = c.req.header("Content-Length");
+  if (contentLength !== undefined && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBodyBytes)) {
+    return c.json({ success: false, code: "INVALID_CREDENTIAL_INPUT" }, 413);
+  }
+  let body: { temporaryAccessToken?: unknown } = {};
+  const reader = c.req.raw.body?.getReader();
+  if (reader) {
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBodyBytes) {
+          await reader.cancel();
+          return c.json({ success: false, code: "INVALID_CREDENTIAL_INPUT" }, 413);
+        }
+        chunks.push(value);
+      }
+      const bytes = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as { temporaryAccessToken?: unknown };
+      }
+    } catch {
+      return c.json({ success: false, code: "INVALID_CREDENTIAL_INPUT" }, 400);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  if (typeof body.temporaryAccessToken !== "string" || !body.temporaryAccessToken.trim() || body.temporaryAccessToken.length > 8192) {
+    return c.json({ success: false, code: "INVALID_CREDENTIAL_INPUT" }, 400);
+  }
+  let onboardingProvider: MetaWhatsAppOnboardingProvider;
+  try {
+    onboardingProvider = resolveProvider(c.env);
+  } catch {
+    return c.json({ success: false, code: "PROVIDER_VALIDATION_UNAVAILABLE" }, 503);
+  }
+  if (!supportsDeveloperTestAuthorization(onboardingProvider)) {
+    return c.json({ success: false, code: "PROVIDER_VALIDATION_UNAVAILABLE" }, 503);
+  }
+  try {
+    const result = await new MetaWhatsAppOnboardingService(c.env.DB, c.env, onboardingProvider).refreshDeveloperTestCredential({
+      tenantId: principal!.tenantId,
+      connectionId: c.req.param("connectionId"),
+      accessToken: body.temporaryAccessToken,
+    }, onboardingProvider);
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    const diagnostic = error instanceof MetaWhatsAppOnboardingError
+      ? error.diagnostic
+      : { stage: "unknown" as const, code: "meta_unknown_failure" as const };
+    console.error("Meta developer test credential refresh failed.", diagnostic);
+    return c.json({ success: false, code: diagnostic.code }, diagnostic.code === "meta_connection_persistence_failed" ? 404 : 409);
+  }
+});
+
 routes.post("/onboarding/complete", requireTenantClientPermission("integrations:oauth:connect"), async (c) => {
   let onboardingProvider: MetaWhatsAppOnboardingProvider; try { onboardingProvider = resolveProvider(c.env); } catch { return c.json({ success: false, message: "Meta WhatsApp onboarding is not configured." }, 503); }
   const principal = c.get("principal"); const body: { state?: string; code?: string; wabaId?: string; phoneNumberId?: string } = await c.req.json<{ state?: string; code?: string; wabaId?: string; phoneNumberId?: string }>().catch(() => ({}));

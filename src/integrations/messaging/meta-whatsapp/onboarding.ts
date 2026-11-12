@@ -10,6 +10,7 @@ import { OAuthAuthorizationStateRepository } from "../../../persistence/reposito
 import { IntegrationRepository } from "../../../persistence/repositories/integration-repository";
 import type { AppBindings } from "../../../config/app";
 import { isMetaLifecycleSchemaMissing } from "./connection-eligibility";
+import { isMetaWhatsAppDeveloperTestAuthorized } from "./developer-test-config";
 
 export const META_ONBOARDING_PERMISSION = "integrations:oauth:connect";
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -141,7 +142,95 @@ function identifier(value: unknown): string | null { return typeof value === "st
 function scopesIncludeRequired(scopes: readonly string[]): boolean { return REQUIRED_SCOPES.every((scope) => scopes.includes(scope)); }
 
 export class MetaWhatsAppOnboardingService {
-  constructor(private readonly db: D1Database, private readonly bindings: Pick<AppBindings, "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION">, private readonly provider: MetaWhatsAppOnboardingProvider) {}
+  constructor(private readonly db: D1Database, private readonly bindings: Pick<AppBindings, "META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS" | "META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION" | "META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED" | "META_WHATSAPP_DEVELOPER_TEST_TENANT_ALLOWLIST" | "META_WHATSAPP_DEVELOPER_TEST_WABA_ID_ALLOWLIST" | "META_WHATSAPP_DEVELOPER_TEST_PHONE_NUMBER_ID_ALLOWLIST">, private readonly provider: MetaWhatsAppOnboardingProvider) {}
+
+  async refreshDeveloperTestCredential(
+    input: { tenantId: string; connectionId: string; accessToken: string },
+    provider: MetaWhatsAppOnboardingProvider & MetaDeveloperTestAuthorizationProvider,
+  ): Promise<{ connectionId: string; credentialVersion: number; expiresAt: number }> {
+    const connection = await new MetaWhatsAppConnectionRepository(this.db).findByTenantAndId(input.tenantId, input.connectionId);
+    if (!connection || connection.status !== "active") {
+      throw new MetaWhatsAppOnboardingError("Meta WhatsApp connection is unavailable for credential refresh.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    }
+    if (!isMetaWhatsAppDeveloperTestAuthorized(this.bindings, {
+      tenantId: input.tenantId,
+      wabaId: connection.wabaId,
+      phoneNumberId: connection.phoneNumberId,
+    })) {
+      throw new MetaWhatsAppOnboardingError("Meta developer test credential refresh is unavailable.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    }
+
+    let activationState: string | null;
+    try {
+      const row = await this.db.prepare(`
+        SELECT activation_state AS state FROM meta_whatsapp_connections
+        WHERE tenant_id = ? AND id = ? LIMIT 1
+      `).bind(input.tenantId, connection.id).first<{ state: string }>();
+      activationState = row?.state ?? null;
+    } catch {
+      throw new MetaWhatsAppOnboardingError("Meta connection lifecycle state could not be verified.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    }
+    if (!activationState || activationState === "suspended" || activationState === "revoked") {
+      throw new MetaWhatsAppOnboardingError("Meta WhatsApp connection is unavailable for credential refresh.", { stage: "connection_persistence", code: "meta_connection_persistence_failed" });
+    }
+
+    const owner = { tenantId: input.tenantId, integrationId: connection.integrationId, connectionId: connection.id, provider: "meta_whatsapp" };
+    const vault = createMetaWhatsAppCredentialVault(this.db, this.bindings);
+    let current;
+    try {
+      current = await vault.metadata(owner);
+    } catch (error) {
+      throw classifyMetaOnboardingError(error, { stage: "credential_encryption", code: "meta_credential_encryption_failed" }, "Meta credential metadata could not be verified.");
+    }
+    if (!current || current.status !== "active" || current.metadata.developerTest !== true) {
+      throw new MetaWhatsAppOnboardingError("An active developer-test credential is required for refresh.", { stage: "credential_encryption", code: "meta_credential_encryption_failed" });
+    }
+
+    let authorization: MetaVerifiedAuthorization;
+    try {
+      authorization = await provider.validateDeveloperTestToken(input.accessToken);
+    } catch (error) {
+      throw classifyMetaOnboardingError(error, { stage: "meta_token_debug", code: "meta_token_debug_failed" }, "Meta developer test token validation failed.");
+    }
+    if (!authorization.accessToken?.trim() || !scopesIncludeRequired(authorization.scopes)) {
+      throw new MetaWhatsAppOnboardingError("Meta authorization does not include the required permissions.", { stage: "meta_scope_validation", code: "meta_required_scopes_missing" });
+    }
+    if (!authorization.expiresAt || authorization.expiresAt <= Date.now() + 60_000) {
+      throw new MetaWhatsAppOnboardingError("Meta developer test token is expired or has no usable expiration.", { stage: "meta_token_debug", code: "meta_token_invalid_or_expired" });
+    }
+
+    let hasWaba: boolean;
+    let phones: readonly string[];
+    let phone: MetaPhoneNumberInspection;
+    let subscribed: boolean;
+    try {
+      [hasWaba, phones, phone, subscribed] = await Promise.all([
+        this.provider.verifyWabaAccess(authorization.accessToken, connection.wabaId),
+        this.provider.listPhoneNumbers(authorization.accessToken, connection.wabaId),
+        this.provider.inspectPhoneNumber(authorization.accessToken, connection.phoneNumberId),
+        this.provider.verifyWebhookSubscription(authorization.accessToken, connection.wabaId),
+      ]);
+    } catch (error) {
+      throw classifyMetaOnboardingError(error, { stage: "meta_waba_access", code: "meta_waba_access_failed" }, "Meta asset verification failed.");
+    }
+    if (!hasWaba || !phones.includes(connection.phoneNumberId)) {
+      throw new MetaWhatsAppOnboardingError("Meta authorization does not match the existing WABA and phone number.", { stage: "meta_phone_membership", code: "meta_phone_membership_failed" });
+    }
+    if (phone.id !== connection.phoneNumberId || phone.status !== "CONNECTED" || phone.platformType !== "CLOUD_API" || phone.codeVerificationStatus !== "VERIFIED") {
+      throw new MetaWhatsAppOnboardingError("The existing Meta phone number is not verified for Cloud API use.", { stage: "meta_phone_registration", code: "meta_phone_registration_failed" });
+    }
+    if (!subscribed) {
+      throw new MetaWhatsAppOnboardingError("The Meta application is not subscribed to the existing WABA.", { stage: "meta_app_subscription", code: "meta_app_subscription_failed" });
+    }
+
+    const refreshed = await vault.replace({
+      ...owner,
+      accessToken: authorization.accessToken,
+      expectedVersion: current.credentialVersion,
+      metadata: { developerTest: true, lifecycle: "expiring", expiresAt: authorization.expiresAt, scopes: authorization.scopes },
+    });
+    return { connectionId: connection.id, credentialVersion: refreshed.credentialVersion, expiresAt: authorization.expiresAt };
+  }
 
   async start(input: { tenantId: string; operatorId: string; integrationId: string; connectionId?: string }): Promise<{ state: string; expiresAt: number }> {
     const integration = await new IntegrationRepository(this.db).findByTenantAndProvider(input.tenantId, "meta_whatsapp");
