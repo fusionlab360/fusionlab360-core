@@ -922,7 +922,7 @@ export class CredentialRepository
   }
 
   /** Encrypt one bounded batch of legacy GHL credentials; concurrent rotations win. */
-  async migratePlaintextBatch(limit = 50): Promise<number> {
+  async migratePlaintextBatch(limit = 50, authType?: "oauth2"): Promise<number> {
     const cipher = this.credentialStorage.cipher;
     if (!cipher) {
       throw new CredentialCipherError("Credential encryption must be configured before migration.");
@@ -932,11 +932,12 @@ export class CredentialRepository
       SELECT tenant_id, provider, location_id, api_key, refresh_token
       FROM integration_credentials
       WHERE provider = 'gohighlevel'
+        AND (? IS NULL OR auth_type = ?)
         AND ((api_key IS NOT NULL AND api_key <> '' AND api_key NOT LIKE 'fl360enc:%')
           OR (refresh_token IS NOT NULL AND refresh_token <> '' AND refresh_token NOT LIKE 'fl360enc:%'))
       ORDER BY tenant_id, provider
       LIMIT ?
-    `).bind(batchSize).all<{
+    `).bind(authType ?? null, authType ?? null, batchSize).all<{
       tenant_id: string;
       provider: string;
       location_id: string | null;
@@ -957,8 +958,10 @@ export class CredentialRepository
       const result = await this.db.prepare(`
         UPDATE integration_credentials SET api_key = ?, refresh_token = ?, updated_at = CURRENT_TIMESTAMP
         WHERE tenant_id = ? AND provider = 'gohighlevel' AND location_id IS ?
+          AND (? IS NULL OR auth_type = ?)
           AND api_key IS ? AND refresh_token IS ?
-      `).bind(access, refresh, row.tenant_id, row.location_id, row.api_key, row.refresh_token).run();
+      `).bind(access, refresh, row.tenant_id, row.location_id, authType ?? null, authType ?? null,
+        row.api_key, row.refresh_token).run();
       migrated += result.meta?.changes ?? 0;
     }
     return migrated;

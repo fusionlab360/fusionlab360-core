@@ -539,7 +539,7 @@ export class OAuthInstallationRepository
   }
 
   /** Encrypt one bounded batch of legacy GHL company/location installations. */
-  async migratePlaintextBatch(limit = 50): Promise<number> {
+  async migratePlaintextBatch(limit = 50, accountType?: OAuthAccountType): Promise<number> {
     const cipher = this.credentialStorage.cipher;
     if (!cipher) {
       throw new CredentialCipherError("Credential encryption must be configured before migration.");
@@ -549,11 +549,12 @@ export class OAuthInstallationRepository
       SELECT provider, account_type, external_account_id, access_token, refresh_token
       FROM oauth_installations
       WHERE provider = 'gohighlevel'
+        AND (? IS NULL OR account_type = ?)
         AND ((access_token IS NOT NULL AND access_token <> '' AND access_token NOT LIKE 'fl360enc:%')
           OR (refresh_token IS NOT NULL AND refresh_token <> '' AND refresh_token NOT LIKE 'fl360enc:%'))
       ORDER BY account_type, external_account_id
       LIMIT ?
-    `).bind(batchSize).all<{
+    `).bind(accountType ?? null, accountType ?? null, batchSize).all<{
       provider: string;
       account_type: OAuthAccountType;
       external_account_id: string;

@@ -1,3 +1,5 @@
+[FusionLab360 Core documentation](docs/README.md)
+
 ```txt
 npm install
 npm run dev
