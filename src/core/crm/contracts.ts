@@ -11,6 +11,9 @@ import type {
 
 export interface CRMAdapter {
 
+  runClinicContactSync?<T>(context: RequestContext, contactId: string, capturedAt: number, action: () => Promise<T>): Promise<T>;
+  syncContactNotes?(context: RequestContext, contactId: string, notes: string): Promise<void>;
+
   // Contact Operations
   createContact(
     context: RequestContext,
@@ -30,7 +33,8 @@ export interface CRMAdapter {
 
   upsertContact(
     context: RequestContext,
-    payload: Contact
+    payload: Contact,
+    options?: { verifyOwnership: true; existingOnly?: true },
   ): Promise<Contact>;
 
   deleteContact(
@@ -58,7 +62,8 @@ export interface CRMAdapter {
 
   upsertContact(
     context: RequestContext,
-    payload: Contact
+    payload: Contact,
+    options?: { verifyOwnership: true; existingOnly?: true },
   ): Promise<Contact>;
 
   deleteContact(

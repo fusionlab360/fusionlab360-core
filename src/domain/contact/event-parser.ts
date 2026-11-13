@@ -3,53 +3,39 @@ import type {
 } from "./event";
 
 
+const NOTE_ENTITIES: Record<string, string> = {
+  nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+};
+
 function normalizeNotes(
   notes:
     string,
 ): string {
 
   return notes
+    .replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
     /*
      * Convert paragraph / line-break HTML into
      * actual newline boundaries.
      */
     .replace(
-      /<\/p\s*>/gi,
+      /<\/?(?:p|div|li|ul|ol|blockquote|section|article|h[1-6]|tr|td|th|pre)(?:\s[^>]*)?>/gi,
       "\n",
     )
     .replace(
-      /<br\s*\/?>/gi,
+      /<br\b[^>]*>/gi,
       "\n",
     )
 
-    /*
-     * Decode common HTML entities used by editors.
-     */
-    .replace(
-      /&nbsp;/gi,
-      " ",
-    )
-    .replace(
-      /&amp;/gi,
-      "&",
-    )
-    .replace(
-      /&lt;/gi,
-      "<",
-    )
-    .replace(
-      /&gt;/gi,
-      ">",
-    )
-
-    /*
-     * Remove remaining HTML tags.
-     */
-    .replace(
-      /<[^>]+>/g,
-      " ",
-    )
-
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&(#x[0-9a-f]+|#\d+|nbsp|amp|lt|gt|quot|apos);/gi, (entity, key: string) => {
+      if (!key.startsWith("#")) return NOTE_ENTITIES[key.toLowerCase()] ?? entity;
+      const hex = key[1]?.toLowerCase() === "x";
+      const point = Number.parseInt(key.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
+        ? String.fromCodePoint(point)
+        : entity;
+    })
     /*
      * Normalize whitespace.
      */
@@ -69,20 +55,28 @@ export type ContactEventSnapshot =
   | { kind: "omitted" | "blank" | "undated" | "malformed" }
   | { kind: "complete"; events: ContactEvent[] };
 
-export function parseContactEventSnapshot(notes: unknown): ContactEventSnapshot {
+export function parseContactEventSnapshot(notes: unknown, options?: { clinic: true }): ContactEventSnapshot {
   if (notes === undefined) return { kind: "omitted" };
   if (typeof notes !== "string") return { kind: "malformed" };
 
   const value = normalizeNotes(notes);
   if (!value) return { kind: "blank" };
 
-  // Find candidate boundaries separately from validation so a bad date or
-  // missing delimiter cannot disappear from a destructive replacement.
-  const entries = Array.from(value.matchAll(
+  if (/[^\s\d]\d{2}\/\d{2}\/(?:\d{4}|\d{2})(?=[^\S\n]*-)/.test(value)) {
+    return { kind: "malformed" };
+  }
+  // A second entry marker on the same line may mean a paragraph break was lost.
+  if (options?.clinic && value.split("\n").some((line) =>
+    /\S[^\n]*?[^\S\n]+\d{2}\/\d{2}\/(?:\d{4}|\d{2})[^\S\n]*-/.test(line))) {
+    return { kind: "malformed" };
+  }
+  const entries = Array.from(value.matchAll(options?.clinic
+    ? /^[^\S\n]*(\d+[^\S\n]*[/.\-][^\S\n]*\d+(?:[^\S\n]*[/.\-][^\S\n]*\d+)?)(?=\D|$)/gm
+    :
     /(?:^|\s)(\d+\s*[/.\-]\s*\d+(?:\s*[/.\-]\s*\d+)?)(?=\D|$)/g,
   ));
   if (!entries.length) return { kind: "undated" };
-  if (value.slice(0, entries[0].index).trim()) return { kind: "malformed" };
+  if (!options?.clinic && value.slice(0, entries[0].index).trim()) return { kind: "malformed" };
 
   const events: ContactEvent[] = [];
   for (const [index, entry] of entries.entries()) {
@@ -110,7 +104,8 @@ export function parseContactEventSnapshot(notes: unknown): ContactEventSnapshot 
         .join("\n"),
     });
   }
-  return { kind: "complete", events };
+  const uniqueEvents = new Map(events.map((event) => [JSON.stringify([event.date, event.type]), event]));
+  return { kind: "complete", events: Array.from(uniqueEvents.values()) };
 }
 
 export function parseContactEvents(notes: string | undefined): ContactEvent[] {

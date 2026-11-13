@@ -1,4 +1,4 @@
-import type { CRMAdapter } from "../../../core/crm";
+import { normalizePhoneNumber, type CRMAdapter } from "../../../core/crm";
 import type { Contact } from "../../../core/crm/models/contact";
 import type { RequestContext } from "../../../context";
 import type { ReservationOpportunity } from "../../../domain/reservation/opportunity";
@@ -6,6 +6,7 @@ import type { ReservationOpportunity } from "../../../domain/reservation/opportu
 import { logger } from "../../../core/logger";
 import { ApiError } from "../../../core/errors/ApiError";
 
+import { lookupGHLContactByPhone } from "./contacts/lookup";
 import { getGHLCredentials } from "./credentials";
 
 import {
@@ -78,11 +79,12 @@ function safeErrorCategory(error: unknown): string {
 
 // A Worker isolate can reject an overlapping sync without sharing request I/O.
 const activeContactSyncs = new Set<string>();
+const clinicSnapshotTimes = new Map<string, number>();
 
 async function runContactSync<T>(
   context: RequestContext,
   contactId: string,
-  kind: "notes" | "events",
+  kind: "notes" | "events" | "clinic",
   action: () => Promise<T>,
 ): Promise<T> {
   const key = JSON.stringify([context.tenant.id, getGHLCredentials(context).locationId, contactId, kind]);
@@ -131,6 +133,7 @@ async function syncContactNotes(
       const existingNote = existingNotes.find((note) => note.title === FUSIONLAB_CONTACT_NOTE_TITLE);
       const payload = { userId, body: notes, title: FUSIONLAB_CONTACT_NOTE_TITLE };
       if (existingNote) {
+        if (existingNote.body === notes) return;
         stage = "update_note";
         if (!existingNote.id?.trim()) throw new Error("GoHighLevel managed note has no ID.");
         await updateContactNote(context, contactId, existingNote.id, payload);
@@ -531,6 +534,23 @@ function buildContactEventKey(
 }
 
 export const goHighLevelAdapter: CRMAdapter = {
+  syncContactNotes,
+  runClinicContactSync(context, contactId, capturedAt, action) {
+    return runContactSync(context, contactId, "clinic", async () => {
+      const key = JSON.stringify([context.tenant.id, getGHLCredentials(context).locationId, contactId]);
+      const newest = clinicSnapshotTimes.get(key);
+      if (newest !== undefined && capturedAt < newest) {
+        throw new ApiError(409, "Clinic notes must be read again.", undefined, "CONFLICT");
+      }
+      clinicSnapshotTimes.delete(key);
+      clinicSnapshotTimes.set(key, capturedAt);
+      if (clinicSnapshotTimes.size > 4096) {
+        const oldest = clinicSnapshotTimes.keys().next().value;
+        if (oldest !== undefined) clinicSnapshotTimes.delete(oldest);
+      }
+      return action();
+    });
+  },
 
   // -------------------------------------------------
   // CONTACTS
@@ -616,6 +636,7 @@ export const goHighLevelAdapter: CRMAdapter = {
   async upsertContact(
     context: RequestContext,
     payload: Contact,
+    options,
   ) {
 
     const credentials =
@@ -661,6 +682,27 @@ export const goHighLevelAdapter: CRMAdapter = {
     );
 
 
+  async function verifyContact(contactId: string) {
+    const { contact } = await getContact(context, contactId);
+    const verified = contact && fromGHLContact(context, contact);
+    const expectedPhone = normalizePhoneNumber(payload.phone);
+    if (!verified || verified.id !== contactId || contact.locationId !== credentials.locationId ||
+        !expectedPhone || normalizePhoneNumber(verified.phone) !== expectedPhone ||
+        (payload.identityNumber && verified.identityNumber !== payload.identityNumber)) {
+      throw new ApiError(409, "Contact ownership could not be verified.", undefined, "CONFLICT");
+    }
+    return verified;
+  }
+
+  const existingId = options?.verifyOwnership
+    ? await lookupGHLContactByPhone({ ...context, provider: "gohighlevel" }, payload.phone)
+    : null;
+  const verifiedExisting = existingId ? await verifyContact(existingId) : null;
+  if (options?.existingOnly) {
+    if (!verifiedExisting) throw new ApiError(404, "Clinic contact could not be verified.", undefined, "NOT_FOUND");
+    return verifiedExisting;
+  }
+
   try {
  const response =
   await upsertContact(
@@ -676,6 +718,13 @@ if (!contactId) {
   throw new Error(
     "GoHighLevel contact upsert returned no contact ID.",
   );
+}
+
+if (options?.verifyOwnership) {
+  if (existingId && existingId !== contactId) {
+    throw new ApiError(409, "Contact ownership could not be verified.", undefined, "CONFLICT");
+  }
+  return verifyContact(contactId);
 }
 
 await syncContactNotes(context, contactId, payload.notes);
@@ -958,7 +1007,7 @@ logger.info(
   ): Promise<ContactEventsSyncResult> {
 
     // Only a complete snapshot can reach the provider reconciliation.
-    if (!input.events.length || input.events.some(
+    if ((!input.events.length && !(input.managedOnly && input.clearManaged)) || input.events.some(
       ({ date, type }) => !normalizeEventDate(date) || !normalizeEventType(type),
     )) {
       return { created: 0, deleted: 0, kept: 0 };
@@ -972,10 +1021,20 @@ logger.info(
       );
 
 
-    const eventConfiguration =
-  await resolveGHLEventConfiguration(
-    context,
-  );
+    const eventConfiguration = await resolveGHLEventConfiguration(context);
+    const management = context.tenant.integrations.crm.configuration?.providerConfiguration?.clinicContactSync;
+    const fieldKey = management && typeof management === "object" && "managedOwnerFieldKey" in management
+      ? management.managedOwnerFieldKey
+      : undefined;
+    const ownerProperty = input.managedOnly && typeof fieldKey === "string" && fieldKey.trim()
+      ? getGHLPropertyName(fieldKey)
+      : undefined;
+    if (input.managedOnly && (!ownerProperty || ["__proto__", "constructor", "prototype"].includes(ownerProperty) || [
+      eventConfiguration.primaryDisplayFieldKey, eventConfiguration.dateFieldKey, eventConfiguration.typeFieldKey,
+    ].map(getGHLPropertyName).includes(ownerProperty))) {
+      throw new Error("Managed Contact Event ownership field is not configured.");
+    }
+    const owner = JSON.stringify([context.tenant.id, credentials.locationId, input.contactId]);
 
   logger.info(
   "GHL contact event configuration resolved",
@@ -1043,6 +1102,7 @@ logger.info(
 
 
     if (!Array.isArray(relations.relations) ||
+        (input.managedOnly && (!Number.isInteger(relations.total) || relations.total !== relations.relations.length)) ||
         (typeof relations.total === "number" && relations.total > relations.relations.length)) {
       throw new Error("GoHighLevel returned an incomplete Contact Events association list.");
     }
@@ -1066,6 +1126,18 @@ logger.info(
       );
     }
 
+
+    if (input.managedOnly && (new Set(relations.relations.map((relation) => relation.id)).size !== relations.total ||
+        relations.relations.some((relation) =>
+      !relation.id?.trim() ||
+      relation.locationId !== credentials.locationId ||
+      relation.associationId !== eventConfiguration.associationId ||
+      relation.firstObjectKey !== eventConfiguration.firstObjectKey ||
+      relation.secondObjectKey !== eventConfiguration.secondObjectKey ||
+      (eventIsFirst ? relation.secondRecordId : relation.firstRecordId) !== input.contactId ||
+      !(eventIsFirst ? relation.firstRecordId : relation.secondRecordId)?.trim()))) {
+      throw new Error("Contact Event associations could not be verified.");
+    }
 
     const existingEventRecordIds =
       relations.relations
@@ -1136,7 +1208,7 @@ logger.info(
 
     for (
       const eventRecordId of
-        existingEventRecordIds
+        new Set(existingEventRecordIds)
     ) {
 
       const eventResponse =
@@ -1151,6 +1223,12 @@ logger.info(
 
       const properties =
         eventResponse.record?.properties;
+      if (ownerProperty) {
+        if (!properties || eventResponse.record?.id !== eventRecordId) {
+          throw new Error("Contact Event record could not be verified.");
+        }
+        if (getGHLRecordProperty(properties, ownerProperty) !== owner) continue;
+      }
 
 
       const existingDate =
@@ -1414,6 +1492,7 @@ if (
     string,
     unknown
   > = {
+    ...(ownerProperty ? { [ownerProperty]: owner } : {}),
 
     [
       getGHLPropertyName(

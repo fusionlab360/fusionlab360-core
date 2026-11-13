@@ -30,6 +30,7 @@ export interface GHLOpportunityCustomField {
  * GoHighLevel Contact
  */
 export interface GHLContact {
+  locationId?: string;
   /**
    * GHL Contact ID
    * Present when reading/updating an existing contact.
