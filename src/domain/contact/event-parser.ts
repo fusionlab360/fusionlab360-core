@@ -65,153 +65,55 @@ function normalizeNotes(
 }
 
 
-export function parseContactEvents(
-  notes:
-    string | undefined,
-): ContactEvent[] {
+export type ContactEventSnapshot =
+  | { kind: "omitted" | "blank" | "undated" | "malformed" }
+  | { kind: "complete"; events: ContactEvent[] };
 
-  if (
-    !notes?.trim()
-  ) {
-    return [];
-  }
+export function parseContactEventSnapshot(notes: unknown): ContactEventSnapshot {
+  if (notes === undefined) return { kind: "omitted" };
+  if (typeof notes !== "string") return { kind: "malformed" };
 
+  const value = normalizeNotes(notes);
+  if (!value) return { kind: "blank" };
 
-  const value =
-    normalizeNotes(
-      notes,
-    );
+  // Find candidate boundaries separately from validation so a bad date or
+  // missing delimiter cannot disappear from a destructive replacement.
+  const entries = Array.from(value.matchAll(
+    /(?:^|\s)(\d+\s*[/.\-]\s*\d+(?:\s*[/.\-]\s*\d+)?)(?=\D|$)/g,
+  ));
+  if (!entries.length) return { kind: "undated" };
+  if (value.slice(0, entries[0].index).trim()) return { kind: "malformed" };
 
+  const events: ContactEvent[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const date = /^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/.exec(entry[1]);
+    const content = value.slice(entry.index + entry[0].length, entries[index + 1]?.index);
+    const body = /^\s*-/.test(content) ? content.replace(/^\s*-/, "").trim() : "";
+    if (!date || !body) return { kind: "malformed" };
 
-  if (!value) {
-    return [];
-  }
-
-
-  const events:
-    ContactEvent[] = [];
-
-
-  /*
-   * Supports:
-   *
-   * 29/09/26 - follow up
-   * 29/09/2026 - follow up
-   *
-   * It also supports multiple events on one line
-   * because each new date starts another event.
-   */
-
-  const eventPattern =
-    /(\d{2})\/(\d{2})\/(\d{2}|\d{4})\s*-\s*(.*?)(?=\s*\d{2}\/\d{2}\/(?:\d{2}|\d{4})\s*-\s*|$)/g;
-
-
-  let match:
-    RegExpExecArray | null;
-
-
-  while (
-    (
-      match =
-        eventPattern.exec(
-          value,
-        )
-    ) !== null
-  ) {
-
-    const [
-      ,
-      day,
-      month,
-      rawYear,
-      rawType,
-    ] =
-      match;
-
-
-    let year =
-      Number(
-        rawYear,
-      );
-
-
-    /*
-     * 26 → 2026
-     * 27 → 2027
-     */
-
+    const [, day, month, rawYear] = date;
+    const year = Number(rawYear) + (rawYear.length === 2 ? 2000 : 0);
+    const parsed = new Date(Date.UTC(year, Number(month) - 1, Number(day)));
     if (
-      rawYear.length ===
-      2
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== Number(month) - 1 ||
+      parsed.getUTCDate() !== Number(day)
     ) {
-
-      year +=
-        2000;
+      return { kind: "malformed" };
     }
-
-
-    const dayNumber =
-      Number(
-        day,
-      );
-
-
-    const monthNumber =
-      Number(
-        month,
-      );
-
-
-    /*
-     * Validate actual calendar date.
-     */
-
-    const parsedDate =
-      new Date(
-        year,
-        monthNumber - 1,
-        dayNumber,
-      );
-
-
-    if (
-      parsedDate.getFullYear() !==
-        year ||
-
-      parsedDate.getMonth() !==
-        monthNumber - 1 ||
-
-      parsedDate.getDate() !==
-        dayNumber
-    ) {
-
-      continue;
-    }
-
-
-    const eventType =
-      rawType
-        .trim()
-        .replace(
-          /\s+/g,
-          " ",
-        );
-
-
-    if (!eventType) {
-      continue;
-    }
-
 
     events.push({
-      date:
-        `${year}-${month}-${day}`,
-
-      type:
-        eventType,
+      date: `${String(year).padStart(4, "0")}-${month}-${day}`,
+      type: body.split("\n")
+        .map((line) => line.trim().replace(/\s+/g, " "))
+        .filter(Boolean)
+        .join("\n"),
     });
   }
+  return { kind: "complete", events };
+}
 
-
-  return events;
+export function parseContactEvents(notes: string | undefined): ContactEvent[] {
+  const snapshot = parseContactEventSnapshot(notes);
+  return snapshot.kind === "complete" ? snapshot.events : [];
 }
