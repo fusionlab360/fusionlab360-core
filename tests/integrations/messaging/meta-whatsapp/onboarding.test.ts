@@ -8,7 +8,7 @@ import { MetaWhatsAppOnboardingService, MetaWhatsAppOnboardingError, type MetaWh
 
 class SQLiteD1 {
   readonly sqlite = new DatabaseSync(":memory:");
-  constructor(lifecycleSchema = true) { for (const name of readdirSync(join(process.cwd(), "migrations")).filter((n) => n.endsWith(".sql")).sort()) { if (!lifecycleSchema && (name.startsWith("0042_") || name.startsWith("0045_"))) continue; this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", name), "utf8")); } }
+  constructor(lifecycleSchema = true) { for (const name of readdirSync(join(process.cwd(), "migrations")).filter((n) => n.endsWith(".sql")).sort()) { if (!lifecycleSchema && (name.startsWith("0042_") || name.startsWith("0045_") || name.startsWith("0047_"))) continue; this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", name), "utf8")); } }
   prepare(sql: string): D1PreparedStatement { let values: unknown[] = []; const statement = { bind: (...next: unknown[]) => { values = next; return statement; }, run: async () => ({ meta: { changes: Number(this.sqlite.prepare(sql).run(...values as never[]).changes) } }), first: async <T>() => (this.sqlite.prepare(sql).get(...values as never[]) as T | undefined) ?? null, all: async <T>() => ({ results: this.sqlite.prepare(sql).all(...values as never[]) as T[] }) }; return statement as unknown as D1PreparedStatement; }
   binding(): D1Database { return this as unknown as D1Database; }
   close(): void { this.sqlite.close(); }

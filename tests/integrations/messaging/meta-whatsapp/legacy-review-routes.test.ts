@@ -44,6 +44,7 @@ class TestD1 {
         }
         continue;
       }
+      if (file.startsWith("0047_")) continue; // Explicit historical schema fixtures.
       if (file.startsWith("0045_") && schemaShape !== "canonical") continue;
       this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8"));
     }
@@ -118,7 +119,7 @@ async function setupLegacyBinding(developerTestAssets = false) {
     request(token, `/integrations/meta-whatsapp/connections/${id}/legacy-binding`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ghlLocationId: "loc-a", ghlProviderId: "provider-a", evidenceReference: evidenceA, justification, ...fields }),
-    }, { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a,loc-b", ...env });
+    }, { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a", ...env });
   return { db, request, bind, justification };
 }
 
@@ -132,7 +133,7 @@ async function setupDeveloperTestBinding() {
   `).run(JSON.stringify({ developerTest: true, lifecycle: "expiring" }));
   const developerTestEnv: Partial<AppBindings> = {
     GHL_CUSTOM_PROVIDER_ENABLED: "true",
-    GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a,loc-b",
+    GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "loc-a",
     META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED: "true",
     META_WHATSAPP_DEVELOPER_TEST_TENANT_ALLOWLIST: "tenant-a",
     META_WHATSAPP_DEVELOPER_TEST_WABA_ID_ALLOWLIST: developerTestWabaId,
@@ -156,6 +157,7 @@ async function setupDeveloperTestBinding() {
 
 test("legacy binding claims both NULL fields once, audits the authenticated operator, and leaves review separate", async () => {
   const { db, request, bind, justification } = await setupLegacyBinding();
+  db.sqlite.exec(readFileSync(join(process.cwd(), "migrations/0047_meta_whatsapp_null_safe_binding.sql"), "utf8"));
   try {
     const review = () => request(keyA, endpoint, {
       method: "POST", headers: { "Content-Type": "application/json" },

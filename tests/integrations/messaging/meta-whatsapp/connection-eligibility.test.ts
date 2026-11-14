@@ -40,7 +40,7 @@ test("pre-0042 active connection remains eligible gate-off without querying unav
   const sqlite = new DatabaseSync(":memory:");
   try {
     for (const file of readdirSync(join(process.cwd(), "migrations")).filter((name) => name.endsWith(".sql")).sort()) {
-      if (file.startsWith("0042_") || file.startsWith("0045_")) continue;
+      if (file.startsWith("0042_") || file.startsWith("0045_") || file.startsWith("0047_")) continue;
       sqlite.exec(readFileSync(join(process.cwd(), "migrations", file), "utf8"));
     }
     sqlite.exec("INSERT INTO tenants(id,name) VALUES('a','A'); INSERT INTO integrations(id,tenant_id,provider) VALUES('ia','a','meta_whatsapp'); INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status) VALUES('ca','a','ia','wa','pa','active')");

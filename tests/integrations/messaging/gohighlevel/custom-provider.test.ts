@@ -89,10 +89,12 @@ test("pilot location gate rejects other registered and unknown locations", () =>
   assert.equal(isGHLProviderPilotLocationAuthorized({ GHL_CUSTOM_PROVIDER_ENABLED: "true" }, "location-a"), false);
 });
 
-test("explicit location allowlists may safely name multiple locations for lifecycle-controlled routing", () => {
+test("pilot authorization rejects multiple locations even with unrelated gates enabled", () => {
   const config = { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a, location-b" };
-  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-a"), true);
-  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-b"), true);
+  const enabled = { ...config, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true", WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true" };
+  assert.equal(isGHLProviderPilotLocationAuthorized(enabled, "location-a"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized(enabled, "location-b"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...enabled, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a" }, undefined), false);
   assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-c"), false);
   assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,*" }, "location-a"), false);
   assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,location-a" }, "location-a"), false);

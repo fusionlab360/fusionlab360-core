@@ -29,7 +29,7 @@ class LocalD1 {
   readonly sqlite = new DatabaseSync(":memory:");
   constructor(schemaReady = true) {
     for (const filename of readdirSync(join(process.cwd(), "migrations")).filter((name) => name.endsWith(".sql")).sort()) {
-      if (!schemaReady && (filename.startsWith("0042_") || filename.startsWith("0045_"))) continue;
+      if (!schemaReady && (filename.startsWith("0042_") || filename.startsWith("0045_") || filename.startsWith("0047_"))) continue;
       this.sqlite.exec(readFileSync(join(process.cwd(), "migrations", filename), "utf8"));
     }
     this.sqlite.exec(`
@@ -90,7 +90,7 @@ async function setup(schemaReady = true) {
     META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ v1: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))) }),
     META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION: "v1",
     GHL_CUSTOM_PROVIDER_ENABLED: "true",
-    GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,location-b",
+    GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a",
   } as AppBindings);
   return { db, request };
 }

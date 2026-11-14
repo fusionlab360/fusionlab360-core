@@ -78,7 +78,7 @@ async function fixture() {
     META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ v1: encKey }), META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION: "v1",
     META_WHATSAPP_GRAPH_API_VERSION: "v26.0", GHL_OAUTH_CLIENT_ID: "synthetic-client", GHL_OAUTH_CLIENT_SECRET: "synthetic-secret", GHL_OAUTH_REDIRECT_URI: "https://unit.test/callback",
     NEW_QUEUE_ENVELOPES_ENABLED: "true", META_WHATSAPP_GHL_INBOUND_ENABLED: "true", META_WHATSAPP_GHL_INBOUND_TENANT_ALLOWLIST: tenants.map((t) => t.id).join(","),
-    GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: tenants.map((t) => t.loc).join(","), GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true",
+    GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: tenants[0].loc, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true",
     WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true",
     GHL_INBOUND_QUEUE: { send: async (body: Record<string, unknown>) => { queue.push({ body, acked: false, retried: false }); } },
   } as unknown as AppBindings;
@@ -138,9 +138,9 @@ test("two-tenant bidirectional path isolates messages, deduplicates events, and 
       const payload = { contactId: t.contact, locationId: t.loc, messageId: `staff-${t.id}`, type: "SMS", message: `reply-${t.id}`, phone: t.participant, userId: `agent-${t.id}` };
       const raw = JSON.stringify(payload);
       const headers = { "Content-Type": "application/json", "X-GHL-Signature": await hmac(raw) };
-      const firstOutbound = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers, body: raw }, f.env);
+      const firstOutbound = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers, body: raw }, { ...f.env, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: t.loc });
       assert.equal(firstOutbound.status, 200, `${await firstOutbound.clone().text()} ${f.deliverFailureType}`);
-      assert.equal((await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers, body: raw }, f.env)).status, 200);
+      assert.equal((await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers, body: raw }, { ...f.env, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: t.loc })).status, 200);
     }
     assert.deepEqual(Object.fromEntries(f.sendsByTenant), { "synthetic-a": 1, "synthetic-b": 1 });
     f.db.sqlite.prepare("UPDATE messaging_messages SET occurred_at=? WHERE tenant_id='synthetic-a' AND direction='inbound'").run(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
@@ -155,6 +155,7 @@ test("two-tenant bidirectional path isolates messages, deduplicates events, and 
       assert.equal(row.tenant_id, t.id); assert.equal(row.connection_id, t.connection); assert.equal(row.conversation_id, t.conversation); assert.equal(row.provider_message_id, `out-staff-${t.id}`);
     }
     for (const [phoneOwner, receiptOwner, status] of [[tenants[0], tenants[0], "sent"], [tenants[1], tenants[0], "delivered"], [tenants[1], tenants[1], "delivered"]] as const) {
+      f.env.GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST = phoneOwner.loc;
       const statusBody = metaStatus(phoneOwner.phone, `out-staff-${receiptOwner.id}`, status);
       assert.equal((await f.app.request("/webhooks/meta-whatsapp", { method: "POST", headers: { "X-Hub-Signature-256": await hmac(statusBody) }, body: statusBody }, f.env)).status, 200);
     }
@@ -244,12 +245,12 @@ test("lifecycle enforcement rejects unapproved, suspended, and revoked connectio
     const suspended = tenants[1];
     const suspendedPayload = { contactId: suspended.contact, locationId: suspended.loc, messageId: "suspended-outbound", type: "SMS", message: "must not send", phone: suspended.participant, userId: "agent-b" };
     const suspendedRaw = JSON.stringify(suspendedPayload);
-    const suspendedResult = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers: { "Content-Type": "application/json", "X-GHL-Signature": await hmac(suspendedRaw) }, body: suspendedRaw }, f.env);
+    const suspendedResult = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers: { "Content-Type": "application/json", "X-GHL-Signature": await hmac(suspendedRaw) }, body: suspendedRaw }, { ...f.env, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: suspended.loc });
     assert.notEqual(suspendedResult.status, 200);
     assert.equal(f.sendsByTenant.get(suspended.id) ?? 0, 0);
     const revoked = tenants[1];
     f.db.sqlite.prepare("UPDATE meta_whatsapp_connections SET activation_state='revoked',activation_actor='reviewer',activation_reason='test revocation' WHERE id=?").run(revoked.connection);
-    const out = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers: { "Content-Type": "application/json", "X-GHL-Signature": await hmac(JSON.stringify({ contactId: revoked.contact, locationId: revoked.loc, messageId: "revoked", type: "SMS", message: "x", phone: revoked.participant })) }, body: JSON.stringify({ contactId: revoked.contact, locationId: revoked.loc, messageId: "revoked", type: "SMS", message: "x", phone: revoked.participant }) }, f.env);
+    const out = await f.app.request("/webhooks/gohighlevel/provider-outbound", { method: "POST", headers: { "Content-Type": "application/json", "X-GHL-Signature": await hmac(JSON.stringify({ contactId: revoked.contact, locationId: revoked.loc, messageId: "revoked", type: "SMS", message: "x", phone: revoked.participant })) }, body: JSON.stringify({ contactId: revoked.contact, locationId: revoked.loc, messageId: "revoked", type: "SMS", message: "x", phone: revoked.participant }) }, { ...f.env, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: revoked.loc });
     assert.notEqual(out.status, 200);
     assert.equal(f.sendsByTenant.get(revoked.id) ?? 0, 0);
     const revokedEventService = new IntegrationEventService(new IntegrationEventRepository(f.db.binding()));

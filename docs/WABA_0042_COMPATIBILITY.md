@@ -13,6 +13,8 @@ Migrations are forward-only. Never rewrite or reapply 0042 on a database whose m
 
 The original 0042 shape allows `pending`, `active`, `suspended`, and `revoked`; the revised shape also allows `legacy_active` and preserves eligible historical rows in that state. Both shapes can use the 0045 review marker. The local migration tests verify both histories and confirm 0045 fails before 0042 without leaving partial schema objects.
 
+Apply 0046 for outbound retry storage, then 0047 on either 0042 history. 0047 replaces only the binding trigger. An unbound legacy connection can be bound once by the existing audited workflow, which must supply both verified values. Existing rows and historical 0042 checksums are preserved.
+
 ## Authorization and activation
 
 Neither migration history, `status='active'`, lifecycle state, nor message activity proves prior operator approval. Revised 0042 may label an existing active row `legacy_active` as a compatibility state, but that label alone does not make the row eligible: lifecycle enforcement requires an explicit tenant-scoped review record with no later rejection/conflict audit. The original 0042 shape can use a reviewed pending row without changing its CHECK constraint. New connections remain pending; suspended and revoked connections are ineligible.

@@ -165,7 +165,7 @@ export class MetaWhatsAppConnectionRepository extends BaseRepository {
         expectedWabaId, expectedPhoneNumberId, auditState),
       this.db.prepare(`
         UPDATE meta_whatsapp_connections
-        SET ghl_location_id = ?, ghl_provider_id = ?, updated_at = CURRENT_TIMESTAMP
+        SET ghl_location_id = ?, ghl_provider_id = ?, activation_trace_id = ?, updated_at = CURRENT_TIMESTAMP
         WHERE tenant_id = ? AND id = ? AND status = 'active' AND activation_state = 'legacy_active'
           AND ghl_location_id IS NULL AND ghl_provider_id IS NULL
           AND EXISTS (
@@ -174,7 +174,7 @@ export class MetaWhatsAppConnectionRepository extends BaseRepository {
               AND audit.connection_id = meta_whatsapp_connections.id
               AND audit.new_state = ? AND audit.trace_id = ?
           )
-      `).bind(input.locationId, input.providerId, input.tenantId, input.connectionId, auditState, operationId),
+      `).bind(input.locationId, input.providerId, operationId, input.tenantId, input.connectionId, auditState, operationId),
     ]);
     return audit?.meta.changes === 1 && update?.meta.changes === 1;
   }
