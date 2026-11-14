@@ -10,6 +10,7 @@ import type {
 import {
   CredentialRepository,
 } from "../../../../src/persistence/repositories/credential-repository";
+import { createCredentialStorageConfiguration } from "../../../../src/core/security/credential-storage";
 
 import {
   completePendingGHLLocationOnboarding,
@@ -23,6 +24,12 @@ import {
 import {
   TenantRepository,
 } from "../../../../src/persistence/repositories/tenant-repository";
+
+const testCredentialStorage = createCredentialStorageConfiguration({
+  CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
+});
 
 class SqliteD1Database {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -273,6 +280,7 @@ test(
       const credentialRepository =
         new CredentialRepository(
           db as unknown as D1Database,
+          testCredentialStorage,
         );
 
       const integrationEnabled =
@@ -353,6 +361,7 @@ test(
     try {
       const repository = new CredentialRepository(
         db as unknown as D1Database,
+        testCredentialStorage,
       );
 
       const result = await repository.upsertOAuthCredential(
@@ -394,6 +403,7 @@ test(
     try {
       const repository = new CredentialRepository(
         db as unknown as D1Database,
+        testCredentialStorage,
       );
 
       await repository.upsertOAuthCredential(
@@ -455,6 +465,7 @@ test(
 
       const repository = new CredentialRepository(
         db as unknown as D1Database,
+        testCredentialStorage,
       );
 
       const result = await repository.upsertOAuthCredential(

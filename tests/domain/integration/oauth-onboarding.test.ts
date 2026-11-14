@@ -16,6 +16,8 @@ import {
   startGhlOAuthController,
 } from "../../../src/domain/integration/oauth-controller";
 import { OAuthInstallationRepository } from "../../../src/persistence/repositories/oauth-installation-repository";
+import { CredentialRepository } from "../../../src/persistence/repositories/credential-repository";
+import { createCredentialStorageConfiguration } from "../../../src/core/security/credential-storage";
 
 const API_KEY = "fl360_oauth_onboarding_test_key";
 const TENANT_ID = "tenant-oauth-test";
@@ -25,6 +27,11 @@ const COMPANY_ID = "company-oauth-test";
 const LOCATION_ID = "location-oauth-test";
 const REDIRECT_URI = "https://staging.example.test/oauth/gohighlevel/callback";
 const ONBOARDING_SCOPE = "integrations:oauth:connect";
+const credentialSecurityBindings = {
+  CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
+};
 
 class SqliteD1Database {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -136,6 +143,7 @@ function bindings(database: SqliteD1Database, options: {
     GHL_OAUTH_CLIENT_SECRET: "synthetic-app-client-secret",
     GHL_OAUTH_REDIRECT_URI: REDIRECT_URI,
     GHL_OAUTH_SCOPES: options.scopes ?? "contacts.readonly conversations/message.readonly",
+    ...credentialSecurityBindings,
   } as AppBindings;
 }
 
@@ -296,7 +304,10 @@ test("OAuth initiation rejects ambiguous legacy Location ownership without creat
 test("successful OAuth callback stores the location credential and activates only its pending tenant", async () => {
   const database = await createDatabase();
   const db = database as unknown as D1Database;
-  const installationRepository = new OAuthInstallationRepository(db);
+  const installationRepository = new OAuthInstallationRepository(
+    db,
+    createCredentialStorageConfiguration(credentialSecurityBindings),
+  );
   const originalCompanyAccessToken = "existing-shared-company-token";
   await installationRepository.upsert({
     provider: "gohighlevel",
@@ -385,7 +396,12 @@ test("successful OAuth callback stores the location credential and activates onl
     assert.equal(tenant.status, "active");
     assert.equal(integration.enabled, 1);
     assert.equal(credential.auth_type, "oauth2");
-    assert.equal(credential.api_key, "new-location-access-token");
+    assert.match(credential.api_key, /^fl360enc:v1:test-v1:/);
+    const decrypted = await new CredentialRepository(
+      db,
+      createCredentialStorageConfiguration(credentialSecurityBindings),
+    ).findByTenantAndProvider(TENANT_ID, "gohighlevel");
+    assert.equal(decrypted?.apiKey, "new-location-access-token");
     assert.equal(JSON.parse(credential.metadata).connectionStatus, "connected");
     assert.equal(sharedInstallation?.accessToken, originalCompanyAccessToken);
   } finally {

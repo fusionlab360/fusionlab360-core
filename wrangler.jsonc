@@ -15,7 +15,15 @@
   "GHL_INBOUND_QUEUE_ENABLED": "true",
   "NEW_QUEUE_ENVELOPES_ENABLED": "false",
   "GHL_OAUTH_REDIRECT_URI": "https://api.fusionlab360.com/oauth/gohighlevel/callback",
-  "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations.readonly conversations.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write"
+  "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations.readonly conversations.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
+  "GHL_WHATSAPP_PAGE_PARENT_ORIGINS": "https://app.gohighlevel.com",
+  "WABA_GHL_READONLY_ENABLED": "false",
+  "WABA_GHL_CONTEXT_VERIFY_ENABLED": "false",
+  "WABA_OPS_ALERTS_ENABLED": "false",
+  "WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED": "false",
+  "WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST": "",
+  "WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST": "",
+  "META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST": ""
 },
   "ai": {
     "binding": "AI"
@@ -51,7 +59,8 @@
     "dev": {
       "name": "fusionlab360-core-dev",
       "vars": {
-        "APP_ENVIRONMENT": "production"
+        "APP_ENVIRONMENT": "production",
+        "META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST": ""
       },
       "d1_databases": [
         {
@@ -72,6 +81,8 @@
         "AI_BOOKING_ENABLED": "false",
         "GHL_INBOUND_QUEUE_ENABLED": "false",
         "NEW_QUEUE_ENVELOPES_ENABLED": "false",
+        "META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST": "",
+        "WABA_GHL_CONTEXT_VERIFY_ENABLED": "false",
         "GHL_OAUTH_SCOPES": "oauth.write contacts.readonly contacts.write conversations.readonly conversations.write conversations/message.readonly conversations/message.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly users.readonly opportunities.readonly opportunities.write knowledge-bases.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
         "GHL_OAUTH_REDIRECT_URI": "https://fusionlab360-core-staging.fusionlab360-official.workers.dev/oauth/gohighlevel/callback",
         "AI_PIPELINE_V2_TENANT_ALLOWLIST": "",

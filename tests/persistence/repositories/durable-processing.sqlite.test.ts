@@ -140,7 +140,7 @@ test("all migrations apply sequentially to a fresh real SQLite database", () => 
     "id", "tenant_id", "event_id", "provider", "effect_key",
     "conversation_id", "payload_hash", "status", "attempt_count",
     "lease_token", "lease_expires_at", "provider_message_id",
-    "provider_conversation_id", "last_error_code", "created_at", "updated_at", "connection_id", "recipient_id", "provider_delivery_status",
+    "provider_conversation_id", "last_error_code", "created_at", "updated_at", "connection_id", "recipient_id", "provider_delivery_status", "retry_after_at",
   ]);
   database.sqlite.close();
 });

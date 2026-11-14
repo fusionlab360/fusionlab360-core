@@ -1,6 +1,9 @@
 import {
   CredentialRepository,
 } from "../../../persistence/repositories/credential-repository";
+import {
+  createCredentialStorageConfiguration,
+} from "../../../core/security/credential-storage";
 
 import {
   IntegrationRepository,
@@ -154,6 +157,7 @@ export async function syncGHLLocationCredential(
   const credentialRepository =
     new CredentialRepository(
       db,
+      createCredentialStorageConfiguration(env),
     );
 
 
@@ -189,6 +193,7 @@ export async function syncGHLLocationCredential(
     await credentialRepository.findByTenantAndProvider(
       tenantId,
       "gohighlevel",
+      { includeSecrets: false },
     );
 
     let existingMetadata: Record<string, unknown> | null = null;

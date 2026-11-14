@@ -6,10 +6,66 @@ import type {
   OAuthInstallation,
   OAuthAccountType,
 } from "../models/oauth-installation";
+import {
+  CredentialCipherError,
+} from "../../core/security/encrypted-credential";
+import type {
+  CredentialStorageConfiguration,
+} from "../../core/security/credential-storage";
+import {
+  decryptCredentialValue,
+  encryptCredentialValue,
+  isEncryptedCredential,
+  oauthInstallationCredentialContext,
+} from "../../core/security/credential-storage";
 
 
 export class OAuthInstallationRepository
   extends BaseRepository {
+
+  constructor(
+    db: D1Database,
+    private readonly credentialStorage: CredentialStorageConfiguration = {
+      allowLegacyPlaintextReads: false,
+    },
+  ) {
+    super(db);
+  }
+
+  private async protectToken(
+    provider: string,
+    accountType: OAuthAccountType,
+    externalAccountId: string,
+    field: "access" | "refresh",
+    value: string | null | undefined,
+  ): Promise<string | null> {
+    if (provider !== "gohighlevel") return value ?? null;
+    const cipher = this.credentialStorage.cipher;
+    if (!cipher) {
+      throw new CredentialCipherError("Credential encryption must be configured before GHL credentials can be written.");
+    }
+    return encryptCredentialValue(
+      cipher,
+      oauthInstallationCredentialContext(provider, accountType, externalAccountId, field),
+      value,
+    );
+  }
+
+  private async resolveToken(
+    provider: string,
+    accountType: OAuthAccountType,
+    externalAccountId: string,
+    field: "access" | "refresh",
+    value: string | null | undefined,
+  ): Promise<string | null> {
+    if (provider !== "gohighlevel") return value ?? null;
+    return decryptCredentialValue(
+      this.credentialStorage.cipher,
+      oauthInstallationCredentialContext(provider, accountType, externalAccountId, field),
+      value,
+      this.credentialStorage.allowLegacyPlaintextReads,
+    );
+  }
 
 
   async find(
@@ -44,6 +100,21 @@ export class OAuthInstallationRepository
       return null;
     }
 
+    const accessToken = await this.resolveToken(
+      provider,
+      accountType,
+      externalAccountId,
+      "access",
+      result.access_token as string,
+    );
+    const refreshToken = await this.resolveToken(
+      provider,
+      accountType,
+      externalAccountId,
+      "refresh",
+      result.refresh_token as string | null,
+    );
+
 
     return {
       provider:
@@ -60,11 +131,10 @@ export class OAuthInstallationRepository
           string | null,
 
       accessToken:
-        result.access_token as string,
+        accessToken ?? "",
 
       refreshToken:
-        result.refresh_token as
-          string | null,
+        refreshToken,
 
       accessTokenExpiresAt:
         result.access_token_expires_at as
@@ -95,6 +165,25 @@ export class OAuthInstallationRepository
     installation:
       OAuthInstallation,
   ): Promise<void> {
+
+    const incomingRefreshToken =
+      typeof installation.refreshToken === "string" && installation.refreshToken.trim()
+        ? installation.refreshToken.trim()
+        : null;
+    const accessToken = await this.protectToken(
+      installation.provider,
+      installation.accountType,
+      installation.externalAccountId,
+      "access",
+      installation.accessToken,
+    );
+    const refreshToken = await this.protectToken(
+      installation.provider,
+      installation.accountType,
+      installation.externalAccountId,
+      "refresh",
+      incomingRefreshToken,
+    );
 
     await this.db
       .prepare(
@@ -163,11 +252,11 @@ export class OAuthInstallationRepository
 
         installation.externalAccountId,
 
-        installation.externalUserId,
+        installation.externalUserId ?? null,
 
-        installation.accessToken,
+        accessToken,
 
-        installation.refreshToken,
+        refreshToken,
 
         installation.accessTokenExpiresAt ??
           null,
@@ -181,6 +270,20 @@ export class OAuthInstallationRepository
   async createIfAbsent(
     installation: OAuthInstallation,
   ): Promise<boolean> {
+    const accessToken = await this.protectToken(
+      installation.provider,
+      installation.accountType,
+      installation.externalAccountId,
+      "access",
+      installation.accessToken,
+    );
+    const refreshToken = await this.protectToken(
+      installation.provider,
+      installation.accountType,
+      installation.externalAccountId,
+      "refresh",
+      installation.refreshToken,
+    );
     const result = await this.db
       .prepare(
         `
@@ -207,9 +310,9 @@ export class OAuthInstallationRepository
         installation.provider,
         installation.accountType,
         installation.externalAccountId,
-        installation.externalUserId,
-        installation.accessToken,
-        installation.refreshToken,
+        installation.externalUserId ?? null,
+        accessToken,
+        refreshToken,
         installation.accessTokenExpiresAt ?? null,
         installation.metadata,
       )
@@ -355,6 +458,31 @@ export class OAuthInstallationRepository
     metadata: string | null,
   ): Promise<boolean> {
 
+    const incomingRefreshToken =
+      typeof refreshToken === "string" && refreshToken.trim()
+        ? refreshToken.trim()
+        : null;
+    const existing = provider === "gohighlevel"
+      ? await this.find(provider, accountType, externalAccountId)
+      : null;
+    if (provider === "gohighlevel" && (!existing || !existing.refreshLockToken || existing.refreshLockToken !== lockToken)) {
+      return false;
+    }
+    const accessTokenToPersist = await this.protectToken(
+      provider,
+      accountType,
+      externalAccountId,
+      "access",
+      accessToken,
+    );
+    const refreshTokenToPersist = await this.protectToken(
+      provider,
+      accountType,
+      externalAccountId,
+      "refresh",
+      incomingRefreshToken ?? existing?.refreshToken ?? null,
+    );
+
     const result =
       await this.db
         .prepare(
@@ -392,8 +520,8 @@ export class OAuthInstallationRepository
           `,
         )
         .bind(
-          accessToken,
-          refreshToken,
+          accessTokenToPersist,
+          refreshTokenToPersist,
           accessTokenExpiresAt,
           metadata,
           provider,
@@ -408,6 +536,50 @@ export class OAuthInstallationRepository
       (result.meta?.changes ?? 0) >
       0
     );
+  }
+
+  /** Encrypt one bounded batch of legacy GHL company/location installations. */
+  async migratePlaintextBatch(limit = 50, accountType?: OAuthAccountType): Promise<number> {
+    const cipher = this.credentialStorage.cipher;
+    if (!cipher) {
+      throw new CredentialCipherError("Credential encryption must be configured before migration.");
+    }
+    const batchSize = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 200)) : 50;
+    const rows = await this.db.prepare(`
+      SELECT provider, account_type, external_account_id, access_token, refresh_token
+      FROM oauth_installations
+      WHERE provider = 'gohighlevel'
+        AND (? IS NULL OR account_type = ?)
+        AND ((access_token IS NOT NULL AND access_token <> '' AND access_token NOT LIKE 'fl360enc:%')
+          OR (refresh_token IS NOT NULL AND refresh_token <> '' AND refresh_token NOT LIKE 'fl360enc:%'))
+      ORDER BY account_type, external_account_id
+      LIMIT ?
+    `).bind(accountType ?? null, accountType ?? null, batchSize).all<{
+      provider: string;
+      account_type: OAuthAccountType;
+      external_account_id: string;
+      access_token: string;
+      refresh_token: string | null;
+    }>();
+
+    let migrated = 0;
+    for (const row of rows.results ?? []) {
+      const context = (field: "access" | "refresh") =>
+        oauthInstallationCredentialContext(row.provider, row.account_type, row.external_account_id, field);
+      const access = row.access_token && !isEncryptedCredential(row.access_token)
+        ? await encryptCredentialValue(cipher, context("access"), row.access_token)
+        : row.access_token;
+      const refresh = row.refresh_token && !isEncryptedCredential(row.refresh_token)
+        ? await encryptCredentialValue(cipher, context("refresh"), row.refresh_token)
+        : row.refresh_token;
+      const result = await this.db.prepare(`
+        UPDATE oauth_installations SET access_token = ?, refresh_token = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE provider = 'gohighlevel' AND account_type = ? AND external_account_id = ?
+          AND access_token IS ? AND refresh_token IS ?
+      `).bind(access, refresh, row.account_type, row.external_account_id, row.access_token, row.refresh_token).run();
+      migrated += result.meta?.changes ?? 0;
+    }
+    return migrated;
   }
 
 

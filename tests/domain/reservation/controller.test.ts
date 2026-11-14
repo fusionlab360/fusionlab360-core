@@ -240,7 +240,7 @@ test("malformed JSON and invalid reservation fields return predictable 400 respo
     body: "{",
   });
   assert.equal(malformedJson.status, 400);
-  assert.equal((await malformedJson.json() as { message: string }).message, "Request body must contain valid JSON.");
+  assert.equal((await malformedJson.json() as { message: string }).message, "Invalid request.");
 
   const invalidField = await request("/reservations/sync", {
     method: "POST",
@@ -248,7 +248,7 @@ test("malformed JSON and invalid reservation fields return predictable 400 respo
     body: JSON.stringify({ ...validPayload, adults: "two" }),
   });
   assert.equal(invalidField.status, 400);
-  assert.equal((await invalidField.json() as { message: string }).message, "Invalid reservation payload.");
+  assert.equal((await invalidField.json() as { message: string }).message, "Invalid request.");
   assert.equal(getProcessed(), undefined);
 });
 
@@ -279,6 +279,6 @@ test("processor result with success false is returned as a gateway failure", asy
     body: JSON.stringify(validPayload),
   });
   assert.equal(response.status, 502);
-  assert.equal((await response.json() as { message: string }).message, "Reservation processing did not complete.");
+  assert.equal((await response.json() as { message: string }).message, "Internal Server Error");
 });
 

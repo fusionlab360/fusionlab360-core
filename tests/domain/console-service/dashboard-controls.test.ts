@@ -49,7 +49,7 @@ async function fixture(): Promise<{ db: LocalD1; key: string }> {
 }
 
 function app() { const application = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>(); application.route("/internal/console", routes); return application; }
-function env(db: LocalD1): AppBindings { return { DB: db.binding(), GHL_OAUTH_CLIENT_ID: "synthetic-client", GHL_OAUTH_CLIENT_SECRET: "synthetic-secret" } as AppBindings; }
+function env(db: LocalD1): AppBindings { return { DB: db.binding(), GHL_OAUTH_CLIENT_ID: "synthetic-client", GHL_OAUTH_CLIENT_SECRET: "synthetic-secret", CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }), CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1", CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true" } as AppBindings; }
 
 test("conversation contact is resolved by verified provider contact ID", async () => {
   const { db, key } = await fixture();

@@ -56,6 +56,28 @@ export type AppBindings = {
   GHL_OAUTH_SCOPES?:
     string;
 
+  /** Shared Secret used only to verify HighLevel Custom Page user context. */
+  GHL_APP_SHARED_SECRET?: string;
+  GHL_WHATSAPP_PAGE_PARENT_ORIGINS?: string;
+  /** Production read-only page gate and exact single-value allowlists. */
+  WABA_GHL_READONLY_ENABLED?: string;
+  WABA_GHL_READONLY_TENANT_ALLOWLIST?: string;
+  WABA_GHL_READONLY_LOCATION_ALLOWLIST?: string;
+  WABA_GHL_READONLY_USER_ALLOWLIST?: string;
+  WABA_GHL_READONLY_COMPANY_ALLOWLIST?: string;
+  WABA_GHL_READONLY_APP_ID?: string;
+  /** Temporary identity-only GHL context verifier; production default is off. */
+  WABA_GHL_CONTEXT_VERIFY_ENABLED?: string;
+  /** One exact HTTPS origin permitted to call the identity-only verifier. */
+  WABA_GHL_CONTEXT_VERIFY_ALLOWED_ORIGIN?: string;
+  /** Isolated Preview-only gate and allowlists. */
+  WABA_GHL_READONLY_PREVIEW_ENABLED?: string;
+  WABA_GHL_READONLY_PREVIEW_TENANT_ALLOWLIST?: string;
+  WABA_GHL_READONLY_PREVIEW_LOCATION_ALLOWLIST?: string;
+  WABA_GHL_READONLY_PREVIEW_USER_ALLOWLIST?: string;
+  WABA_GHL_READONLY_PREVIEW_COMPANY_ALLOWLIST?: string;
+  WABA_GHL_READONLY_PREVIEW_APP_ID?: string;
+
   GEMINI_API_KEY:
     string;
 
@@ -97,6 +119,13 @@ export type AppBindings = {
 
   /** Opt-in only: sends the single GHL provider pilot's agent replies through Meta. */
   GHL_META_WHATSAPP_OUTBOUND_ENABLED?: string;
+  WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED?: string;
+  /** Exact operator-verified installation references permitted for activation. */
+  WABA_CONNECTION_ACTIVATION_EVIDENCE_ALLOWLIST?: string;
+  /** Exact, operator-approved evidence references eligible for legacy review. */
+  WABA_LEGACY_REVIEW_EVIDENCE_ALLOWLIST?: string;
+  /** Tenant-qualified evidence restricted to developer-test legacy binding. */
+  META_WHATSAPP_DEVELOPER_TEST_BINDING_EVIDENCE_ALLOWLIST?: string;
 
   /** Temporary, fail-closed operator diagnostic for a single contact pilot. */
   GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED?: string;
@@ -106,6 +135,15 @@ export type AppBindings = {
 
   /** Temporary, fail-closed read-only GHL provider inspection. */
   GHL_OPERATOR_PROVIDER_INSPECTION_ENABLED?: string;
+
+  /** Temporary, fail-closed Meta phone-resource diagnostic. */
+  META_WHATSAPP_OPERATOR_DIAGNOSTIC_ENABLED?: string;
+  WABA_OPS_ALERTS_ENABLED?: string;
+  WABA_OPS_BACKLOG_THRESHOLD?: string;
+  WABA_OPS_FAILURE_THRESHOLD?: string;
+  WABA_OPS_DEAD_LETTER_THRESHOLD?: string;
+  WABA_OPS_CREDENTIAL_EXPIRY_THRESHOLD?: string;
+  WABA_OPS_CORRELATION_FAILURE_THRESHOLD?: string;
 
   GHL_INBOUND_QUEUE?: Queue<GHLInboundQueueEnvelope>;
 
@@ -119,6 +157,16 @@ export type AppBindings = {
   META_WHATSAPP_CREDENTIAL_ENCRYPTION_KEYS?: string;
   /** Active key version used for new Meta WhatsApp credentials. */
   META_WHATSAPP_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
+
+  /** Secret keyring for encrypted provider credentials stored by Core. */
+  CORE_CREDENTIAL_ENCRYPTION_KEYS?: string;
+  /** Active key version for new encrypted provider credentials. */
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION?: string;
+  /** Temporary compatibility switch for pre-encryption GHL credentials. */
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED?: string;
+
+  /** Comma-separated exact browser origins; absent configuration denies cross-origin browser access. */
+  CORS_ALLOWED_ORIGINS?: string;
 
   /** Explicit, single-asset guard for temporary developer test tokens. */
   META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED?: string;
@@ -139,6 +187,32 @@ export type AppVariables = {
 
 };
 
+export function corsOriginFor(
+  origin: string | undefined,
+  configuredOrigins: string | undefined,
+  path = "/",
+): string {
+  if (!origin || origin === "null") return "";
+  if (path.startsWith("/webhooks/") || path === "/health" || path === "/") return "";
+
+  const allowedOrigins = (configuredOrigins ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value || value === "*") return false;
+      try {
+        const parsed = new URL(value);
+        return parsed.origin === value && (
+          parsed.protocol === "https:" ||
+          (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
+        );
+      } catch {
+        return false;
+      }
+    });
+
+  return allowedOrigins.includes(origin) ? origin : "";
+}
 
 export function createApp() {
   const app = new Hono<{
@@ -165,8 +239,12 @@ app.use(
     c,
     next,
   ) => {
-
-    bootstrapSecurity({
+    const previewCanaryPath = c.env.APP_ENVIRONMENT === "preview" && (
+      c.req.path === "/marketplace/gohighlevel/whatsapp-preview" ||
+      c.req.path === "/marketplace/gohighlevel/whatsapp-preview/" ||
+      c.req.path === "/marketplace/gohighlevel/whatsapp-preview/status"
+    );
+    if (!previewCanaryPath) bootstrapSecurity({
 
       JWT_SECRET:
         c.env.JWT_SECRET,
@@ -196,9 +274,11 @@ app.use(
     next,
   ) => {
 
-    console.log(
-      `${c.req.method} ${c.req.path}`,
-    );
+    // Paths may contain tenant, contact, conversation, or other customer IDs.
+    // Keep request logs useful without copying caller-controlled path segments.
+    console.log("HTTP request received.", {
+      method: c.req.method,
+    });
 
     await next();
 
@@ -209,31 +289,23 @@ app.use(
 /**
  * CORS
  */
-app.use(
-  "*",
-  cors({
+const defaultCors = cors({
+  origin: (origin: string, context: { env: AppBindings; req: { path: string } }) =>
+    corsOriginFor(origin, context.env.CORS_ALLOWED_ORIGINS, context.req.path),
+  allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowHeaders: ["Authorization", "Content-Type", "Accept", "Origin"],
+});
 
-    origin:
-      "*",
-
-    allowMethods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
-
-    allowHeaders: [
-      "Authorization",
-      "Content-Type",
-      "Accept",
-      "Origin",
-    ],
-
-  }),
-);
+app.use("*", async (c, next) => {
+  const verifierPath = "/marketplace/gohighlevel/whatsapp-preview/verify-context";
+  if (c.req.path === verifierPath || c.req.path.startsWith(`${verifierPath}/`)) {
+    // The verifier implements its own exact-origin, POST/content-type-only CORS.
+    // Do not let Core's general API CORS add wildcard access or broad preflight.
+    await next();
+    return;
+  }
+  return defaultCors(c, next);
+});
 
 
 /**

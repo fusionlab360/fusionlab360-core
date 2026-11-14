@@ -89,6 +89,17 @@ test("pilot location gate rejects other registered and unknown locations", () =>
   assert.equal(isGHLProviderPilotLocationAuthorized({ GHL_CUSTOM_PROVIDER_ENABLED: "true" }, "location-a"), false);
 });
 
+test("pilot authorization rejects multiple locations even with unrelated gates enabled", () => {
+  const config = { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a, location-b" };
+  const enabled = { ...config, GHL_META_WHATSAPP_OUTBOUND_ENABLED: "true", WABA_CONNECTION_LIFECYCLE_ENFORCEMENT_ENABLED: "true" };
+  assert.equal(isGHLProviderPilotLocationAuthorized(enabled, "location-a"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized(enabled, "location-b"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...enabled, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a" }, undefined), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized(config, "location-c"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,*" }, "location-a"), false);
+  assert.equal(isGHLProviderPilotLocationAuthorized({ ...config, GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "location-a,location-a" }, "location-a"), false);
+});
+
 test("inbound publisher fails before transport for an unauthorized location or missing provider configuration", async () => {
   const context = { tenant: tenant("location-b") } as IntegrationContext;
   await assert.rejects(

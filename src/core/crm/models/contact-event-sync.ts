@@ -1,5 +1,7 @@
 export interface ContactEventsSyncInput {
   contactId: string;
+  managedOnly?: true;
+  clearManaged?: true;
 
   events: Array<{
     date: string;

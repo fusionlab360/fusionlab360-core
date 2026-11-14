@@ -8,6 +8,8 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import type { AppBindings, AppVariables } from "../../../src/config/app";
 import routes from "../../../src/domain/console-service/routes";
 import { hashApiKey } from "../../../src/core/security/api-key";
+import { CredentialRepository } from "../../../src/persistence/repositories/credential-repository";
+import { createCredentialStorageConfiguration } from "../../../src/core/security/credential-storage";
 import { sanitizeGHLLogUrl } from "../../../src/integrations/crm/gohighlevel/client";
 
 class LocalD1 {
@@ -33,10 +35,12 @@ class LocalD1 {
   binding(): D1Database { return this as unknown as D1Database; }
 }
 
-test("GHL request diagnostics redact contact lookup values", () => {
-  const sanitized = sanitizeGHLLogUrl("https://services.leadconnectorhq.com/contacts/lookup?locationId=location-a&phone=%2B60176177115");
+test("GHL request diagnostics redact caller-controlled path and query values", () => {
+  const sanitized = sanitizeGHLLogUrl("https://services.leadconnectorhq.com/contacts/contact-private/notes?locationId=location-a&phone=%2B60176177115");
   assert.equal(sanitized.includes("60176177115"), false);
-  assert.equal(sanitized.includes("%5Bredacted%5D"), true);
+  assert.equal(sanitized.includes("contact-private"), false);
+  assert.equal(sanitized.includes("location-a"), false);
+  assert.equal(sanitized.endsWith("/[redacted-path]"), true);
 });
 
 function app() {
@@ -69,6 +73,9 @@ async function fixture(options: { tenantId?: string; locationId?: string; enable
       GHL_OAUTH_CLIENT_ID: "synthetic-client",
       GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
       GHL_OAUTH_REDIRECT_URI: "https://example.test/oauth/callback",
+      CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+      CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+      CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
       GHL_OPERATOR_CONTACT_DIAGNOSTIC_ENABLED: options.enabled,
       GHL_OPERATOR_CONTACT_DIAGNOSTIC_TENANT_ALLOWLIST: "gmmetro",
       GHL_OPERATOR_CONTACT_DIAGNOSTIC_LOCATION_ALLOWLIST: "Npx2IdDDRjXz2QW3Svx4",
@@ -192,8 +199,14 @@ test("operator contact diagnostic uses the normal OAuth refresh runtime when req
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { oauthAuthorized: true, refreshOutcome: "completed", uniqueContactFound: true, locationMatched: true, callbackContactMatches: false, errorCode: null });
     const stored = db.sqlite.prepare("SELECT api_key, refresh_token FROM integration_credentials WHERE tenant_id='gmmetro' AND provider='gohighlevel'").get() as { api_key: string; refresh_token: string };
-    assert.equal(stored.api_key, "refreshed-access");
-    assert.equal(stored.refresh_token, "refreshed-refresh");
+    assert.match(stored.api_key, /^fl360enc:v1:test-v1:/);
+    assert.match(stored.refresh_token, /^fl360enc:v1:test-v1:/);
+    const decrypted = await new CredentialRepository(
+      db.binding(),
+      createCredentialStorageConfiguration(env),
+    ).findByTenantAndProvider("gmmetro", "gohighlevel");
+    assert.equal(decrypted?.apiKey, "refreshed-access");
+    assert.equal(decrypted?.refreshToken, "refreshed-refresh");
   } finally {
     globalThis.fetch = originalFetch;
     db.sqlite.close();

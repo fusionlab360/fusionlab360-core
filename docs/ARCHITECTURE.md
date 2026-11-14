@@ -190,3 +190,5 @@ Existing seed and Wrangler configuration contain concrete deployment choices.
 
 Do not describe provider-neutral provisioning or universal provider selection as implemented unless verified in the code.
 
+The protected production contracts and recovery evidence are recorded in the [production baseline](operations/PRODUCTION_BASELINE.md). Use the [integration registry](architecture/INTEGRATION_REGISTRY.md) for source ownership, the [D1 data map](architecture/D1_DATA_MAP.md) for persistence boundaries, and the [expansion guide](architecture/EXPANSION_GUIDE.md) for implementation and release requirements.
+

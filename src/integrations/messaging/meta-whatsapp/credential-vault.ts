@@ -11,11 +11,40 @@ import {
 } from "./persistence/credential-repository";
 
 const META_WHATSAPP_PROVIDER = "meta_whatsapp";
+export const META_WHATSAPP_CREDENTIAL_EXPIRY_SKEW_MS = 60_000;
+
+/** Lifecycle evidence is written only by a verified onboarding provider. */
+export type MetaWhatsAppCredentialLifecycle =
+  | "expiring"
+  | "verified_non_expiring"
+  | "unverified_non_expiring";
+
+export type MetaWhatsAppCredentialLifecycleState =
+  | "VALID_EXPIRING"
+  | "VALID_VERIFIED_NON_EXPIRING"
+  | "EXPIRED"
+  | "REVOKED_OR_INVALID"
+  | "MISSING_EXPIRY"
+  | "UNVERIFIED_NON_EXPIRING"
+  | "DISABLED"
+  | "WRONG_TENANT"
+  | "WRONG_CONNECTION";
+
+export type MetaWhatsAppCredentialErrorCode =
+  | "META_CREDENTIAL_UNAVAILABLE"
+  | "META_CREDENTIAL_EXPIRED"
+  | "META_CREDENTIAL_INVALID"
+  | "META_CREDENTIAL_EXPIRY_UNKNOWN"
+  | "META_CREDENTIAL_NOT_VERIFIED"
+  | "META_CREDENTIAL_DISABLED";
 
 export interface MetaWhatsAppCredentialMetadataInput {
   expiresAt?: number;
   scopes?: readonly string[];
   developerTest?: boolean;
+  lifecycle?: MetaWhatsAppCredentialLifecycle;
+  /** Set only by Core after a provider has verified a non-expiring token. */
+  nonExpiringVerification?: "provider_token_debug_verified";
 }
 
 export interface MetaWhatsAppCredentialRequest extends MetaWhatsAppCredentialOwner {
@@ -38,10 +67,32 @@ export interface ResolvedMetaWhatsAppCredential {
 }
 
 export class MetaWhatsAppCredentialError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    public readonly code: MetaWhatsAppCredentialErrorCode = "META_CREDENTIAL_UNAVAILABLE",
+  ) {
     super(message);
     this.name = "MetaWhatsAppCredentialError";
   }
+}
+
+export function classifyMetaWhatsAppCredentialLifecycle(
+  metadata: Record<string, unknown>,
+  now = Date.now(),
+  skewMs = META_WHATSAPP_CREDENTIAL_EXPIRY_SKEW_MS,
+): MetaWhatsAppCredentialLifecycleState {
+  const lifecycle = metadata.lifecycle;
+  const expiresAt = metadata.expiresAt;
+  if (lifecycle === "verified_non_expiring") {
+    return metadata.nonExpiringVerification === "provider_token_debug_verified"
+      ? "VALID_VERIFIED_NON_EXPIRING"
+      : "UNVERIFIED_NON_EXPIRING";
+  }
+  if (lifecycle === "unverified_non_expiring") return "UNVERIFIED_NON_EXPIRING";
+  if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+    return "MISSING_EXPIRY";
+  }
+  return expiresAt <= now + skewMs ? "EXPIRED" : "VALID_EXPIRING";
 }
 
 function assertOwner(owner: MetaWhatsAppCredentialOwner): void {
@@ -87,6 +138,18 @@ function normalizeMetadata(input: MetaWhatsAppCredentialMetadataInput | undefine
       throw new MetaWhatsAppCredentialError("Developer test credential metadata is invalid.");
     }
     metadata.developerTest = true;
+  }
+  if (input.lifecycle !== undefined) {
+    if (!["expiring", "verified_non_expiring", "unverified_non_expiring"].includes(input.lifecycle)) {
+      throw new MetaWhatsAppCredentialError("Credential lifecycle metadata is invalid.");
+    }
+    metadata.lifecycle = input.lifecycle;
+  }
+  if (input.nonExpiringVerification !== undefined) {
+    if (input.lifecycle !== "verified_non_expiring" || input.nonExpiringVerification !== "provider_token_debug_verified") {
+      throw new MetaWhatsAppCredentialError("Credential non-expiring verification metadata is invalid.");
+    }
+    metadata.nonExpiringVerification = input.nonExpiringVerification;
   }
   return metadata;
 }
@@ -135,6 +198,18 @@ function safeMetadata(record: {
       throw new MetaWhatsAppCredentialError("Credential metadata is malformed.");
     }
     metadata.developerTest = true;
+  }
+  if (candidate.lifecycle !== undefined) {
+    if (candidate.lifecycle !== "expiring" && candidate.lifecycle !== "verified_non_expiring" && candidate.lifecycle !== "unverified_non_expiring") {
+      throw new MetaWhatsAppCredentialError("Credential metadata is malformed.", "META_CREDENTIAL_EXPIRY_UNKNOWN");
+    }
+    metadata.lifecycle = candidate.lifecycle;
+  }
+  if (candidate.nonExpiringVerification !== undefined) {
+    if (candidate.nonExpiringVerification !== "provider_token_debug_verified") {
+      throw new MetaWhatsAppCredentialError("Credential metadata is malformed.", "META_CREDENTIAL_EXPIRY_UNKNOWN");
+    }
+    metadata.nonExpiringVerification = candidate.nonExpiringVerification;
   }
 
   return {
@@ -223,14 +298,36 @@ export class MetaWhatsAppCredentialVault {
     const context = contextFor(request);
     const record = await this.repository.findActiveForOwner(request);
     if (!record || !record.ciphertext || !record.nonce) {
+      const owned = await this.repository.findForOwner(request);
+      if (owned?.status === "disabled") {
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential is disabled.", "META_CREDENTIAL_DISABLED");
+      }
+      if (owned?.status === "revoked") {
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential is revoked.", "META_CREDENTIAL_INVALID");
+      }
       throw new MetaWhatsAppCredentialError("No active Meta WhatsApp credential is available for this connection.");
     }
-    const metadata = safeMetadata(record);
-    if (
-      metadata.metadata.developerTest === true &&
-      (typeof metadata.metadata.expiresAt !== "number" || metadata.metadata.expiresAt <= Date.now())
-    ) {
-      throw new MetaWhatsAppCredentialError("Meta developer test credential has expired.");
+    let metadata: MetaWhatsAppCredentialMetadata;
+    try {
+      metadata = safeMetadata(record);
+    } catch (error) {
+      if (error instanceof MetaWhatsAppCredentialError) {
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential validity metadata is unavailable.", "META_CREDENTIAL_EXPIRY_UNKNOWN");
+      }
+      throw error;
+    }
+    switch (classifyMetaWhatsAppCredentialLifecycle(metadata.metadata)) {
+      case "VALID_EXPIRING":
+      case "VALID_VERIFIED_NON_EXPIRING":
+        break;
+      case "EXPIRED":
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential has expired.", "META_CREDENTIAL_EXPIRED");
+      case "UNVERIFIED_NON_EXPIRING":
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential non-expiring status is not verified.", "META_CREDENTIAL_NOT_VERIFIED");
+      case "MISSING_EXPIRY":
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential expiry is unknown.", "META_CREDENTIAL_EXPIRY_UNKNOWN");
+      default:
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential is not eligible for use.", "META_CREDENTIAL_UNAVAILABLE");
     }
     try {
       const accessToken = await this.cipher.decrypt(context, {
@@ -246,7 +343,7 @@ export class MetaWhatsAppCredentialVault {
       };
     } catch (error) {
       if (error instanceof CredentialCipherError) {
-        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential could not be authenticated.");
+        throw new MetaWhatsAppCredentialError("Meta WhatsApp credential could not be authenticated.", "META_CREDENTIAL_INVALID");
       }
       throw error;
     }

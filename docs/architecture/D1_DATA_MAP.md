@@ -1,0 +1,9 @@
+# D1 data map
+
+- Tenant identity comes from authenticated context or a validated provider mapping. `tenants.id` owns tenant data. `integrations.id` identifies configuration and enablement, with one integration per tenant and provider. Preserve scoped joins and compare expected state before approved writes.
+- `integration_credentials` is keyed by tenant and provider. A GHL location maps through its credential row. The enabled integration supplies configuration. `oauth_installations` is keyed by provider, account type and external account ID. Company installation metadata can support location credential resolution while ownership remains checked at the location boundary.
+- Integration events use unique event IDs. Preserve tenant ownership on asynchronous dispatch, retries and deduplication. Contact Events and native notes are provider records. A local request or note acknowledgement does not prove their persistence.
+- D1 stores runtime records and credential envelopes. Worker Secrets store runtime keys and secret configuration. Worker Variables hold approved non-secret settings. KeePass holds the independent Core key recovery copy. See the [configuration registry](../operations/CONFIGURATION_REGISTRY.md).
+- Treat credential rows, webhook payloads, patient information and provider identifiers as restricted. Select only necessary metadata. Follow the [migration rules](../IMPLEMENTATION_RULES.md) and [credential recovery procedure](../operations/GHL_CREDENTIAL_OPERATIONS.md). Keep readers compatible with existing envelopes and retain keys required by ciphertext and backups. Restoring D1 does not reverse provider-side refresh-token rotation.
+
+Source contracts are in [migrations](../../migrations), [repositories](../../src/persistence/repositories), and [tenant resolution](../../src/tenants/service.ts).

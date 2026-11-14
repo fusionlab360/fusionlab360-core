@@ -8,9 +8,12 @@ import type {
 import {
   createGHLIntegrationRuntime,
 } from "../../integrations/gohighlevel/credential-runtime";
+import type {
+  CredentialKeyBindings,
+} from "../../core/security/credential-storage";
 
 
-export interface IntegrationRuntimeEnvironment {
+export interface IntegrationRuntimeEnvironment extends CredentialKeyBindings {
 
   DB:
     D1Database;
@@ -75,6 +78,15 @@ export function createIntegrationRuntime(
 
           GHL_OAUTH_REDIRECT_URI:
             env.GHL_OAUTH_REDIRECT_URI,
+
+          CORE_CREDENTIAL_ENCRYPTION_KEYS:
+            env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+          CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+            env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+          CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+            env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
         },
       );
 

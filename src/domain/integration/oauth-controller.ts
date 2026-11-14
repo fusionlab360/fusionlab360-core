@@ -57,6 +57,9 @@ import type {
 import {
   OAuthInstallationRepository,
 } from "../../persistence/repositories/oauth-installation-repository";
+import {
+  createCredentialStorageConfiguration,
+} from "../../core/security/credential-storage";
 
 
 const OAUTH_ONBOARDING_PERMISSION = "integrations:oauth:connect";
@@ -583,6 +586,15 @@ export async function ghlOAuthCallbackController(
 
         GHL_OAUTH_REDIRECT_URI:
           c.env.GHL_OAUTH_REDIRECT_URI,
+
+        CORE_CREDENTIAL_ENCRYPTION_KEYS:
+          c.env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+        CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+          c.env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+        CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+          c.env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
       };
 
     // 3. Exchange the code only after state validation.
@@ -676,7 +688,10 @@ export async function ghlOAuthCallbackController(
     });
 
     const installationRepository =
-      new OAuthInstallationRepository(c.env.DB);
+      new OAuthInstallationRepository(
+        c.env.DB,
+        createCredentialStorageConfiguration(c.env),
+      );
 
     const installation = {
       provider: "gohighlevel",

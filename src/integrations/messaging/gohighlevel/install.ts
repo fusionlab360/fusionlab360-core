@@ -120,6 +120,7 @@ export async function processGHLUninstall(
   const credential = await credentials.findByTenantAndProvider(
     tenantId,
     "gohighlevel",
+    { includeSecrets: false },
   );
   const companyId = payload.companyId?.trim();
   let metadata: Record<string, unknown> = {};

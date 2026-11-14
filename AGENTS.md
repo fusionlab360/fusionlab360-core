@@ -56,6 +56,10 @@ The following rules are mandatory:
 9. Make the smallest safe, complete change that satisfies the requested behavior.
 10. Preserve existing working functionality unless a defect has been demonstrated or a change has been explicitly approved.
 
+Every new feature, integration, extension, adapter, automation, and service must fit the existing iPaaS architecture. Do not create feature-specific architectures that bypass or duplicate Core functionality. Add a component only when existing Core functionality cannot safely or reasonably support the requirement.
+
+Keep the established separation between routes, controllers, services, repositories, and provider adapters. Do not introduce direct database access into unrelated layers; use the existing persistence boundaries.
+
 A requested feature is not permission to redesign the platform.
 
 When an implementation appears to require an architectural change, first explain why the existing extension points are insufficient, identify the alternatives, and request approval before proceeding.
@@ -130,6 +134,12 @@ Mandatory requirements:
 7. Investigate database constraints that can reinforce tenant-consistent relationships where appropriate.
 8. Never weaken tenant isolation to make an operation succeed.
 
+For authenticated client requests, preserve this authorization sequence:
+
+`Authenticated request → client/principal identification → operation permission → tenant resolution → tenant-owned integration → provider credential and location resolution → authorized domain operation → provider adapter`
+
+Do not hard-code tenant, client, provider, or location identities in integration business logic. Do not add global environment variables to duplicate identity mappings already maintained by Core. Explicit environment-level restrictions are allowed when independently needed for rollout safety, security, or feature gating, but they must not replace authenticated tenant resolution. Adding a tenant or location should primarily require supported tenant-scoped configuration and credentials, not duplicated application code.
+
 Application-level checks and database constraints serve complementary purposes. Do not assume that one replaces the other.
 
 Before introducing schema changes, inspect the existing schema, data, migration conventions, and compatibility requirements. Do not add migrations automatically without evaluating their impact.
@@ -166,6 +176,15 @@ Never hardcode production credentials, API keys, access tokens, signing secrets,
 
 Never expose secrets in source code, logs, diagnostics, test fixtures, documentation, or generated reports.
 
+Authentication alone does not authorize every operation. Use existing operation-specific client permissions and tenant-scoped authorization. For Clinic Contact Event synchronization, preserve this permission contract:
+
+- Ordinary contact upsert: `contacts:create`.
+- Note-only synchronization: `contacts:create`.
+- Full-snapshot Contact Event replacement: `contacts:create` and `contacts:delete`.
+- Explicit Contact Event clearing: `contacts:create` and `contacts:delete`.
+
+Destructive operations must also verify contact ownership, tenant isolation, managed-record ownership, and validated operation intent. Do not apply Clinic-specific permissions blindly to unrelated resources. If existing permissions cannot safely authorize an operation, report the precise capability gap before extending the permission system.
+
 ## 8. API, Domain, and Canonical Model Integrity
 
 Preserve the existing separation between API contracts, canonical models, domain services, persistence, and external providers.
@@ -184,6 +203,8 @@ Do not rename or remove canonical fields merely to match a provider's terminolog
 Do not spread provider-specific payloads throughout the application when an existing adapter or translation layer should handle them.
 
 Do not introduce a second canonical model for a concept already represented in the architecture without demonstrating why the existing model cannot support the requirement.
+
+Preserve existing full-snapshot Contact Event reconciliation semantics unless the task explicitly authorizes changing that contract.
 
 ## 9. Database and Migration Safety
 
@@ -263,6 +284,8 @@ For TypeScript changes, run:
 
 Also run applicable tests, integration tests, build checks, linting, or targeted diagnostics when available and appropriate.
 
+Use configured repository scripts and tooling. Do not invent scripts, install a testing framework, or change tooling merely to satisfy this policy.
+
 Before reporting completion:
 
 1. Review the final diff.
@@ -286,6 +309,8 @@ If a check cannot be run, explain why and identify the unverified behavior.
 
 Prefer focused, reviewable changes.
 
+Before creating a file, service, adapter, route, worker, database table, or configuration variable, inspect existing functionality and identify whether an existing module can support the requirement. Prefer extending existing interfaces and services, keep changes within the approved scope, and obtain approval before changing protected modules outside that scope.
+
 Do not:
 
 - Rewrite entire files to change a small section.
@@ -300,6 +325,10 @@ Do not:
 Preserve unrelated user changes. Never overwrite or discard existing work merely because it appears incomplete or inconsistent.
 
 If the working tree contains uncommitted changes, inspect the relevant diff before editing and avoid interfering with those changes.
+
+A task authorizes changes only to files directly required for that task. If additional protected files are necessary, report the exact scope expansion and obtain approval before changing them.
+
+Do not create branches or worktrees unless explicitly authorized. Do not remove an existing worktree without verified preservation and explicit authorization.
 
 ## 14. Approval Gates
 
@@ -351,6 +380,8 @@ State explicitly whether any deployment or production operation was performed.
 
 Do not overstate completion. If the implementation is partial, identify exactly what remains.
 
+Include a Git diff summary, any scope violations, the commit SHA if committed, and an explicit `PRODUCTION CHANGES: YES/NO` statement.
+
 ## 16. Default Working Mode
 
 Unless the user explicitly requests a different workflow:
@@ -375,3 +406,20 @@ The priority order is:
 6. Verified behavior and regression prevention.
 
 **The ultimate rule: Improve FusionLab360 Core from within its existing generic iPaaS architecture. Do not compromise the platform's architecture to deliver an isolated feature or short-term fix.**
+
+## 17. Production Configuration and Credential Operations
+
+- Verify repository root, branch, worktree and HEAD before editing. Record deployed Worker versions separately from source commits. Preserve existing dirty work and obtain approval before adding dependencies or worktrees.
+- Use [Architecture](docs/ARCHITECTURE.md), the [D1 data map](docs/architecture/D1_DATA_MAP.md), the [integration registry](docs/architecture/INTEGRATION_REGISTRY.md), and the [expansion guide](docs/architecture/EXPANSION_GUIDE.md) to identify the owning interface before editing.
+- Start with the verified [production baseline](docs/operations/PRODUCTION_BASELINE.md) and [known limitations](docs/operations/KNOWN_LIMITATIONS.md). Reopen investigations when new evidence contradicts them. Record HTTP response status separately from Worker invocation outcome, and record absent evidence as unverified.
+- Deployments and migrations must preserve existing OAuth credential records. Scope any approved production write to the exact row and expected prior state. Add tenant-scoped gates for new capabilities and obtain explicit approval before activating production messaging.
+- Before committing, review the staged scope, scan for secrets, record the checks actually run, and report the commit SHA and production changes.
+
+- Treat `integrations.enabled` as production-controlled state. Deployments, migrations, seeds, and initialization or development tools must preserve existing enablement. Require explicit approval naming the tenant, integration, provider, and state transition before a production repair. Never silently re-enable a disabled integration.
+- Include the [integration enablement comparison](docs/operations/GHL_CREDENTIAL_OPERATIONS.md#integration-enablement-preflight) in production preflight. Compare row identities and enablement before and after deployment. Investigate unexpected drift and obtain approval for a targeted correction.
+
+- Cloudflare effective configuration is the runtime authority. Source files and secret references are not proof of deployed bindings. Document required names in the [configuration registry](docs/operations/CONFIGURATION_REGISTRY.md). Record discrepancies, verify live metadata read-only, establish runtime requirements, obtain approval before changing them, and update the registry after verification.
+- Before deployment, verify active traffic/version, binding identities, secret names, remote-only variables, CORS, routes, Queue consumer and DLQ, cron, compatibility settings and feature gates. Compare effective candidate metadata; never assume Wrangler preservation. Verify key version compatibility and a tested rollback, run relevant tests and obtain explicit deployment approval.
+- Never generate a replacement key automatically or overwrite a keyring without approved migration and recovery. Keep previous versions while live data or backups depend on them. Keep Core and Meta domains separate. Use KeePass for the Core recovery copy and Worker Secrets for runtime custody. Never print key material, tokens or raw provider payloads.
+- Document actual GHL refresh triggers, expiry threshold, token rotation and encrypted persistence. An expired access token does not imply a rejected refresh token. Do not automatically reauthorize tenants or migrate credentials.
+- For cipher errors, identify legacy policy, missing binding, unknown version or authenticated decryption failure before acting. For OAuth expiry, rejection and persistence failures, separate read, provider and write stages and avoid blind retries after rotation. For tenant, contact or event failures, verify scope and the last completed stage before any repair. Follow the [credential operations runbook](docs/operations/GHL_CREDENTIAL_OPERATIONS.md) for checks and corrective actions.

@@ -147,6 +147,13 @@ function emptyBookingIntent(
   };
 }
 
+function classifyBookingIntentError(error: unknown): string {
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof SyntaxError) return "syntax_error";
+  return error instanceof Error ? "error" : "unknown";
+}
+
 /*
  * --------------------------------------------------
  * Extract JSON object from model response
@@ -873,7 +880,7 @@ Return JSON only.
      */
 
     console.log(
-      "BOOKING INTENT RAW AI RESPONSE",
+      "BOOKING INTENT AI RESPONSE RECEIVED",
       {
 
         responseLength:
@@ -938,13 +945,8 @@ Return JSON only.
       console.error(
         "BOOKING INTENT JSON PARSE FAILED",
         {
-
-          json,
-
-          error:
-            error instanceof Error
-              ? error.message
-              : error,
+          responseLength: json.length,
+          errorType: classifyBookingIntentError(error),
         },
       );
 
@@ -981,21 +983,8 @@ Return JSON only.
         currentMessageLength:
           currentMessage.length,
 
-        error:
-          error instanceof Error
-            ? {
-                name:
-                  error.name,
-
-                message:
-                  error.message,
-
-                stack:
-                  error.stack ??
-                  null,
-              }
-
-            : error,
+        errorType:
+          classifyBookingIntentError(error),
       },
     );
 

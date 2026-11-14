@@ -7,6 +7,8 @@ import { Hono } from "hono";
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import type { AppBindings, AppVariables } from "../../../src/config/app";
 import { hashApiKey } from "../../../src/core/security/api-key";
+import { CredentialRepository } from "../../../src/persistence/repositories/credential-repository";
+import { createCredentialStorageConfiguration } from "../../../src/core/security/credential-storage";
 import {
   ghlOAuthCallbackController,
   startGhlReconnectController,
@@ -21,6 +23,11 @@ const COMPANY_ID = "company-gmmetro";
 const LOCATION_ID = "Npx2IdDDRjXz2QW3Svx4";
 const REDIRECT_URI = "https://api.fusionlab360.com/oauth/gohighlevel/callback";
 const PERMISSIONS = ["integrations:oauth:connect", "integrations:test"];
+const credentialSecurityBindings = {
+  CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
+};
 
 class SqliteD1Database {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -119,6 +126,7 @@ function bindings(database: SqliteD1Database, scopes = "contacts.readonly conver
     GHL_OAUTH_CLIENT_SECRET: "synthetic-app-client-secret",
     GHL_OAUTH_REDIRECT_URI: REDIRECT_URI,
     GHL_OAUTH_SCOPES: scopes,
+    ...credentialSecurityBindings,
   } as AppBindings;
 }
 
@@ -199,8 +207,16 @@ test("gmmetro reconnect creates a scoped state and persists refreshed credential
     const credential = database.sqlite.prepare(
       "SELECT api_key, refresh_token, metadata FROM integration_credentials WHERE tenant_id = ?",
     ).get(TENANT_ID) as { api_key: string; refresh_token: string; metadata: string };
-    assert.equal(credential.api_key, "new-location-token");
+    assert.match(credential.api_key, /^fl360enc:v1:test-v1:/);
+    // OAuth returned no new refresh token, so the atomic UPSERT preserves the
+    // pre-existing value until the explicit resumable encryption pass reaches it.
     assert.equal(credential.refresh_token, "existing-location-refresh");
+    const decrypted = await new CredentialRepository(
+      database as unknown as D1Database,
+      createCredentialStorageConfiguration(credentialSecurityBindings),
+    ).findByTenantAndProvider(TENANT_ID, "gohighlevel");
+    assert.equal(decrypted?.apiKey, "new-location-token");
+    assert.equal(decrypted?.refreshToken, "existing-location-refresh");
     assert.equal(JSON.parse(credential.metadata).connectionStatus, "connected");
     assert.equal(database.sqlite.prepare("SELECT COUNT(*) AS count FROM oauth_authorization_states WHERE consumed_at IS NOT NULL").get()?.count, 1);
   } finally {

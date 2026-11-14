@@ -95,6 +95,15 @@ export const authMiddleware =
 
               GHL_OAUTH_REDIRECT_URI:
                 c.env.GHL_OAUTH_REDIRECT_URI,
+
+              CORE_CREDENTIAL_ENCRYPTION_KEYS:
+                c.env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+
+              CORE_CREDENTIAL_ACTIVE_KEY_VERSION:
+                c.env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+
+              CORE_CREDENTIAL_LEGACY_READS_ENABLED:
+                c.env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
             },
           );
 

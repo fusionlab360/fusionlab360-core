@@ -154,7 +154,10 @@ test("mock credentials never use the live resolver and fail closed when transpor
   try {
     await assert.rejects(
       goHighLevelAdapter.getContact(context, "missing-contact"),
-      /Synthetic contact not found/,
+      (error: unknown) =>
+        error instanceof ApiError &&
+        error.status === 404 &&
+        !error.message.includes("Synthetic contact not found"),
     );
 
     let liveCredentialCalls = 0;
@@ -243,7 +246,10 @@ test("mock state and synthetic identifiers are isolated between tenants and loca
   assert.deepEqual(mockB.snapshot(), { contactCount: 1, opportunityCount: 0 });
     await assert.rejects(
       goHighLevelAdapter.getContact(contextB, requireId(contactA.id)),
-    /Synthetic contact not found/,
+      (error: unknown) =>
+        error instanceof ApiError &&
+        error.status === 404 &&
+        !error.message.includes("Synthetic contact not found"),
   );
 });
 

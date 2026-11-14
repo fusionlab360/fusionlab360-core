@@ -10,7 +10,7 @@ import type { AuthenticatedPrincipal } from "../../../../src/core/security/princ
 import type { RequestContext } from "../../../../src/context";
 import { hashApiKey } from "../../../../src/core/security/api-key";
 import { isMetaWhatsAppDeveloperTestAuthorized } from "../../../../src/integrations/messaging/meta-whatsapp/developer-test-config";
-import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaVerifiedAuthorization, type MetaWhatsAppOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/onboarding";
+import { MetaWhatsAppOnboardingError, MetaWhatsAppOnboardingService, type MetaDeveloperTestAuthorizationProvider, type MetaPhoneNumberInspection, type MetaVerifiedAuthorization, type MetaWhatsAppOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/onboarding";
 import { createMetaWhatsAppRoutes } from "../../../../src/integrations/messaging/meta-whatsapp/routes";
 import { createMetaWhatsAppCredentialVault } from "../../../../src/integrations/messaging/meta-whatsapp/credential-vault";
 import { MetaWhatsAppGraphOnboardingProvider } from "../../../../src/integrations/messaging/meta-whatsapp/graph-onboarding-provider";
@@ -43,16 +43,29 @@ class SQLiteD1 {
 }
 
 class TestProvider implements MetaWhatsAppOnboardingProvider, MetaDeveloperTestAuthorizationProvider {
+  validationCalls = 0;
+  wabaAccess = true;
+  phoneNumbers: readonly string[] = [PHONE_ID];
+  subscription = true;
+  rejectToken = false;
   authorization: MetaVerifiedAuthorization = {
     accessToken: "temporary-test-token",
     scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
     expiresAt: Date.now() + 60 * 60 * 1000,
   };
+  async inspectToken(): Promise<{ valid: boolean; appIdMatches: boolean; scopes: readonly string[]; expiresAt?: number }> {
+    return { valid: true, appIdMatches: true, scopes: this.authorization.scopes, expiresAt: this.authorization.expiresAt };
+  }
   async exchangeAuthorizationCode(): Promise<MetaVerifiedAuthorization> { return this.authorization; }
-  async validateDeveloperTestToken(): Promise<MetaVerifiedAuthorization> { return this.authorization; }
-  async verifyWabaAccess(): Promise<boolean> { return true; }
-  async listPhoneNumbers(): Promise<readonly string[]> { return [PHONE_ID]; }
-  async verifyWebhookSubscription(): Promise<boolean> { return true; }
+  async validateDeveloperTestToken(accessToken: string): Promise<MetaVerifiedAuthorization> {
+    this.validationCalls += 1;
+    if (this.rejectToken) throw new Error(`Provider rejected ${accessToken}`);
+    return { ...this.authorization, accessToken };
+  }
+  async verifyWabaAccess(): Promise<boolean> { return this.wabaAccess; }
+  async listPhoneNumbers(): Promise<readonly string[]> { return this.phoneNumbers; }
+  async inspectPhoneNumber(_token: string, phoneNumberId: string): Promise<MetaPhoneNumberInspection> { return { id: phoneNumberId, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED" }; }
+  async verifyWebhookSubscription(): Promise<boolean> { return this.subscription; }
 }
 
 function bindings(db: SQLiteD1): AppBindings {
@@ -88,8 +101,8 @@ function createApp(db: SQLiteD1, provider: TestProvider, tenantId: string, permi
   return app;
 }
 
-async function state(db: SQLiteD1, provider: TestProvider, tenantId = "tenant-a", operatorId = "client-tenant-a") {
-  return new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).start({ tenantId, operatorId, integrationId: "meta-a" });
+async function state(db: SQLiteD1, provider: TestProvider, tenantId = "tenant-a", operatorId = "client-tenant-a", connectionId?: string) {
+  return new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).start({ tenantId, operatorId, integrationId: "meta-a", ...(connectionId ? { connectionId } : {}) });
 }
 
 test("developer test configuration fails closed unless every exact value matches", () => {
@@ -118,6 +131,7 @@ test("authorized developer token onboarding stores an encrypted, expiring tenant
       scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
       expiresAt: provider.authorization.expiresAt,
       developerTest: true,
+      lifecycle: "expiring",
     });
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM integrations WHERE id IN ('ghl-a', 'staah-a')").get()?.count, 2);
   } finally { db.close(); }
@@ -183,6 +197,29 @@ test("Graph developer token validation accepts the documented debug-token data e
   assert.equal(authorization.expiresAt, expiresAt * 1000);
 });
 
+test("Graph authorization marks a token without authoritative expiry as unverified", async () => {
+  let call = 0;
+  const provider = new MetaWhatsAppGraphOnboardingProvider(
+    "expected-app",
+    "synthetic-secret",
+    "v26.0",
+    async () => {
+      call += 1;
+      return call === 1
+        ? new Response(JSON.stringify({ access_token: "synthetic-access-token" }), { status: 200 })
+        : new Response(JSON.stringify({ data: {
+          app_id: "expected-app",
+          is_valid: true,
+          scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+          expires_at: 0,
+        } }), { status: 200 });
+    },
+  );
+  const authorization = await provider.exchangeAuthorizationCode("synthetic-code");
+  assert.equal(authorization.expiresAt, undefined);
+  assert.equal(authorization.lifecycle, "unverified_non_expiring");
+});
+
 test("Graph provider invokes fetch without rebinding its receiver", async () => {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
   let receiver: unknown = "not-called";
@@ -211,24 +248,99 @@ test("Graph provider invokes fetch without rebinding its receiver", async () => 
   const authorization = await provider.validateDeveloperTestToken("temporary-test-token");
   assert.equal(receiver, undefined);
   assert.equal(authorization.expiresAt, expiresAt * 1000);
-  assert.equal(requestInit, undefined);
+  assert.equal(requestInit?.method, "GET");
+  assert.equal(requestInit?.redirect, "manual");
+  assert.equal(requestInit?.cache, "no-store");
   const url = new URL(requestUrl);
   assert.equal(url.protocol, "https:");
   assert.equal(url.hostname, "graph.facebook.com");
   assert.equal(url.pathname, "/v26.0/debug_token");
   assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
-  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+  assert.equal(url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requestInit?.headers).get("authorization"), "Bearer expected-app|synthetic-secret");
+});
+
+test("production authorization uses the Meta server-side code-exchange contract and validates its token", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const requests: Array<{ url: URL; init?: RequestInit }> = [];
+  const provider = new MetaWhatsAppGraphOnboardingProvider("expected-app", "synthetic-secret", "v26.0", async (input, init) => {
+    const url = new URL(String(input));
+    requests.push({ url, init });
+    if (url.pathname.endsWith("/oauth/access_token")) return new Response(JSON.stringify({ access_token: "synthetic-access-token", expires_in: 3600 }), { status: 200 });
+    return new Response(JSON.stringify({ data: {
+      app_id: "expected-app",
+      is_valid: true,
+      scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+      expires_at: expiresAt,
+    } }), { status: 200 });
+  });
+  const result = await provider.exchangeAuthorizationCode("synthetic-code");
+  assert.equal(result.accessToken, "synthetic-access-token");
+  assert.equal(requests.length, 2);
+  const exchange = requests[0]!;
+  assert.equal(exchange.init?.method ?? "GET", "GET");
+  assert.equal(exchange.url.searchParams.get("client_id"), "expected-app");
+  assert.equal(exchange.url.searchParams.get("client_secret"), "synthetic-secret");
+  assert.equal(exchange.url.searchParams.get("code"), "synthetic-code");
+  assert.equal(requests[1]!.url.searchParams.get("input_token"), "synthetic-access-token");
+  assert.equal(requests[1]!.url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requests[1]!.init?.headers).get("authorization"), "Bearer expected-app|synthetic-secret");
+});
+
+test("Graph asset verification uses read-only tenant-selected GETs including phone registration and app subscription", async () => {
+  const calls: Array<{ url: URL; init?: RequestInit }> = [];
+  const provider = new MetaWhatsAppGraphOnboardingProvider("expected-app", "synthetic-secret", "v26.0", async (input, init) => {
+    const url = new URL(String(input));
+    calls.push({ url, init });
+    if (url.pathname.endsWith("/debug_token")) return new Response(JSON.stringify({ data: {
+      app_id: "expected-app", is_valid: true,
+      scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    } }), { status: 200 });
+    if (url.pathname.endsWith(`/${WABA_ID}/phone_numbers`)) {
+      const data = url.searchParams.get("after")
+        ? [{ id: PHONE_ID }]
+        : Array.from({ length: 100 }, (_, index) => ({ id: `phone-${index}` }));
+      return new Response(JSON.stringify(url.searchParams.get("after") ? { data } : { data, paging: { cursors: { after: "cursor-1" } } }), { status: 200 });
+    }
+    if (url.pathname.endsWith(`/${WABA_ID}/subscribed_apps`)) return new Response(JSON.stringify({ data: [{ whatsapp_business_api_data: { id: "expected-app" } }] }), { status: 200 });
+    if (url.pathname.endsWith(`/${WABA_ID}`)) return new Response(JSON.stringify({ id: WABA_ID }), { status: 200 });
+    if (url.pathname.endsWith(`/${PHONE_ID}`)) return new Response(JSON.stringify({ id: PHONE_ID, status: "CONNECTED", platform_type: "CLOUD_API", code_verification_status: "VERIFIED" }), { status: 200 });
+    return new Response("unexpected asset", { status: 404 });
+  });
+
+  const token = await provider.inspectToken("synthetic-token");
+  assert.equal(token.valid && token.appIdMatches, true);
+  assert.deepEqual(token.scopes, ["whatsapp_business_management", "whatsapp_business_messaging"]);
+  assert.equal(await provider.verifyWabaAccess("synthetic-token", WABA_ID), true);
+  assert.ok((await provider.listPhoneNumbers("synthetic-token", WABA_ID)).includes(PHONE_ID));
+  assert.deepEqual(await provider.inspectPhoneNumber("synthetic-token", PHONE_ID), {
+    id: PHONE_ID, status: "CONNECTED", platformType: "CLOUD_API", codeVerificationStatus: "VERIFIED",
+  });
+  assert.equal(await provider.verifyWebhookSubscription("synthetic-token", WABA_ID), true);
+  assert.ok(calls.length >= 6);
+  for (const call of calls) {
+    assert.equal(call.init?.method ?? "GET", "GET");
+    assert.equal(call.init?.redirect, "manual");
+    assert.equal(call.url.searchParams.get("access_token"), null);
+    const expectedAuthorization = call.url.pathname.endsWith("/debug_token")
+      ? "Bearer expected-app|synthetic-secret"
+      : "Bearer synthetic-token";
+    assert.equal(new Headers(call.init?.headers).get("authorization"), expectedAuthorization);
+  }
 });
 
 test("Graph token-debug normalizes app credentials like the validated operator request", async () => {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
   let requestUrl = "";
+  let requestHeaders: HeadersInit | undefined;
   const provider = new MetaWhatsAppGraphOnboardingProvider(
     "  expected-app  ",
     " synthetic-secret\r\n",
     "v26.0",
-    async (input) => {
+    async (input, init) => {
       requestUrl = String(input);
+      requestHeaders = init?.headers;
       return new Response(JSON.stringify({
         data: {
           app_id: "expected-app",
@@ -244,7 +356,8 @@ test("Graph token-debug normalizes app credentials like the validated operator r
 
   const url = new URL(requestUrl);
   assert.equal(url.searchParams.get("input_token"), "temporary-test-token");
-  assert.equal(url.searchParams.get("access_token"), "expected-app|synthetic-secret");
+  assert.equal(url.searchParams.get("access_token"), null);
+  assert.equal(new Headers(requestHeaders).get("authorization"), "Bearer expected-app|synthetic-secret");
 });
 
 test("Graph token-debug failures expose only a stable code, status, and validated request ID", async () => {
@@ -540,10 +653,241 @@ test("developer test reauthorization reuses the owned connection instead of crea
     const provider = new TestProvider();
     const service = new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider);
     const first = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
-    const second = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
+    const second = await service.completeDeveloperTest({ tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider, "tenant-a", "client-tenant-a", first.connectionId)).state, accessToken: "token", wabaId: WABA_ID, phoneNumberId: PHONE_ID }, provider);
     assert.equal(second.connectionId, first.connectionId);
     assert.ok(second.credentialVersion > first.credentialVersion);
     assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM meta_whatsapp_connections").get()?.count, 1);
+  } finally { db.close(); }
+});
+
+test("developer-test credential refresh is write-authorized, tenant-scoped, asset-verified and encrypted", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    const started = await state(db, provider);
+    const connected = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+      accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    await seedClient(db, "tenant-a", ["integrations:write"], "fl360_tenant_a");
+    await seedClient(db, "tenant-b", ["integrations:write"], "fl360_tenant_b");
+    const validationsBeforeRefresh = provider.validationCalls;
+    const endpoint = `/integrations/meta-whatsapp/connections/${connected.connectionId}/developer-test-credential/refresh`;
+    provider.authorization = {
+      accessToken: "ignored-provider-fixture-token",
+      scopes: ["whatsapp_business_management", "whatsapp_business_messaging"],
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    };
+    const graph = new MetaWhatsAppGraphOnboardingProvider("test-app", "test-secret", "v26.0", async () =>
+      Response.json({ id: PHONE_ID, platform_type: "CLOUD_API" }));
+    provider.inspectPhoneNumber = graph.inspectPhoneNumber.bind(graph);
+    const app = createApp(db, provider, "tenant-a", ["integrations:write"]);
+    const response = await app.request(`https://core.test${endpoint}`, {
+      method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
+      body: JSON.stringify({ temporaryAccessToken: "fresh-developer-token" }),
+    }, bindings(db));
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json() as Record<string, unknown>;
+    assert.equal(result.connectionId, connected.connectionId);
+    assert.equal(result.credentialVersion, 2);
+    assert.doesNotMatch(JSON.stringify(result), /fresh-developer-token|accessToken|ciphertext/);
+    assert.equal(provider.validationCalls, validationsBeforeRefresh + 1);
+    const stored = db.sqlite.prepare("SELECT ciphertext, metadata, credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { ciphertext: string; metadata: string; credential_version: number };
+    assert.notEqual(stored.ciphertext, "fresh-developer-token");
+    assert.equal(stored.credential_version, 2);
+    assert.equal(JSON.parse(stored.metadata).developerTest, true);
+    const resolved = await createMetaWhatsAppCredentialVault(db.binding(), bindings(db)).resolve({
+      tenantId: "tenant-a", integrationId: "meta-a", connectionId: connected.connectionId, provider: "meta_whatsapp",
+    });
+    assert.equal(resolved.accessToken, "fresh-developer-token");
+
+    const before = stored.credential_version;
+    const crossTenant = await createApp(db, provider, "tenant-b", ["integrations:write"]).request(`https://core.test${endpoint}`, {
+      method: "POST", headers: { Authorization: "Bearer fl360_tenant_b", "Content-Type": "application/json" },
+      body: JSON.stringify({ temporaryAccessToken: "must-not-be-validated" }),
+    }, bindings(db));
+    assert.equal(crossTenant.status, 404);
+    assert.equal(provider.validationCalls, validationsBeforeRefresh + 1);
+    assert.equal((db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { credential_version: number }).credential_version, before);
+
+    db.sqlite.prepare("UPDATE clients SET permissions=? WHERE id=?").run(JSON.stringify(["integrations:test"]), "client-tenant-a");
+    const noWrite = createApp(db, provider, "tenant-a", ["integrations:test"]);
+    const denied = await noWrite.request(`https://core.test${endpoint}`, {
+      method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" },
+      body: JSON.stringify({ temporaryAccessToken: "must-not-be-validated" }),
+    }, bindings(db));
+    assert.equal(denied.status, 403);
+    assert.equal(provider.validationCalls, validationsBeforeRefresh + 1);
+  } finally { db.close(); }
+});
+
+test("developer-test refresh classifies invalid registration metadata and accepts omitted or ready metadata", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    const service = new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider);
+    const connected = await service.completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: (await state(db, provider)).state,
+      accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    const cases = [
+      { body: { error: { code: 100, message: "raw-provider-message" } }, status: 400, reason: "upstream_lookup" },
+      { body: { id: "99999999" }, status: 200, reason: "identity_mismatch" },
+      { body: { id: PHONE_ID, status: "DISCONNECTED" }, status: 200, reason: "registration_metadata_invalid", field: "status", kind: "unexpected_state" },
+      { body: { id: PHONE_ID, platform_type: "ON_PREMISE" }, status: 200, reason: "registration_metadata_invalid", field: "platformType", kind: "unexpected_state" },
+      { body: { id: PHONE_ID, code_verification_status: "NOT_VERIFIED" }, status: 200, reason: "registration_metadata_invalid", field: "codeVerificationStatus", kind: "unexpected_state" },
+      { body: { id: PHONE_ID, status: "NEW_UNRECOGNIZED_STATE" }, status: 200, reason: "registration_metadata_invalid", field: "status", kind: "unrecognized" },
+      { body: { id: PHONE_ID, code_verification_status: null }, status: 200, reason: "registration_metadata_invalid", field: "codeVerificationStatus", kind: "null" },
+      { body: { id: PHONE_ID, platform_type: false }, status: 200, reason: "registration_metadata_invalid", field: "platformType", kind: "wrong_type" },
+    ];
+    for (const { body, status, reason, field, kind } of cases) {
+      const graph = new MetaWhatsAppGraphOnboardingProvider("test-app", "test-secret", "v26.0", async () =>
+        Response.json(body, { status }));
+      provider.inspectPhoneNumber = graph.inspectPhoneNumber.bind(graph);
+      await assert.rejects(service.refreshDeveloperTestCredential({
+        tenantId: "tenant-a", connectionId: connected.connectionId, accessToken: "rejected-token",
+      }, provider), (error: unknown) => {
+        assert.ok(error instanceof MetaWhatsAppOnboardingError);
+        assert.equal(error.diagnostic.code, "meta_phone_registration_failed");
+        assert.equal(error.diagnostic.phoneValidationFailure, reason);
+        assert.equal(error.diagnostic.phoneRegistrationField, field);
+        assert.equal(error.diagnostic.phoneRegistrationValueKind, kind);
+        assert.equal(error.diagnostic.upstreamHttpStatus, status === 400 ? 400 : undefined);
+        assert.equal(error.diagnostic.providerErrorCode, status === 400 ? 100 : undefined);
+        assert.doesNotMatch(JSON.stringify(error.diagnostic), /raw-provider-message|rejected-token|NEW_UNRECOGNIZED_STATE/);
+        return true;
+      });
+      assert.equal(db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId)?.credential_version, connected.credentialVersion);
+    }
+    let version = connected.credentialVersion;
+    for (const body of [
+      { id: PHONE_ID },
+      { id: PHONE_ID, status: "CONNECTED", platform_type: "CLOUD_API", code_verification_status: "VERIFIED" },
+    ]) {
+      const graph = new MetaWhatsAppGraphOnboardingProvider("test-app", "test-secret", "v26.0", async () => Response.json(body));
+      provider.inspectPhoneNumber = graph.inspectPhoneNumber.bind(graph);
+      const refreshed = await service.refreshDeveloperTestCredential({
+        tenantId: "tenant-a", connectionId: connected.connectionId, accessToken: "fresh-fixture-token",
+      }, provider);
+      assert.equal(refreshed.credentialVersion, ++version);
+    }
+  } finally { db.close(); }
+});
+
+test("developer-test refresh rejects mismatched assets, missing scopes, and non-test credentials without replacement", async () => {
+  for (const configure of [
+    (provider: TestProvider) => { provider.phoneNumbers = ["99999999"]; },
+    (provider: TestProvider) => { provider.authorization = { accessToken: "unused", scopes: ["whatsapp_business_management"], expiresAt: Date.now() + 60 * 60 * 1000 }; },
+  ]) {
+    const db = new SQLiteD1();
+    try {
+      const provider = new TestProvider();
+      const started = await state(db, provider);
+      const connected = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+        tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+        accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+      }, provider);
+      configure(provider);
+      const before = db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { credential_version: number };
+      await assert.rejects(new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).refreshDeveloperTestCredential({
+        tenantId: "tenant-a", connectionId: connected.connectionId, accessToken: "rejected-token",
+      }, provider), MetaWhatsAppOnboardingError);
+      assert.equal((db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { credential_version: number }).credential_version, before.credential_version);
+    } finally { db.close(); }
+  }
+
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    const started = await state(db, provider);
+    const connected = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+      accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    db.sqlite.prepare("UPDATE meta_whatsapp_credentials SET metadata=json_set(metadata, '$.developerTest', false) WHERE connection_id=?").run(connected.connectionId);
+    const validationsBeforeRefresh = provider.validationCalls;
+    await assert.rejects(new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).refreshDeveloperTestCredential({
+      tenantId: "tenant-a", connectionId: connected.connectionId, accessToken: "rejected-token",
+    }, provider), MetaWhatsAppOnboardingError);
+    assert.equal(provider.validationCalls, validationsBeforeRefresh);
+  } finally { db.close(); }
+});
+
+test("developer-test credential refresh requires HTTPS", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    await seedClient(db, "tenant-a", ["integrations:write"], "fl360_tenant_a");
+    const response = await createApp(db, provider, "tenant-a", ["integrations:write"]).request(
+      "http://core.test/integrations/meta-whatsapp/connections/unknown/developer-test-credential/refresh",
+      { method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" }, body: JSON.stringify({ temporaryAccessToken: "must-not-be-validated" }) },
+      bindings(db),
+    );
+    assert.equal(response.status, 400);
+    assert.equal(provider.validationCalls, 0);
+  } finally { db.close(); }
+});
+
+test("invalid developer-test token is neither stored nor disclosed", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    const started = await state(db, provider);
+    const connected = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+      accessToken: "old-developer-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    await seedClient(db, "tenant-a", ["integrations:write"], "fl360_tenant_a");
+    const versionBefore = db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { credential_version: number };
+    provider.rejectToken = true;
+    const invalidToken = "sensitive-invalid-token-fixture";
+    const response = await createApp(db, provider, "tenant-a", ["integrations:write"]).request(
+      `https://core.test/integrations/meta-whatsapp/connections/${connected.connectionId}/developer-test-credential/refresh`,
+      { method: "POST", headers: { Authorization: "Bearer fl360_tenant_a", "Content-Type": "application/json" }, body: JSON.stringify({ temporaryAccessToken: invalidToken }) },
+      bindings(db),
+    );
+    assert.equal(response.status, 409);
+    const responseText = await response.text();
+    assert.doesNotMatch(responseText, /sensitive-invalid-token-fixture|Provider rejected/);
+    assert.equal((db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(connected.connectionId) as { credential_version: number }).credential_version, versionBefore.credential_version);
+  } finally { db.close(); }
+});
+
+test("read-only verification route is permission-gated, tenant-scoped, and never returns a credential", async () => {
+  const db = new SQLiteD1();
+  try {
+    const provider = new TestProvider();
+    await seedClient(db, "tenant-a", ["integrations:test"], "fl360_tenant_a");
+    await seedClient(db, "tenant-b", ["integrations:test"], "fl360_tenant_b");
+    const started = await state(db, provider);
+    const complete = await new MetaWhatsAppOnboardingService(db.binding(), bindings(db), provider).completeDeveloperTest({
+      tenantId: "tenant-a", operatorId: "client-tenant-a", state: started.state,
+      accessToken: "temporary-test-token", wabaId: WABA_ID, phoneNumberId: PHONE_ID,
+    }, provider);
+    const before = db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId)?.credential_version;
+    const allowed = await createApp(db, provider, "tenant-a", ["integrations:test"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_a" },
+      }, bindings(db));
+    assert.equal(allowed.status, 200, await allowed.clone().text());
+    const body = await allowed.json() as { ready: boolean; checks: { appSubscription: { status: string } } };
+    assert.equal(body.ready, true);
+    assert.equal(body.checks.appSubscription.status, "passed");
+    assert.doesNotMatch(JSON.stringify(body), /temporary-test-token|accessToken|ciphertext|synthetic-secret/);
+    assert.equal((db.sqlite.prepare("SELECT credential_version FROM meta_whatsapp_credentials WHERE connection_id=?").get(complete.connectionId) as { credential_version: number }).credential_version, before);
+
+    db.sqlite.prepare("UPDATE clients SET permissions=? WHERE id=?")
+      .run(JSON.stringify(["integrations:read"]), "client-tenant-a");
+    const denied = await createApp(db, provider, "tenant-a", ["integrations:read"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_a" },
+      }, bindings(db));
+    assert.equal(denied.status, 403);
+    const crossTenant = await createApp(db, provider, "tenant-b", ["integrations:test"])
+      .request(`/integrations/meta-whatsapp/connections/${complete.connectionId}/verification`, {
+        headers: { Authorization: "Bearer fl360_tenant_b" },
+      }, bindings(db));
+    assert.equal(crossTenant.status, 404);
   } finally { db.close(); }
 });
 

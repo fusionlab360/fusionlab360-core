@@ -15,6 +15,9 @@ export interface CreateContactRequest {
   lastVisitedDate?: string;
 
   notes?: string;
+  clinicNotesSync?: "replace" | "clear" | "note_only";
+  clinicNotesCapturedAt?: number;
+  source?: string;
 
   branch?: string;
 }

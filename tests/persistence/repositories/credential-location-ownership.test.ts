@@ -7,6 +7,7 @@ import test from "node:test";
 import { Worker } from "node:worker_threads";
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import { CredentialRepository } from "../../../src/persistence/repositories/credential-repository";
+import { createCredentialStorageConfiguration } from "../../../src/core/security/credential-storage";
 import { resolveTenantByProviderLocation } from "../../../src/tenants/service";
 import { buildInsertPendingOAuthCredentialSql } from "../../../src/cli/sql/insert-credentials";
 import { createTenant } from "../../../src/cli/services/tenant-service";
@@ -19,7 +20,11 @@ const ownershipMigration = "0027_enforce_ghl_location_ownership.sql";
 const oauthEnvironment = {
   GHL_OAUTH_CLIENT_ID: "synthetic-client",
   GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
+  CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+  CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+  CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
 };
+const credentialStorage = createCredentialStorageConfiguration(oauthEnvironment);
 
 // Same SQLite-backed D1 boundary used by the existing OAuth onboarding tests.
 class SqliteD1Database {
@@ -70,7 +75,7 @@ test("unique pending and connected Location ownership resolves; blank and unknow
   try {
     seedOwner(db, "tenant-pending");
     seedOwner(db, "tenant-connected", "location-connected", "synthetic-token");
-    const repository = new CredentialRepository(db.binding());
+    const repository = new CredentialRepository(db.binding(), credentialStorage);
     assert.equal(await repository.findTenantIdByProviderAndLocation("gohighlevel", " location-test "), "tenant-pending");
     assert.equal(await repository.findTenantIdByProviderAndLocation("gohighlevel", "location-connected"), "tenant-connected");
     assert.equal(await repository.findTenantIdByProviderAndLocation("gohighlevel", "unknown"), null);
@@ -100,7 +105,7 @@ test("OAuth writes cannot steal a pending or connected Location; refresh tokens 
     try {
       seedOwner(db, "tenant-owner", "location-test", token);
       seedTenant(db, "tenant-other");
-      const repository = new CredentialRepository(db.binding());
+      const repository = new CredentialRepository(db.binding(), credentialStorage);
       await assert.rejects(repository.upsertOAuthCredential("tenant-other", "gohighlevel", "location-test", "new-token", "new-refresh", null), /already assigned/);
       assert.equal((await repository.findByTenantAndProvider("tenant-owner", "gohighlevel"))?.refreshToken, "synthetic-refresh");
       assert.equal(await repository.findByTenantAndProvider("tenant-other", "gohighlevel"), null);
@@ -117,7 +122,7 @@ test("overlapping OAuth assignments cannot both succeed even before the ownershi
   try {
     seedTenant(db, "tenant-a");
     seedTenant(db, "tenant-b");
-    const repository = new CredentialRepository(db.binding());
+    const repository = new CredentialRepository(db.binding(), credentialStorage);
     const outcomes = await Promise.allSettled(["tenant-a", "tenant-b"].map((tenantId) =>
       repository.upsertOAuthCredential(tenantId, "gohighlevel", "location-race", "synthetic-token", null, null)));
     assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);

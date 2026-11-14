@@ -77,7 +77,7 @@ export async function createContactController(
     ),
   );
 
-  logger.info("Contact created successfully");
+  logger.info("Contact fields saved", { correlationId: context.requestId });
 
   return c.json(result);
 }
@@ -150,9 +150,7 @@ export async function updateContactController(
     ),
   );
 
-  logger.info("Contact updated successfully", {
-    contactId: body.id,
-  });
+  logger.info("Contact fields saved", { correlationId: context.requestId });
 
   return c.json(result);
 }

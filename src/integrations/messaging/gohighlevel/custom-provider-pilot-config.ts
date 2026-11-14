@@ -24,10 +24,8 @@ export function isGHLProviderPilotLocationAuthorized(
   locationId: string | undefined,
 ): boolean {
   if (configuration.GHL_CUSTOM_PROVIDER_ENABLED !== "true") return false;
-  const allowedLocation = resolveSingleGHLProviderPilotLocation(
-    configuration.GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST,
-  );
-  return Boolean(allowedLocation && locationId?.trim() === allowedLocation);
+  const allowedLocation = resolveSingleGHLProviderPilotLocation(configuration.GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST);
+  return allowedLocation !== null && locationId?.trim() === allowedLocation;
 }
 
 export function requireGHLProviderPilotLocation(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { SignJWT } from "jose";
@@ -9,8 +10,18 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import type { AppBindings, AppVariables } from "../../../src/config/app";
 import routes from "../../../src/domain/console-service/routes";
 import { createApplication } from "../../../src/bootstrap/routes";
-import consoleApi from "../../../../fusionlab360-console/console-api/src/index";
 import { hashApiKey } from "../../../src/core/security/api-key";
+
+const consoleApiPath = [
+  resolve(process.cwd(), "../fusionlab360-console/console-api/src/index.ts"),
+  resolve(process.cwd(), "../../../fusionlab360-console/console-api/src/index.ts"),
+].find(existsSync);
+
+if (!consoleApiPath) {
+  throw new Error("The sibling FusionLab360 Console API source is required for this integration test.");
+}
+
+const { default: consoleApi } = await import(pathToFileURL(consoleApiPath).href);
 
 class LocalD1 {
   readonly sqlite = new DatabaseSync(":memory:");
@@ -59,6 +70,9 @@ function environment(db: LocalD1): AppBindings {
     MANUAL_REPLY_ENABLED: "true",
     GHL_OAUTH_CLIENT_ID: "synthetic-client",
     GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
+    CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+    CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+    CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
   } as AppBindings;
 }
 
@@ -238,6 +252,9 @@ test("Console API manual reply reaches injected Core provider through the HTTP b
         JWT_AUDIENCE: "fusionlab360-core",
         GHL_OAUTH_CLIENT_ID: "synthetic-client",
         GHL_OAUTH_CLIENT_SECRET: "synthetic-secret",
+        CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "test-v1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }),
+        CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "test-v1",
+        CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
       } as AppBindings);
     }
     if (url.includes("/conversations/search")) {

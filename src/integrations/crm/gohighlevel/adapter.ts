@@ -1,4 +1,4 @@
-import type { CRMAdapter } from "../../../core/crm";
+import { normalizePhoneNumber, type CRMAdapter } from "../../../core/crm";
 import type { Contact } from "../../../core/crm/models/contact";
 import type { RequestContext } from "../../../context";
 import type { ReservationOpportunity } from "../../../domain/reservation/opportunity";
@@ -6,6 +6,7 @@ import type { ReservationOpportunity } from "../../../domain/reservation/opportu
 import { logger } from "../../../core/logger";
 import { ApiError } from "../../../core/errors/ApiError";
 
+import { lookupGHLContactByPhone } from "./contacts/lookup";
 import { getGHLCredentials } from "./credentials";
 
 import {
@@ -76,125 +77,82 @@ function safeErrorCategory(error: unknown): string {
   return error instanceof Error ? "error" : "unknown";
 }
 
+// A Worker isolate can reject an overlapping sync without sharing request I/O.
+const activeContactSyncs = new Set<string>();
+const clinicSnapshotTimes = new Map<string, number>();
+
+async function runContactSync<T>(
+  context: RequestContext,
+  contactId: string,
+  kind: "notes" | "events" | "clinic",
+  action: () => Promise<T>,
+): Promise<T> {
+  const key = JSON.stringify([context.tenant.id, getGHLCredentials(context).locationId, contactId, kind]);
+  if (activeContactSyncs.has(key)) {
+    throw new ApiError(409, "Contact synchronization is already in progress.", undefined, "CONFLICT");
+  }
+  activeContactSyncs.add(key);
+  try {
+    return await action();
+  } finally {
+    activeContactSyncs.delete(key);
+  }
+}
+
 async function syncContactNotes(
-  context:
-    RequestContext,
+  context: RequestContext,
+  contactId: string | undefined,
+  notes: string | undefined,
+  expectedContactId?: string,
+): Promise<void> {
+  if (!notes?.trim()) return;
 
-  contactId:
-    string,
+  let stage = "validate_contact";
+  try {
+    if (!contactId?.trim() || (expectedContactId !== undefined && contactId !== expectedContactId)) {
+      throw new Error("GoHighLevel returned no matching contact ID.");
+    }
+    stage = "validate_author";
+    const configuredUserId = context.tenant.integrations.crm.configuration?.providerConfiguration?.userId;
+    const userId = typeof configuredUserId === "string" ? configuredUserId.trim() : "";
+    if (!userId) throw new Error("GoHighLevel userId is not configured.");
 
-  userId:
-    string,
+    stage = "acquire_sync";
+    await runContactSync(context, contactId, "notes", async () => {
+      stage = "list_notes";
+      const { notes: existingNotes } = await getContactNotes(context, contactId);
+      if (!Array.isArray(existingNotes)) {
+        throw new Error("GoHighLevel notes response is invalid.");
+      }
 
-  notes?:
-    string,
-) {
-  const body = notes?.trim();
+      logger.info("GHL contact notes loaded", {
+        correlationId: context.requestId,
+        existingNotesCount: existingNotes.length,
+      });
 
-  if (!body) {
-    console.log(
-      "GHL NOTES: skipped - empty notes",
-    );
-
-    return;
+      const existingNote = existingNotes.find((note) => note.title === FUSIONLAB_CONTACT_NOTE_TITLE);
+      const payload = { userId, body: notes, title: FUSIONLAB_CONTACT_NOTE_TITLE };
+      if (existingNote) {
+        if (existingNote.body === notes) return;
+        stage = "update_note";
+        if (!existingNote.id?.trim()) throw new Error("GoHighLevel managed note has no ID.");
+        await updateContactNote(context, contactId, existingNote.id, payload);
+      } else {
+        stage = "create_note";
+        await createContactNote(context, contactId, payload);
+      }
+    });
+  } catch (error) {
+    logger.error("Contact saved; native note synchronization failed", {
+      operation: "contact.notes.sync",
+      correlationId: context.requestId,
+      outcome: "partial_success",
+      stage,
+      providerStatus: error instanceof ApiError ? error.status : undefined,
+      errorCategory: error instanceof ApiError ? "provider_error" : safeErrorCategory(error),
+    });
+    throw error;
   }
-
-  console.log(
-    "GHL NOTES: starting",
-    {
-      contactId,
-      userId,
-      bodyLength: body.length,
-    },
-  );
-
-  const response =
-    await getContactNotes(
-      context,
-      contactId,
-    );
-
-  console.log(
-    "GHL NOTES: existing notes",
-    {
-      count: response.notes?.length ?? 0,
-      notes:
-        response.notes?.map((note) => ({
-          id: note.id,
-          title: note.title,
-          bodyLength: note.body?.length ?? 0,
-        })),
-    },
-  );
-
-  const existingNote =
-    response.notes?.find(
-      (note) =>
-        note.title ===
-        FUSIONLAB_CONTACT_NOTE_TITLE,
-    );
-
-  if (existingNote?.id) {
-    console.log(
-      "GHL NOTES: updating existing note",
-      {
-        noteId: existingNote.id,
-      },
-    );
-
-    const result =
-  await updateContactNote(
-    context,
-
-    contactId,
-
-    existingNote.id,
-
-    {
-      userId,
-
-      body,
-
-      title:
-        FUSIONLAB_CONTACT_NOTE_TITLE,
-    },
-  );
-
-    console.log(
-      "GHL NOTES: update successful",
-      {
-        noteId:
-          result.note?.id ??
-          existingNote.id,
-      },
-    );
-
-    return;
-  }
-
-  console.log(
-    "GHL NOTES: creating new note",
-  );
-
-  const result =
-    await createContactNote(
-      context,
-      contactId,
-      {
-        userId,
-        body,
-        title:
-          FUSIONLAB_CONTACT_NOTE_TITLE,
-      },
-    );
-
-  console.log(
-    "GHL NOTES: create successful",
-    {
-      noteId:
-        result.note?.id,
-    },
-  );
 }
 
 function getGHLPropertyName(
@@ -576,6 +534,23 @@ function buildContactEventKey(
 }
 
 export const goHighLevelAdapter: CRMAdapter = {
+  syncContactNotes,
+  runClinicContactSync(context, contactId, capturedAt, action) {
+    return runContactSync(context, contactId, "clinic", async () => {
+      const key = JSON.stringify([context.tenant.id, getGHLCredentials(context).locationId, contactId]);
+      const newest = clinicSnapshotTimes.get(key);
+      if (newest !== undefined && capturedAt < newest) {
+        throw new ApiError(409, "Clinic notes must be read again.", undefined, "CONFLICT");
+      }
+      clinicSnapshotTimes.delete(key);
+      clinicSnapshotTimes.set(key, capturedAt);
+      if (clinicSnapshotTimes.size > 4096) {
+        const oldest = clinicSnapshotTimes.keys().next().value;
+        if (oldest !== undefined) clinicSnapshotTimes.delete(oldest);
+      }
+      return action();
+    });
+  },
 
   // -------------------------------------------------
   // CONTACTS
@@ -652,62 +627,16 @@ export const goHighLevelAdapter: CRMAdapter = {
   },
 
 
-   async updateContact(
-  context:
-    RequestContext,
+  async updateContact(context: RequestContext, id: string, payload: Partial<Contact>) {
+    const response = await updateContact(context, id, toGHLPartialContact(payload));
+    await syncContactNotes(context, response.contact?.id, payload.notes, id);
+    return fromGHLContact(context, response.contact);
+  },
 
-  id:
-    string,
-
-  payload:
-    Partial<Contact>,
-) {
-
-  logger.info(
-    "Updating GHL contact",
-    {
-      id,
-    },
-  );
-
-
-  /*
-   * --------------------------------------------------
-   * 1. Update normal contact fields
-   * --------------------------------------------------
-   */
-
-  const response =
-    await updateContact(
-      context,
-
-      id,
-
-      toGHLPartialContact(
-        payload,
-      ),
-    );
-
-
-
-  logger.info(
-    "GHL contact updated",
-    {
-      id,
-    },
-  );
-
-
-  return fromGHLContact(
-    context,
-
-    response.contact,
-  );
-},
-  
   async upsertContact(
     context: RequestContext,
     payload: Contact,
+    options,
   ) {
 
     const credentials =
@@ -753,6 +682,27 @@ export const goHighLevelAdapter: CRMAdapter = {
     );
 
 
+  async function verifyContact(contactId: string) {
+    const { contact } = await getContact(context, contactId);
+    const verified = contact && fromGHLContact(context, contact);
+    const expectedPhone = normalizePhoneNumber(payload.phone);
+    if (!verified || verified.id !== contactId || contact.locationId !== credentials.locationId ||
+        !expectedPhone || normalizePhoneNumber(verified.phone) !== expectedPhone ||
+        (payload.identityNumber && verified.identityNumber !== payload.identityNumber)) {
+      throw new ApiError(409, "Contact ownership could not be verified.", undefined, "CONFLICT");
+    }
+    return verified;
+  }
+
+  const existingId = options?.verifyOwnership
+    ? await lookupGHLContactByPhone({ ...context, provider: "gohighlevel" }, payload.phone)
+    : null;
+  const verifiedExisting = existingId ? await verifyContact(existingId) : null;
+  if (options?.existingOnly) {
+    if (!verifiedExisting) throw new ApiError(404, "Clinic contact could not be verified.", undefined, "NOT_FOUND");
+    return verifiedExisting;
+  }
+
   try {
  const response =
   await upsertContact(
@@ -770,42 +720,22 @@ if (!contactId) {
   );
 }
 
-const providerConfiguration =
-  context.tenant.integrations.crm
-    .configuration
-    ?.providerConfiguration;
-
-const noteUserId =
-  typeof providerConfiguration?.userId === "string"
-    ? providerConfiguration.userId
-    : undefined;
-
-if (payload.notes?.trim()) {
-  if (!noteUserId) {
-    throw new Error(
-      "GoHighLevel userId is not configured.",
-    );
+if (options?.verifyOwnership) {
+  if (existingId && existingId !== contactId) {
+    throw new ApiError(409, "Contact ownership could not be verified.", undefined, "CONFLICT");
   }
-
-  await syncContactNotes(
-  context,
-
-  contactId,
-
-  noteUserId,
-
-  payload.notes,
-);
+  return verifyContact(contactId);
 }
 
+await syncContactNotes(context, contactId, payload.notes);
+
 logger.info(
-  "GHL contact upsert completed",
+  "GHL contact upsert and requested note sync completed",
   {
     operation: "contact.upsert",
     provider: "gohighlevel",
     correlationId: context.requestId,
     outcome: "succeeded",
-    contactId,
   },
 );
 
@@ -1071,21 +1001,40 @@ logger.info(
   // CONTACT EVENT OPERATIONS
   // -------------------------------------------------
 
-    async syncContactEvents(
+  async syncContactEvents(
     context: RequestContext,
     input: ContactEventsSyncInput,
   ): Promise<ContactEventsSyncResult> {
 
+    // Only a complete snapshot can reach the provider reconciliation.
+    if ((!input.events.length && !(input.managedOnly && input.clearManaged)) || input.events.some(
+      ({ date, type }) => !normalizeEventDate(date) || !normalizeEventType(type),
+    )) {
+      return { created: 0, deleted: 0, kept: 0 };
+    }
+    return runContactSync(context, input.contactId, "events", reconcile);
+
+    async function reconcile(): Promise<ContactEventsSyncResult> {
     const credentials =
       getGHLCredentials(
         context,
       );
 
 
-    const eventConfiguration =
-  await resolveGHLEventConfiguration(
-    context,
-  );
+    const eventConfiguration = await resolveGHLEventConfiguration(context);
+    const management = context.tenant.integrations.crm.configuration?.providerConfiguration?.clinicContactSync;
+    const fieldKey = management && typeof management === "object" && "managedOwnerFieldKey" in management
+      ? management.managedOwnerFieldKey
+      : undefined;
+    const ownerProperty = input.managedOnly && typeof fieldKey === "string" && fieldKey.trim()
+      ? getGHLPropertyName(fieldKey)
+      : undefined;
+    if (input.managedOnly && (!ownerProperty || ["__proto__", "constructor", "prototype"].includes(ownerProperty) || [
+      eventConfiguration.primaryDisplayFieldKey, eventConfiguration.dateFieldKey, eventConfiguration.typeFieldKey,
+    ].map(getGHLPropertyName).includes(ownerProperty))) {
+      throw new Error("Managed Contact Event ownership field is not configured.");
+    }
+    const owner = JSON.stringify([context.tenant.id, credentials.locationId, input.contactId]);
 
   logger.info(
   "GHL contact event configuration resolved",
@@ -1096,8 +1045,6 @@ logger.info(
     locationId:
       credentials.locationId,
 
-    contactId:
-      input.contactId,
 
     schemaKey:
       eventConfiguration.schemaKey,
@@ -1132,8 +1079,6 @@ logger.info(
         locationId:
           credentials.locationId,
 
-        contactId:
-          input.contactId,
 
         incomingEventCount: input.events.length,
       },
@@ -1156,6 +1101,12 @@ logger.info(
       );
 
 
+    if (!Array.isArray(relations.relations) ||
+        (input.managedOnly && (!Number.isInteger(relations.total) || relations.total !== relations.relations.length)) ||
+        (typeof relations.total === "number" && relations.total > relations.relations.length)) {
+      throw new Error("GoHighLevel returned an incomplete Contact Events association list.");
+    }
+
     const eventIsFirst =
       eventConfiguration.firstObjectKey ===
       eventConfiguration.schemaKey;
@@ -1175,6 +1126,18 @@ logger.info(
       );
     }
 
+
+    if (input.managedOnly && (new Set(relations.relations.map((relation) => relation.id)).size !== relations.total ||
+        relations.relations.some((relation) =>
+      !relation.id?.trim() ||
+      relation.locationId !== credentials.locationId ||
+      relation.associationId !== eventConfiguration.associationId ||
+      relation.firstObjectKey !== eventConfiguration.firstObjectKey ||
+      relation.secondObjectKey !== eventConfiguration.secondObjectKey ||
+      (eventIsFirst ? relation.secondRecordId : relation.firstRecordId) !== input.contactId ||
+      !(eventIsFirst ? relation.firstRecordId : relation.secondRecordId)?.trim()))) {
+      throw new Error("Contact Event associations could not be verified.");
+    }
 
     const existingEventRecordIds =
       relations.relations
@@ -1218,8 +1181,6 @@ logger.info(
     logger.info(
       "GHL contact event relations loaded",
       {
-        contactId:
-          input.contactId,
 
         existingEventRecordCount:
           existingEventRecordIds.length,
@@ -1247,7 +1208,7 @@ logger.info(
 
     for (
       const eventRecordId of
-        existingEventRecordIds
+        new Set(existingEventRecordIds)
     ) {
 
       const eventResponse =
@@ -1262,6 +1223,12 @@ logger.info(
 
       const properties =
         eventResponse.record?.properties;
+      if (ownerProperty) {
+        if (!properties || eventResponse.record?.id !== eventRecordId) {
+          throw new Error("Contact Event record could not be verified.");
+        }
+        if (getGHLRecordProperty(properties, ownerProperty) !== owner) continue;
+      }
 
 
       const existingDate =
@@ -1290,10 +1257,7 @@ logger.info(
         logger.warn(
           "GHL contact event record missing configured fields",
           {
-            contactId:
-              input.contactId,
 
-            eventRecordId,
 
             dateFieldKey:
               eventConfiguration.dateFieldKey,
@@ -1384,6 +1348,7 @@ logger.info(
      * --------------------------------------------------
      */
 
+    const processedEventKeys = new Set<string>();
     for (const [eventIndex, event] of input.events.entries()) {
 
       const normalizedDate =
@@ -1404,8 +1369,6 @@ logger.info(
         logger.warn(
           "GHL contact event skipped because date/type is invalid",
           {
-            contactId:
-              input.contactId,
 
             eventIndex,
             reason: "invalid_event_fields",
@@ -1422,6 +1385,9 @@ logger.info(
         );
 
 
+      if (processedEventKeys.has(eventKey)) continue;
+      processedEventKeys.add(eventKey);
+
       const existingRecordIds =
   existingEvents.get(
     eventKey,
@@ -1432,19 +1398,12 @@ if (
   existingRecordIds.length > 0
 ) {
 
-  const primaryRecordId =
-    existingRecordIds[0];
-
   kept++;
 
   logger.info(
     "GHL contact event kept",
     {
-      contactId:
-        input.contactId,
 
-      eventRecordId:
-        primaryRecordId,
 
       outcome: "kept",
     },
@@ -1456,17 +1415,7 @@ if (
       existingRecordIds.slice(1)
   ) {
 
-    logger.info(
-      "GHL duplicate contact event deleting",
-      {
-        contactId:
-          input.contactId,
-
-        eventRecordId:
-          duplicateRecordId,
-
-      },
-    );
+    logger.info("GHL duplicate contact event deleting");
 
     try {
 
@@ -1501,17 +1450,7 @@ if (
         status === 404
       ) {
 
-        logger.warn(
-          "GHL duplicate contact event already deleted",
-          {
-            contactId:
-              input.contactId,
-
-            eventRecordId:
-              duplicateRecordId,
-
-          },
-        );
+        logger.warn("GHL duplicate contact event already deleted");
 
         deleted++;
 
@@ -1533,8 +1472,6 @@ if (
       logger.info(
         "GHL contact event creating",
         {
-          contactId:
-            input.contactId,
 
           eventIndex,
         },
@@ -1555,6 +1492,7 @@ if (
     string,
     unknown
   > = {
+    ...(ownerProperty ? { [ownerProperty]: owner } : {}),
 
     [
       getGHLPropertyName(
@@ -1650,10 +1588,7 @@ if (
   logger.error(
     "GHL contact event relation creation failed; deleting orphan event record",
     {
-      contactId:
-        input.contactId,
 
-      eventRecordId,
 
       errorCategory: safeErrorCategory(error),
     },
@@ -1674,10 +1609,7 @@ if (
     logger.error(
       "GHL orphan contact event cleanup failed",
       {
-        contactId:
-          input.contactId,
 
-        eventRecordId,
 
         errorCategory: safeErrorCategory(cleanupError),
       },
@@ -1693,10 +1625,7 @@ created++;
       logger.info(
         "GHL contact event created",
         {
-          contactId:
-            input.contactId,
 
-          eventRecordId,
 
           eventIndex,
         },
@@ -1734,10 +1663,7 @@ created++;
     logger.info(
       "GHL contact event deleting",
       {
-        contactId:
-          input.contactId,
 
-        eventRecordId,
 
       },
     );
@@ -1780,10 +1706,7 @@ created++;
         logger.warn(
           "GHL contact event already absent during deletion",
           {
-            contactId:
-              input.contactId,
 
-            eventRecordId,
 
           },
         );
@@ -1801,8 +1724,6 @@ created++;
     logger.info(
       "GHL contact event sync completed",
       {
-        contactId:
-          input.contactId,
 
         created,
 
@@ -1820,6 +1741,7 @@ created++;
 
       kept,
     };
+    }
   },
 
   async searchContact(

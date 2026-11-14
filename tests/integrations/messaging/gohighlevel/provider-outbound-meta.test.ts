@@ -82,8 +82,15 @@ function seedBridge(db: LocalD1): void {
   db.sqlite.exec(`
     INSERT INTO tenants(id,name,status) VALUES ('${GHL_META_OUTBOUND_TENANT}','Pilot','active');
     INSERT INTO integrations(id,tenant_id,provider,enabled) VALUES ('meta-integration','${GHL_META_OUTBOUND_TENANT}','meta_whatsapp',1);
+    INSERT INTO integration_credentials(tenant_id,provider,auth_type,location_id)
+      VALUES ('${GHL_META_OUTBOUND_TENANT}','gohighlevel','oauth2','${GHL_META_OUTBOUND_LOCATION}');
     INSERT INTO meta_whatsapp_connections(id,tenant_id,integration_id,waba_id,phone_number_id,status)
       VALUES ('meta-connection','${GHL_META_OUTBOUND_TENANT}','meta-integration','test-waba','${GHL_META_OUTBOUND_PHONE_NUMBER_ID}','active');
+    UPDATE meta_whatsapp_connections
+      SET activation_state='active',ghl_location_id='${GHL_META_OUTBOUND_LOCATION}',
+        ghl_provider_id='${GHL_META_OUTBOUND_PROVIDER}',activation_actor='test-operator',
+        activation_reason='synthetic authorized fixture'
+      WHERE id='meta-connection';
     INSERT INTO messaging_connections(id,tenant_id,provider,integration_id,external_id,status)
       VALUES ('meta-connection','${GHL_META_OUTBOUND_TENANT}','meta_whatsapp','meta-integration','${GHL_META_OUTBOUND_PHONE_NUMBER_ID}','active');
     INSERT INTO messaging_conversations(id,tenant_id,provider,connection_id,external_participant_id,channel)

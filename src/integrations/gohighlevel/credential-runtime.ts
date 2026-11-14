@@ -1,6 +1,10 @@
 import {
   CredentialRepository,
 } from "../../persistence/repositories/credential-repository";
+import {
+  createCredentialStorageConfiguration,
+  type CredentialKeyBindings,
+} from "../../core/security/credential-storage";
 
 import type {
   IntegrationCredential,
@@ -25,7 +29,7 @@ import {
  * --------------------------------------------------
  */
 
-export interface GHLRuntimeEnvironment {
+export interface GHLRuntimeEnvironment extends CredentialKeyBindings {
 
   GHL_OAUTH_CLIENT_ID:
     string;
@@ -371,6 +375,7 @@ export class GHLIntegrationCredentialResolver
     const repository =
       new CredentialRepository(
         this.db,
+        createCredentialStorageConfiguration(this.env),
       );
 
 

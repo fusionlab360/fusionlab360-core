@@ -12,6 +12,13 @@ import {
   isGHLMetaOutboundPilotEnabled,
 } from "./provider-outbound-meta";
 import type { MetaSendOutcome } from "../meta-whatsapp/outbound";
+import {
+  decodeUtf8Body,
+  readBoundedBody,
+  RequestBodyTooLargeError,
+} from "../../../core/http/bounded-body";
+
+export const GHL_PROVIDER_OUTBOUND_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 
 export interface GHLProviderOutboundPayload {
   contactId: string;
@@ -87,9 +94,26 @@ export function createGHLProviderOutboundController(
     return c.json({ success: false, message: "Custom provider bridge is disabled." }, 404);
   }
 
-  const rawBody = await c.req.text();
+  let rawBytes: Uint8Array;
+  try {
+    rawBytes = await readBoundedBody(c.req.raw, GHL_PROVIDER_OUTBOUND_BODY_LIMIT_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return c.json({ success: false, message: "Webhook payload is too large." }, 413);
+    }
+    if (error instanceof TypeError) {
+      return c.json({ success: false, message: "Malformed request body." }, 400);
+    }
+    return c.json({ success: false, message: "Unable to read webhook payload." }, 400);
+  }
+  let rawBody: string;
+  try {
+    rawBody = decodeUtf8Body(rawBytes);
+  } catch {
+    return c.json({ success: false, message: "Invalid webhook payload encoding." }, 400);
+  }
   const signature = c.req.header("X-GHL-Signature");
-  if (!(await (dependencies.verifySignature ?? verifyGHLSignature)(rawBody, signature))) {
+  if (!(await (dependencies.verifySignature ?? verifyGHLSignature)(rawBytes, signature))) {
     return c.json({ success: false, message: "Invalid GHL webhook signature." }, 401);
   }
 
@@ -162,7 +186,14 @@ export function createGHLProviderOutboundController(
       message: retryable ? "Meta outbound delivery was rejected transiently." : "Meta outbound delivery was rejected permanently.",
       retryable,
     }), claim.leaseToken);
-    return c.json({ success: false, accepted: true, duplicate: event.duplicate, deliveryMode: "meta", deliveryState: outcome.state }, retryable ? 503 : 422);
+    return c.json({
+      success: false,
+      accepted: true,
+      duplicate: event.duplicate,
+      deliveryMode: "meta",
+      deliveryState: outcome.state,
+      ...(outcome.state === "retryable" && outcome.retryAfterSeconds !== undefined ? { retryAfterSeconds: outcome.retryAfterSeconds } : {}),
+    }, retryable ? 503 : 422);
   } catch (error) {
     const failure = error instanceof GHLMetaOutboundFailure ? error : null;
     await eventService.markFailed(tenant.id, event.event.eventId, new IntegrationEventProcessingError({

@@ -44,6 +44,7 @@ import knowledgeRoutes
 import featureRoutes from "../domain/features/routes";
 import metaWhatsAppRoutes from "../integrations/messaging/meta-whatsapp/routes";
 import { metaWhatsAppWebhookController } from "../integrations/messaging/meta-whatsapp/webhook-controller";
+import { createWhatsAppReadonlyCanary } from "../integrations/messaging/gohighlevel/whatsapp-readonly-canary";
 
 import {
   evaluateRetrievalController,
@@ -70,6 +71,7 @@ export function createApplication(
   const includeNonProductionRoutes =
     shouldEnableNonProductionRoutes(environment);
 const app = createApp();
+app.route("/marketplace/gohighlevel/whatsapp-preview", createWhatsAppReadonlyCanary());
 
 
 /*

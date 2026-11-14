@@ -16,6 +16,7 @@ import { publishGHLCustomInboundForTenant } from "../gohighlevel/custom-conversa
 import { isGHLProviderPilotLocationAuthorized } from "../gohighlevel/custom-provider-pilot-config";
 import { lookupGHLContactByPhone } from "../../../integrations/crm/gohighlevel/contacts/lookup";
 import { isMetaWhatsAppGHLInboundEnabled } from "./gohighlevel-inbound-config";
+import { isMetaConnectionEligible } from "./connection-eligibility";
 
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 export type MetaWhatsAppGHLInboundForwarder = (input: {
@@ -61,6 +62,9 @@ export const forwardMetaWhatsAppInboundToGHL: MetaWhatsAppGHLInboundForwarder = 
     GHL_OAUTH_CLIENT_ID: env.GHL_OAUTH_CLIENT_ID,
     GHL_OAUTH_CLIENT_SECRET: env.GHL_OAUTH_CLIENT_SECRET,
     GHL_OAUTH_REDIRECT_URI: env.GHL_OAUTH_REDIRECT_URI,
+    CORE_CREDENTIAL_ENCRYPTION_KEYS: env.CORE_CREDENTIAL_ENCRYPTION_KEYS,
+    CORE_CREDENTIAL_ACTIVE_KEY_VERSION: env.CORE_CREDENTIAL_ACTIVE_KEY_VERSION,
+    CORE_CREDENTIAL_LEGACY_READS_ENABLED: env.CORE_CREDENTIAL_LEGACY_READS_ENABLED,
   });
   const context = createIntegrationContext(tenant, "gohighlevel", runtime);
   try {
@@ -92,9 +96,13 @@ export async function processMetaWhatsAppInboundEvent(
     if (!record(value)) throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta event payload is unsupported.", retryable: false });
     const connection = typeof value.phoneNumberId === "string" ? await new MetaWhatsAppConnectionRepository(db).findActiveByPhoneNumberId(value.phoneNumberId) : null;
     if (!connection || connection.tenantId !== event.tenantId) throw new IntegrationEventProcessingError({ code: "TENANT_CONTEXT_INVALID", severity: "error", message: "Meta connection ownership is invalid.", retryable: false });
+    if (env && !await isMetaConnectionEligible(db, env, event.tenantId, connection.id)) throw new IntegrationEventProcessingError({ code: "TENANT_CONTEXT_INVALID", severity: "error", message: "Meta connection is not activated.", retryable: false });
     if (event.eventType === "messaging.meta_whatsapp.status") {
       if (typeof value.providerMessageId !== "string" || typeof value.status !== "string") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta status payload is unsupported.", retryable: false });
-      await reconcileMetaWhatsAppStatus(db, { tenantId: event.tenantId, connectionId: connection.id, providerMessageId: value.providerMessageId, status: value.status }); return;
+      const result = await reconcileMetaWhatsAppStatus(db, { tenantId: event.tenantId, connectionId: connection.id, providerMessageId: value.providerMessageId, status: value.status });
+      if (result === "temporarily_unmatched") throw new IntegrationEventProcessingError({ code: "PROVIDER_TRANSIENT", severity: "error", message: "Meta delivery status is awaiting its outbound delivery.", retryable: true });
+      if (result === "invalid") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta status payload is unsupported.", retryable: false });
+      return;
     }
     if (event.eventType !== "messaging.meta_whatsapp.inbound" || value.provider !== "meta_whatsapp" || typeof value.contactId !== "string" || typeof value.providerMessageId !== "string" || typeof value.text !== "string" || typeof value.occurredAt !== "string") throw new IntegrationEventProcessingError({ code: "INVALID_EVENT", severity: "error", message: "Meta event payload is unsupported.", retryable: false });
     await new MessagingConversationRepository(db).upsertInbound({

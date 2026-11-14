@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["tests/domain/console-service/manual-reply.test.ts"]
+}

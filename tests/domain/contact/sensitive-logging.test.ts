@@ -4,6 +4,7 @@ import { Hono } from "hono";
 
 import type { RequestContext } from "../../../src/context";
 import type { AppBindings, AppVariables } from "../../../src/config/app";
+import { ContactFields } from "../../../src/canonical/contact/fields";
 import { ApiError } from "../../../src/core/errors/ApiError";
 
 type LogCapture<T> = { result: T; output: string };
@@ -306,6 +307,47 @@ test("GHL contact upsert diagnostics omit request and response payloads", async 
   });
 });
 
+test("GHL contact note diagnostics omit contact, user, note identifiers, and note content", async () => {
+  await withDebugLogging(async () => {
+    const { goHighLevelAdapter } = await import("../../../src/integrations/crm/gohighlevel/adapter");
+    const originalFetch = globalThis.fetch;
+    const contactId = "PRIVATE_CONTACT_ID_SENTINEL";
+    const userId = "PRIVATE_GHL_USER_ID_SENTINEL";
+    const noteId = "PRIVATE_NOTE_ID_SENTINEL";
+    const noteBody = "PRIVATE_CONTACT_NOTE_CONTENT_SENTINEL";
+    const context = makeContext();
+    context.tenant.integrations.crm.configuration!.providerConfiguration = { userId };
+
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/contacts/upsert")) {
+        return Response.json({ contact: { id: contactId, firstName: "Synthetic" } });
+      }
+      if (url.includes(`/contacts/${contactId}/notes`)) {
+        if (init?.method === "POST") {
+          return Response.json({ note: { id: noteId } });
+        }
+        return Response.json({ notes: [] });
+      }
+      throw new Error("Unexpected synthetic GHL request.");
+    };
+
+    try {
+      const { output } = await captureLogs(() => goHighLevelAdapter.upsertContact(
+        context,
+        { firstName: "Synthetic", email: "private@example.invalid", notes: noteBody },
+      ));
+
+      assert.match(output, /existingNotesCount/);
+      for (const privateValue of [contactId, userId, noteId, noteBody, "private@example.invalid"]) {
+        assert.equal(output.includes(privateValue), false, `Unexpected log value: ${privateValue}`);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test("GHL contact event sync logs omit event values on success and failure", async () => {
   await withDebugLogging(async () => {
     const { goHighLevelAdapter } = await import("../../../src/integrations/crm/gohighlevel/adapter");
@@ -369,4 +411,463 @@ test("GHL contact event sync logs omit event values on success and failure", asy
       globalThis.fetch = originalFetch;
     }
   });
+});
+
+test("dated snapshots preserve multiline HTML and reject ambiguous or incomplete entries", async () => {
+  const { parseContactEventSnapshot: parse } = await import("../../../src/domain/contact/event-parser");
+  assert.deepEqual(parse("<p>29/09/26 - First entry<br>continued</p><p>30/09/2026 - Second &amp; final</p>"), {
+    kind: "complete",
+    events: [
+      { date: "2026-09-29", type: "First entry\ncontinued" },
+      { date: "2026-09-30", type: "Second & final" },
+    ],
+  });
+  assert.equal(parse(undefined).kind, "omitted");
+  assert.equal(parse("<p>&nbsp;</p>").kind, "blank");
+  assert.equal(parse("Plain note").kind, "undated");
+  for (const notes of [
+    "31/02/26 - invalid",
+    "29/09/26 - valid 31/02/26 - invalid",
+    "29/09/26 - valid\n30/09/26",
+    "29/09/26 - valid\n30/09 - missing year",
+    "29/09/26 - valid\n2026-09-30 - unsupported",
+    "29/09/26 - valid\n30/09/26: missing separator",
+    "29/09/26 - valid\n30/09/26 - ",
+    "Unstructured preface\n29/09/26 - dated",
+  ]) assert.deepEqual(parse(notes), { kind: "malformed" }, notes);
+});
+
+test("contact routes share native notes and replace events only for complete snapshots", async () => {
+  const { createContactController, updateContactController } = await import("../../../src/domain/contact/controller");
+  const { handleError } = await import("../../../src/bootstrap/error");
+  const context = makeContext();
+  const configuration = {
+    userId: "author-fixture",
+    contactEvents: {
+      schemaKey: "custom_event",
+      primaryDisplayFieldKey: "custom_event.name",
+      dateFieldKey: "custom_event.event_date",
+      typeFieldKey: "custom_event.event_type",
+      associationId: "association-fixture",
+      firstObjectKey: "custom_event",
+      secondObjectKey: "contact",
+    },
+  };
+  context.tenant.integrations.crm.configuration!.providerConfiguration = configuration;
+  const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
+  app.use("*", async (c, next) => { c.set("context", context); await next(); });
+  app.onError(handleError);
+  app.post("/contacts", createContactController);
+  app.put("/contacts", updateContactController);
+
+  const calls: string[] = [];
+  const bodies: string[] = [];
+  let managed = false;
+  let failNoteAfterWrite = false;
+  let failEvents = false;
+  let incompleteRelations = false;
+  let waitForList: Promise<void> | undefined;
+  let listStarted: (() => void) | undefined;
+  const relations = [{ firstRecordId: "old-event", secondRecordId: "contact-fixture" }];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(String(input));
+    const method = init?.method ?? "GET";
+    calls.push(`${method} ${pathname}`);
+    if (init?.body) bodies.push(String(init.body));
+    if (pathname === "/contacts/upsert" || pathname === "/contacts/contact-fixture") {
+      return Response.json({ contact: { id: "contact-fixture" } });
+    }
+    if (pathname === "/contacts/contact-fixture/notes" && method === "GET") {
+      listStarted?.();
+      await waitForList;
+      return Response.json({ notes: [
+        { id: "unrelated", title: "Manual note" },
+        ...(managed ? [{ id: "managed", title: "FusionLab360 Contact Notes" }] : []),
+      ] });
+    }
+    if (pathname === "/contacts/contact-fixture/notes" && method === "POST") {
+      managed = true;
+      return failNoteAfterWrite
+        ? Response.json({ message: "private provider detail" }, { status: 503 })
+        : Response.json({ note: { id: "managed" } });
+    }
+    if (pathname === "/contacts/contact-fixture/notes/managed" && method === "PUT") {
+      return Response.json({ note: { id: "managed" } });
+    }
+    if (pathname === "/associations/relations/contact-fixture") {
+      if (failEvents) return Response.json({ message: "private event detail" }, { status: 503 });
+      return Response.json({ relations, total: relations.length + Number(incompleteRelations) });
+    }
+    if (pathname === "/objects/custom_event/records/old-event" && method === "GET") {
+      return Response.json({ record: { properties: { event_date: "2026-09-28", event_type: "Old entry" } } });
+    }
+    if (pathname === "/objects/custom_event/records/old-event" && method === "DELETE") {
+      relations.length = 0;
+      return Response.json({ success: true });
+    }
+    if (pathname === "/objects/custom_event/records" && method === "POST") {
+      return Response.json({ record: { id: "new-event" } });
+    }
+    if (pathname === "/associations/relations" && method === "POST") return Response.json({});
+    assert.fail(`Unexpected mock operation: ${method} ${pathname}`);
+  };
+  const request = async (method: "POST" | "PUT", notes?: string) => app.request("/contacts", {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...(method === "PUT" ? { id: "contact-fixture" } : { email: "synthetic@example.invalid" }),
+      firstName: "Synthetic",
+      notes,
+    }),
+  });
+  try {
+    for (const notes of [undefined, "    ", "<p>&nbsp;</p>", "Plain note", "29/09/26 - valid 31/02/26 - invalid"]) {
+      assert.equal((await request("PUT", notes)).status, 200);
+      assert.equal(relations.length, 1);
+    }
+    assert.ok(calls.every((call) => !call.includes("/associations") && !call.includes("/objects")));
+    assert.equal(calls.filter((call) => call === "POST /contacts/contact-fixture/notes").length, 1);
+    assert.equal(calls.filter((call) => call === "PUT /contacts/contact-fixture/notes/managed").length, 1);
+    assert.ok(!calls.some((call) => call.includes("/unrelated")));
+
+    const raw = "  <p>29/09/26 - New entry<br>continuation</p><p>29/09/2026 - New entry<br>continuation</p>  ";
+    incompleteRelations = true;
+    assert.equal((await request("PUT", raw)).status, 200);
+    assert.equal(relations.length, 1);
+    incompleteRelations = false;
+    assert.equal((await request("POST", raw)).status, 200);
+    assert.equal(relations.length, 0);
+    assert.ok(bodies.some((body) => JSON.parse(body).body === raw));
+    assert.equal(calls.filter((call) => call === "POST /objects/custom_event/records").length, 1);
+
+    configuration.userId = "";
+    const before = calls.length;
+    const { result: missingAuthor, output: missingAuthorLog } = await captureLogs(() => request("PUT", "Private fixture text"));
+    assert.equal(missingAuthor.status, 500);
+    assert.deepEqual(calls.slice(before), ["PUT /contacts/contact-fixture"]);
+    assert.match(missingAuthorLog, /validate_author/);
+    assert.match(missingAuthorLog, /partial_success/);
+    assert.doesNotMatch(missingAuthorLog, /Private fixture text/);
+    configuration.userId = "author-fixture";
+
+    managed = false;
+    failNoteAfterWrite = true;
+    const { result: failedNote, output: noteLog } = await captureLogs(() => request("PUT", "Retry fixture"));
+    assert.equal(failedNote.status, 503);
+    assert.match(noteLog, /partial_success/);
+    assert.doesNotMatch(noteLog, /private provider detail/);
+    assert.equal((await request("PUT", "Retry fixture")).status, 200);
+    assert.equal(calls.filter((call) => call === "POST /contacts/contact-fixture/notes").length, 2);
+
+    failEvents = true;
+    const { result: failedEvent, output: eventLog } = await captureLogs(() => request("PUT", raw));
+    assert.equal(failedEvent.status, 200);
+    assert.match(eventLog, /partial_success/);
+    assert.doesNotMatch(eventLog, /private event detail/);
+    assert.ok(!calls.some((call) => call.includes("/unrelated")));
+
+    let release!: () => void;
+    waitForList = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { listStarted = resolve; });
+    const first = request("PUT", "Concurrent fixture");
+    try {
+      await started;
+      assert.equal((await request("PUT", "Concurrent fixture")).status, 409);
+    } finally {
+      release();
+      await first;
+    }
+    assert.equal((await first).status, 200);
+
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("contact route honors tenant credentials and stops before GHL for a disabled integration", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { hashApiKey } = await import("../../../src/core/security/api-key");
+  const { createApplication } = await import("../../../src/bootstrap/routes");
+  const database = new DatabaseSync(":memory:");
+  for (const file of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()) {
+    database.exec(readFileSync(`migrations/${file}`, "utf8"));
+  }
+  try {
+    for (const tenant of ["a", "b"]) {
+      database.prepare("INSERT INTO tenants(id,name,status) VALUES (?,?,'active')").run(tenant, tenant);
+      database.prepare("INSERT INTO integrations(id,tenant_id,provider,enabled) VALUES (?,?,'gohighlevel',?)")
+        .run(`ghl-${tenant}`, tenant, Number(tenant === "a"));
+      database.prepare("INSERT INTO integration_credentials(tenant_id,provider,auth_type,api_key,location_id) VALUES (?,'gohighlevel','api_key',?,?)")
+        .run(tenant, `synthetic-provider-${tenant}`, `location-${tenant}`);
+      database.prepare("INSERT INTO clients(id,tenant_id,name,api_key_hash,status,permissions) VALUES (?,?,?,?,'active',?)")
+        .run(`client-${tenant}`, tenant, tenant, await hashApiKey(`fl360_contact_fixture_${tenant}`), '["contacts:update"]');
+    }
+    const DB = {
+      prepare(sql: string) {
+        return {
+          bind(...values: import("node:sqlite").SQLInputValue[]) {
+            const statement = database.prepare(sql);
+            return {
+              first: async () => statement.get(...values) ?? null,
+              all: async () => ({ results: statement.all(...values) }),
+            };
+          },
+        };
+      },
+    } as unknown as AppBindings["DB"];
+    const app = createApplication("production");
+    const originalFetch = globalThis.fetch;
+    let providerCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      providerCalls++;
+      assert.equal(new URL(String(input)).pathname, "/contacts/foreign-contact");
+      assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer synthetic-provider-a");
+      return Response.json({ message: "Synthetic foreign contact missing" }, { status: 404 });
+    };
+    const request = (tenant: string) => app.request("/contacts", {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer fl360_contact_fixture_${tenant}` },
+      body: JSON.stringify({ id: "foreign-contact", tenantId: "b", notes: "Fixture note" }),
+    }, {
+      DB, APP_ENVIRONMENT: "production", CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
+      JWT_SECRET: "synthetic-contact-secret", JWT_ISSUER: "fixture", JWT_AUDIENCE: "fixture",
+    } as AppBindings);
+    try {
+      const response = await request("a");
+      assert.equal(response.status, 404, await response.text());
+      assert.equal(providerCalls, 1);
+      assert.equal((await request("b")).status, 500);
+      assert.equal(providerCalls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    database.close();
+  }
+});
+test("clinic POST reconciles only owned associated events, acknowledges partial writes, and clears explicitly", async () => {
+  const { default: contactRoutes } = await import("../../../src/domain/contact/routes");
+  const { handleError } = await import("../../../src/bootstrap/error");
+  const context = makeContext();
+  context.tenant.id = "poliklinikshaik_kotakemuning";
+  context.tenant.integrations.crm.credentials.locationId = "02rWYa7aXxxJpMn1z9lN";
+  context.client.id = "approved-cli";
+  context.client.tenantId = context.tenant.id;
+  context.client.permissions = ["contacts:create"];
+  context.tenant.integrations.crm.configuration!.providerConfiguration = {
+    userId: "author-test",
+    clinicContactSync: {
+      locationId: "02rWYa7aXxxJpMn1z9lN", managedOwnerFieldKey: "custom_event.managed_owner",
+    },
+    contactEvents: {
+      schemaKey: "custom_event", primaryDisplayFieldKey: "custom_event.name",
+      dateFieldKey: "custom_event.event_date", typeFieldKey: "custom_event.event_type",
+      associationId: "association-test", firstObjectKey: "custom_event", secondObjectKey: "contact",
+    },
+  };
+  context.tenant.integrations.crm.configuration!.attributeMappings = [{
+    canonicalKey: ContactFields.IdentityNumber, providerFieldId: "identity-field",
+  }];
+  const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
+  app.use("*", async (c, next) => {
+    if (c.req.header("Authorization")) {
+      c.set("context", context);
+      c.set("principal", { type: "client", clientId: context.client.id, tenantId: context.client.tenantId,
+        permissions: context.client.permissions });
+    }
+    await next();
+  });
+  app.onError(handleError);
+  app.route("/contacts", contactRoutes);
+  const env = {} as AppBindings;
+  const records = new Map<string, Record<string, unknown>>([
+    ["unmanaged", { event_date: "2026-11-17", event_type: "External event" }],
+    ["other-owner", { managed_owner: "other-contact", event_date: "2026-11-17", event_type: "External event" }],
+  ]);
+  const linked = new Set(records.keys());
+  let providerLocation = "02rWYa7aXxxJpMn1z9lN";
+  let existingContact = true;
+  let providerPhone = "+60111111111";
+  let noteBody: string | undefined;
+  let noteCreates = 0;
+  let noteUpdates = 0;
+  let recordCreates = 0;
+  let failNotes = false;
+  let incomplete = false;
+  let failEvents = false;
+  let writes = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const data = init?.body ? JSON.parse(String(init.body)) : {};
+    if (method !== "GET") writes++;
+    if (pathname === "/contacts/upsert" && method === "POST") {
+      assert.equal(data.locationId, "02rWYa7aXxxJpMn1z9lN");
+      return Response.json({ contact: { id: "contact-test" } });
+    }
+    if (pathname === "/contacts/lookup" && method === "GET") {
+      return Response.json({ contacts: existingContact ? [{ id: "contact-test", locationId: "02rWYa7aXxxJpMn1z9lN" }] : [] });
+    }
+    if (pathname === "/contacts/contact-test" && method === "GET") {
+      return Response.json({ contact: { id: "contact-test", locationId: providerLocation, phone: providerPhone, customFields: [{ id: "identity-field", value: "synthetic-id" }] } });
+    }
+    if (pathname === "/contacts/contact-test/notes" && method === "GET") {
+      return Response.json({ notes: [{ id: "manual", title: "Manual note" },
+        ...(noteBody === undefined ? [] : [{ id: "managed", title: "FusionLab360 Contact Notes", body: noteBody }])] });
+    }
+    if (pathname === "/contacts/contact-test/notes" && method === "POST") {
+      if (failNotes) return Response.json({}, { status: 503 });
+      noteBody = data.body;
+      noteCreates++;
+      return Response.json({ note: { id: "managed" } });
+    }
+    if (pathname === "/contacts/contact-test/notes/managed" && method === "PUT") {
+      noteBody = data.body;
+      noteUpdates++;
+      return Response.json({ note: { id: "managed" } });
+    }
+    if (pathname === "/associations/relations/contact-test" && method === "GET") {
+      if (failEvents) return Response.json({ hidden: "redacted upstream fixture" }, { status: 503 });
+      return Response.json({
+        total: linked.size + Number(incomplete),
+        relations: [...linked].map((id) => ({
+          id: "relation-" + id, firstRecordId: id, secondRecordId: "contact-test", locationId: "02rWYa7aXxxJpMn1z9lN",
+          firstObjectKey: "custom_event", secondObjectKey: "contact", associationId: "association-test",
+        })),
+      });
+    }
+    if (pathname === "/associations/relations" && method === "POST") {
+      assert.equal(data.secondRecordId, "contact-test");
+      linked.add(data.firstRecordId);
+      return Response.json({});
+    }
+    const prefix = "/objects/custom_event/records";
+    if (pathname === prefix && method === "POST") {
+      const id = "record-" + ++recordCreates;
+      records.set(id, data.properties);
+      return Response.json({ record: { id } });
+    }
+    if (pathname.startsWith(prefix + "/")) {
+      const id = pathname.slice(prefix.length + 1);
+      if (method === "GET") return Response.json({ record: { id, properties: records.get(id) } });
+      if (method === "DELETE") {
+        assert.match(id, /^record-/);
+        records.delete(id);
+        linked.delete(id);
+        return Response.json({});
+      }
+    }
+    assert.fail("Unexpected provider operation " + method + " " + pathname);
+  };
+  const request = (notes?: string, mode?: string, capturedAt = Date.now()) => app.request("/contacts", {
+    method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer synthetic" },
+    body: JSON.stringify({ firstName: "Synthetic", phone: "+60111111111", source: "avixo-clinic",
+      notes, clinicNotesSync: mode, clinicNotesCapturedAt: capturedAt,
+      ...(mode === "clear" ? { identityNumber: "synthetic-id" } : {}) }),
+  }, env);
+  const html = "<p>15/11/26 - Follow-up consultation</p><div>20/11/26 - Wound dressing<br>Continue</div>" +
+    "<p>30/11/2026 - Diabetes review</p><p>30/11/26 - Diabetes review</p>";
+  const ids = () => [...records.keys()].filter((id) => id.startsWith("record-"));
+  try {
+    const capability = (authorization?: string, bindings = env) => app.request(
+      "/contacts/clinic-sync-capability", { headers: authorization ? { Authorization: authorization } : {} }, bindings,
+    );
+    assert.equal((await capability()).status, 401);
+    context.client.permissions = [];
+    assert.equal((await capability("Bearer synthetic")).status, 403);
+    context.client.permissions = ["contacts:create"];
+    assert.deepEqual(await (await capability("Bearer synthetic")).json(), { clinicNotesSync: 2 });
+    const createOnlyWrites = writes;
+    assert.equal((await request(html, "replace")).status, 403,
+      "destructive event snapshot needs the existing contacts:delete permission");
+    assert.equal((await request("", "clear")).status, 403,
+      "explicit event clearing also needs the existing contacts:delete permission");
+    assert.equal(writes, createOnlyWrites, "permission denial must precede provider writes");
+    context.client.permissions = ["contacts:create", "contacts:delete"];
+    context.client.id = "another-authenticated-tenant-client";
+    assert.deepEqual(await (await capability("Bearer synthetic")).json(), { clinicNotesSync: 2 },
+      "clinic authorization is tenant-scoped, not pinned to a Worker client-ID allowlist");
+    context.client.id = "approved-cli";
+    context.client.tenantId = "other-tenant";
+    assert.equal((await request(html, "replace")).status, 401);
+    context.client.tenantId = context.tenant.id;
+    assert.equal((await request(undefined, "clear")).status, 400);
+    assert.equal((await request("15/11/26 - One20/11/26 - Two", "replace")).status, 400);
+    assert.equal((await request("31/02/26 - Invalid", "replace")).status, 400);
+    assert.equal((await request(html, "replace", Date.now() - 600_000)).status, 409);
+    assert.equal(writes, 0);
+
+    providerLocation = "other-location";
+    assert.equal((await request(html, "replace")).status, 409);
+    providerLocation = "02rWYa7aXxxJpMn1z9lN";
+    providerPhone = "+60122222222";
+    assert.equal((await request(html, "replace")).status, 409);
+    providerPhone = "+60111111111";
+    assert.equal(writes, 0, "wrong-contact requests must not write");
+    assert.equal(noteCreates, 0);
+    assert.equal(recordCreates, 0);
+
+    failNotes = true;
+    const noteFailure = await request(html, "replace");
+    assert.deepEqual((await noteFailure.json<{ synchronization: unknown }>()).synchronization, {
+      contactSaved: true, nativeNote: "failed", contactEvents: "skipped", status: "partial_failure", retryable: true,
+    });
+    failNotes = false;
+    failEvents = true;
+    const eventFailure = await request(html, "replace");
+    const errorBody = await eventFailure.text();
+    assert.doesNotMatch(errorBody, /redacted upstream fixture/);
+    assert.deepEqual(JSON.parse(errorBody).synchronization, {
+      contactSaved: true, nativeNote: "synchronized", contactEvents: "failed", status: "partial_failure", retryable: true,
+    });
+    failEvents = false;
+    incomplete = true;
+    assert.equal((await (await request(html, "replace")).json<{ synchronization: { contactEvents: string } }>()).synchronization.contactEvents, "failed");
+    assert.equal(recordCreates, 0);
+    incomplete = false;
+
+    assert.equal((await (await request(html, "replace")).json<{ synchronization: { status: string } }>()).synchronization.status, "synchronized");
+    const initialIds = ids();
+    assert.deepEqual(initialIds.map((id) => records.get(id)?.event_date), ["2026-11-15", "2026-11-20", "2026-11-30"]);
+    assert.deepEqual(initialIds.map((id) => records.get(id)?.event_type), [
+      "Follow-up consultation", "Wound dressing\nContinue", "Diabetes review",
+    ]);
+    assert.ok(initialIds.every((id) => linked.has(id)));
+    assert.equal(noteBody, html);
+    assert.equal(noteCreates, 1);
+    assert.equal(noteUpdates, 0);
+    await request(html, "replace");
+    assert.deepEqual(ids(), initialIds);
+    assert.equal(recordCreates, 3);
+    assert.equal(noteUpdates, 0);
+
+    await request("15/11/26 - Follow-up consultation\n21/11/26 - Wound dressing", "replace");
+    assert.deepEqual(ids(), [initialIds[0], "record-4"]);
+    assert.equal(records.get("record-4")?.event_date, "2026-11-21");
+    await request("Undated prose from 20/11/26.", "note_only");
+    await request(undefined);
+    assert.deepEqual(ids(), [initialIds[0], "record-4"]);
+    existingContact = false;
+    assert.equal((await request("", "clear")).status, 404);
+    existingContact = true;
+    const latest = Date.now();
+    await request("15/11/26 - Follow-up consultation", "replace", latest);
+    assert.deepEqual(ids(), [initialIds[0]]);
+    assert.equal((await request(html, "replace", latest - 1)).status, 409);
+    assert.deepEqual(ids(), [initialIds[0]]);
+    const writeCount = writes;
+    const clear = await request("", "clear");
+    assert.deepEqual((await clear.json<{ synchronization: unknown }>()).synchronization, {
+      contactSaved: true, nativeNote: "skipped", contactEvents: "synchronized", status: "synchronized", retryable: false,
+    });
+    assert.deepEqual([...records.keys()], ["unmanaged", "other-owner"]);
+    assert.equal(writes - writeCount, 1, "clearing must only delete the final managed event");
+    assert.equal(noteBody, "15/11/26 - Follow-up consultation");
+    assert.equal(noteCreates, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
