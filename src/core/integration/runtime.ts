@@ -1,3 +1,5 @@
+import type { RequestDiagnostics } from "../logger/diagnostics";
+
 /*
  * --------------------------------------------------
  * Integration Runtime
@@ -123,6 +125,7 @@ export interface IntegrationCredentialResolver {
  */
 
 export interface IntegrationRuntime {
+  diagnostics?: RequestDiagnostics;
 
   credentials:
     IntegrationCredentialResolver;

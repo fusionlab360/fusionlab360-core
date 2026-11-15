@@ -20,13 +20,22 @@ function log(level: LogLevel, prefix: string, ...args: unknown[]) {
 
   const timestamp = new Date().toISOString();
 
-  console.log(
-    `[${timestamp}] ${prefix}`,
-    ...args
-  );
+  try {
+    console.log(`[${timestamp}] ${prefix}`, ...args);
+  } catch {
+    // Preserve the caller outcome if the log sink fails.
+  }
 }
 
 export const logger = {
+  diagnostic: (record: Record<string, unknown>) => {
+    try {
+      console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...record }));
+    } catch {
+      // A broken log sink must never change the request outcome.
+    }
+  },
+
   debug: (...args: unknown[]) =>
     log(LogLevel.DEBUG, "[DEBUG]", ...args),
 

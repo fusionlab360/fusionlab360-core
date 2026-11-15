@@ -30,6 +30,8 @@ export const authMiddleware =
       c,
       next,
     ) => {
+      const diagnostics = c.get("diagnostics");
+      diagnostics?.emit("auth", "started");
       let stage = "read_authorization";
 
       try {
@@ -71,7 +73,11 @@ export const authMiddleware =
           throw new Error("Authenticated principal does not match its client.");
         }
 
+        diagnostics?.emit("auth", "succeeded", undefined, {
+          authenticationType: credential.startsWith("fl360_") ? "api_key" : "jwt",
+        });
         stage = "resolve_tenant";
+        diagnostics?.emit("tenant", "started");
 
         const tenant =
           await resolveTenant(
@@ -79,6 +85,7 @@ export const authMiddleware =
             authenticatedClient.tenantId,
           );
 
+        diagnostics?.emit("tenant", "succeeded");
         stage = "create_integration_runtime";
 
         const integrationRuntime =
@@ -86,6 +93,7 @@ export const authMiddleware =
             tenant.integrations.crm.provider,
             {
               DB: c.env.DB,
+              diagnostics,
 
               GHL_OAUTH_CLIENT_ID:
                 c.env.GHL_OAUTH_CLIENT_ID,
@@ -114,21 +122,17 @@ export const authMiddleware =
             authenticatedClient,
             tenant,
             integrationRuntime,
+            diagnostics?.correlationId,
           );
 
         c.set("context", context);
         c.set("principal", authentication.principal);
       } catch (error: unknown) {
-        console.error(
-          "Authentication middleware failed.",
-          {
-            stage,
-            errorName:
-              error instanceof Error
-                ? error.name
-                : "UnknownError",
-          },
-        );
+        if (stage === "resolve_tenant") {
+          diagnostics?.emit("tenant", "failed", "TENANT_RESOLUTION_FAILED");
+        } else if (!["create_integration_runtime", "create_request_context"].includes(stage)) {
+          diagnostics?.emit("auth", "failed", "AUTH_FAILURE");
+        }
 
         if ([
           "read_authorization",

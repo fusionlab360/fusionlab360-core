@@ -24,6 +24,7 @@ export function createRequestContext(
 
   integrationRuntime:
     IntegrationRuntime,
+  requestId = crypto.randomUUID(),
 ): RequestContext {
 
   return {
@@ -31,8 +32,7 @@ export function createRequestContext(
 
     tenant,
 
-    requestId:
-      crypto.randomUUID(),
+    requestId,
 
     receivedAt:
       new Date(),
