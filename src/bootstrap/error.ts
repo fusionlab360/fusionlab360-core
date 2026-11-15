@@ -14,7 +14,11 @@ function safeApiErrorMessage(status: number): string {
   return "Request could not be completed.";
 }
 
-export function handleError(error: unknown, requestContext?: unknown): Response {
+export function handleError(
+  error: unknown,
+  requestContext?: unknown,
+  hasStructuredErrorLog = false,
+): Response {
   const requestCorrelationId = typeof requestContext === "string" ? requestContext : undefined;
   if (error instanceof HTTPException) {
     return error.getResponse();
@@ -31,7 +35,7 @@ export function handleError(error: unknown, requestContext?: unknown): Response 
 
     // ApiError.details and message may contain provider payloads, credentials,
     // or customer data. Only the fixed allowlist is logged and returned.
-    if (!requestCorrelationId) logger.error("API error", { status, code, correlationId });
+    if (!hasStructuredErrorLog) logger.error("API error", { status, code, correlationId });
 
     return Response.json(
       {
@@ -50,7 +54,7 @@ export function handleError(error: unknown, requestContext?: unknown): Response 
   if (error instanceof Error) {
   // Avoid returning or logging raw provider error messages.
   // They may contain sensitive request details or credentials.
-  if (!requestCorrelationId) logger.error("Unhandled application error");
+  if (!hasStructuredErrorLog) logger.error("Unhandled application error", { correlationId: requestCorrelationId });
 
   return Response.json(
     {
@@ -63,7 +67,7 @@ export function handleError(error: unknown, requestContext?: unknown): Response 
   );
 }
 
-  if (!requestCorrelationId) logger.error("Unknown application error");
+  if (!hasStructuredErrorLog) logger.error("Unknown application error", { correlationId: requestCorrelationId });
 
   return Response.json(
     {

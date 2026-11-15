@@ -312,7 +312,11 @@ app.use("*", async (c, next) => {
  * Global error handler
  */
 app.onError(
-  (err, c) => handleError(err, c.get("diagnostics")?.correlationId),
+  (err, c) => {
+    const diagnostics = c.get("diagnostics");
+    const hasStructuredErrorLog = diagnostics !== undefined && c.env?.CORE_DIAGNOSTICS_LEVEL !== "OFF";
+    return handleError(err, diagnostics?.correlationId, hasStructuredErrorLog);
+  },
 );
 
 /**

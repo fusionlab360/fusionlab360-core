@@ -105,3 +105,50 @@ test("invalid diagnostic metadata is omitted", async (t) => {
   assert.match(record.correlationId, /^[a-f0-9-]{36}$/);
   assert.doesNotMatch(lines.join("\n"), /private-/);
 });
+
+test("HTTP errors in OFF mode retain one sanitized legacy signal", async (t) => {
+  const lines: unknown[][] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => lines.push(args));
+  const app = createApp();
+  app.get("/generic-error", () => { throw new Error("private-exception"); });
+  app.get("/api-error", () => { throw new ApiError(403, "private-credential"); });
+
+  const generic = await app.request("/generic-error", {}, environment("OFF"));
+  assert.equal(generic.status, 500);
+  assert.deepEqual(await generic.json(), { success: false, message: "Internal Server Error" });
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0]?.[1], "Unhandled application error");
+  assert.doesNotMatch(JSON.stringify(lines), /private-/);
+
+  lines.length = 0;
+  const denied = await app.request("/api-error", {}, environment("OFF"));
+  const correlationId = denied.headers.get("X-Correlation-ID");
+  assert.ok(correlationId);
+  assert.equal(denied.status, 403);
+  assert.deepEqual(await denied.json(), { success: false, message: "Access denied.", code: "API_ERROR", correlationId });
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0]?.[1], "API error");
+  assert.deepEqual(lines[0]?.[2], { status: 403, code: "API_ERROR", correlationId });
+  assert.doesNotMatch(JSON.stringify(lines), /private-/);
+});
+
+test("default mode emits one structured completion for an unhandled error", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
+  const app = createApp();
+  app.get("/error", () => { throw new Error("private-exception"); });
+  const response = await app.request("/error", {}, environment());
+  assert.equal(response.status, 500);
+  assert.equal(lines.length, 1);
+  assert.equal(JSON.parse(lines[0]!).event, "http.complete");
+  assert.doesNotMatch(lines.join("\n"), /private-/);
+});
+
+test("a throwing fallback log sink preserves the OFF error response", async (t) => {
+  t.mock.method(console, "log", () => { throw new Error("sink disconnected"); });
+  const app = createApp();
+  app.get("/error", () => { throw new Error("private-exception"); });
+  const response = await app.request("/error", {}, environment("OFF"));
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { success: false, message: "Internal Server Error" });
+});
