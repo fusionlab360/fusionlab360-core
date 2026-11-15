@@ -423,3 +423,17 @@ The priority order is:
 - Never generate a replacement key automatically or overwrite a keyring without approved migration and recovery. Keep previous versions while live data or backups depend on them. Keep Core and Meta domains separate. Use KeePass for the Core recovery copy and Worker Secrets for runtime custody. Never print key material, tokens or raw provider payloads.
 - Document actual GHL refresh triggers, expiry threshold, token rotation and encrypted persistence. An expired access token does not imply a rejected refresh token. Do not automatically reauthorize tenants or migrate credentials.
 - For cipher errors, identify legacy policy, missing binding, unknown version or authenticated decryption failure before acting. For OAuth expiry, rejection and persistence failures, separate read, provider and write stages and avoid blind retries after rotation. For tenant, contact or event failures, verify scope and the last completed stage before any repair. Follow the [credential operations runbook](docs/operations/GHL_CREDENTIAL_OPERATIONS.md) for checks and corrective actions.
+
+## 18. Tenant Feature Management
+
+The typed registry is `src/domain/features/tenant-feature-service.ts`. The defaults are enabled for `ai_chat`, `ai_booking`, and `booking_appointment`, and disabled for `booking_accommodation`. Overrides are tenant-scoped in `tenant_feature_settings`, keyed by `(tenant_id, feature_key)`. Missing overrides use registry defaults.
+
+`GET /features` requires `features:read`. `PATCH /features/:featureKey` requires `features:write` and accepts only registered keys. Resolve the tenant from authenticated context. Never use client-supplied tenant identity as authorization. There are no per-feature scopes, so `features:write` permits changes to all registered keys within the authorized tenant.
+
+Check the tenant feature at the service boundary before the protected operation. Independently enforce operation permissions, tenant isolation, integration enablement, provider credentials and ownership, and Worker safety gates. A tenant setting cannot override a disabled Worker gate or authorize an integration.
+
+- `ai_chat` controls automatic AI chat behavior. The Console `ai-auto-reply` control is a compatibility alias for `ai_chat`. Historical `ai_auto_reply` is not a registered feature. Keep one source of truth.
+- `ai_booking` controls eligibility for AI-assisted booking. It also requires the Worker `AI_BOOKING_ENABLED` gate and applicable workflow conditions. Disabling AI booking leaves independently authorized direct booking available when its booking type is enabled. Cancellation of in-flight provider operations remains unverified.
+- `booking_appointment` and `booking_accommodation` control their respective booking types. Check the tenant setting, provider capability, and operation authorization independently.
+
+For new features, reuse existing controls where possible. Add the key to the typed registry with an explicit default and assess its effect on existing tenants. Enforce it at the service boundary, preserve tenant-scoped storage and provider and Worker gates, and test defaults, enabled and disabled behavior, tenant isolation, denied writes, and storage failures. Document new Console controls separately. Full API authorization coverage and feature-change actor auditing remain areas for improvement.
