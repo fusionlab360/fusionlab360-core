@@ -420,6 +420,22 @@ export async function ghlFetchAuthenticated<T>(
    * ------------------------------------------------
    */
 
+  const diagnostics = context.integrationRuntime.diagnostics;
+  async function send(...args: Parameters<typeof performGHLRequest<T>>) {
+    const start = performance.now();
+    try {
+      const result = await performGHLRequest<T>(...args);
+      diagnostics?.emit("ghl.provider", result.response.ok ? "succeeded" : "failed",
+        result.response.ok ? undefined : "PROVIDER_REQUEST_FAILED",
+        { status: result.response.status, durationMs: Math.round(performance.now() - start) });
+      return result;
+    } catch (error) {
+      diagnostics?.emit("ghl.provider", "failed", "PROVIDER_REQUEST_FAILED",
+        { durationMs: Math.round(performance.now() - start) });
+      throw error;
+    }
+  }
+
   let credential = await credentialResolver.resolve(credentialRequest);
 
 
@@ -433,7 +449,7 @@ export async function ghlFetchAuthenticated<T>(
     response,
     body,
   } =
-    await performGHLRequest<T>(
+    await send(
       fetcher,
       credential.accessToken,
       endpoint,
@@ -482,7 +498,7 @@ export async function ghlFetchAuthenticated<T>(
       response,
       body,
     } =
-      await performGHLRequest<T>(
+      await send(
         fetcher,
         credential.accessToken,
         endpoint,

@@ -18,7 +18,7 @@ export interface CredentialCipherConfiguration {
 }
 
 export class CredentialCipherError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly diagnosticCode?: "CREDENTIAL_LEGACY_READ_DISABLED" | "CREDENTIAL_KEYRING_MISSING" | "CREDENTIAL_DECRYPT_FAILED") {
     super(message);
     this.name = "CredentialCipherError";
   }

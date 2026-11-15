@@ -289,3 +289,46 @@ test("GHL credential writes fail closed when the encryption keyring is missing",
     db.close();
   }
 });
+
+test("expired legacy GHL refresh emits correlated stages and stores encrypted fields", async (t) => {
+  const { createDiagnostics } = await import("../../../src/core/logger/diagnostics");
+  const { createGHLIntegrationRuntime } = await import("../../../src/integrations/gohighlevel/credential-runtime");
+  const db = new SqliteD1Database();
+  t.after(() => db.close());
+  seedLocationCredential(db, "tenant-diagnostic", "location-diagnostic");
+  db.sqlite.exec("UPDATE integration_credentials SET access_token_expires_at = 1");
+  const diagnostics = createDiagnostics("DEBUG");
+  const records: string[] = [];
+  t.mock.method(console, "log", (line: string) => { if (line.startsWith("{")) records.push(line); });
+  const env = {
+    GHL_OAUTH_CLIENT_ID: "synthetic-client",
+    GHL_OAUTH_REDIRECT_URI: "https://example.invalid/callback",
+    GHL_OAUTH_CLIENT_SECRET: "private-fixture-secret",
+    CORE_CREDENTIAL_LEGACY_READS_ENABLED: "true",
+    CORE_CREDENTIAL_ACTIVE_KEY_VERSION: "synthetic-v1",
+    diagnostics,
+  };
+  const request = { tenantId: "tenant-diagnostic", provider: "gohighlevel" };
+  const fetchMock = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ access_token: "private-new-access", refresh_token: "private-new-refresh", expires_in: 3600 }));
+  await assert.rejects(createGHLIntegrationRuntime(db.binding(), env).credentials.resolve(request));
+  assert.ok(records.some((line) => line.includes('"event":"ghl.cipher"') && line.includes('"outcome":"failed"')));
+  const runtime = createGHLIntegrationRuntime(db.binding(), {
+    ...env, CORE_CREDENTIAL_ENCRYPTION_KEYS: JSON.stringify({ "synthetic-v1": testKey }),
+  });
+  fetchMock.mock.mockImplementationOnce(async () => new Response("private-provider-response", { status: 503 }));
+  await assert.rejects(runtime.credentials.resolve(request));
+  await runtime.credentials.resolve(request);
+  const row = db.sqlite.prepare("SELECT api_key, refresh_token FROM integration_credentials").get();
+  assert.match(String(row?.api_key), /^fl360enc:v1:/);
+  assert.match(String(row?.refresh_token), /^fl360enc:v1:/);
+  const events = records.map((line) => JSON.parse(line));
+  for (const [event, outcome] of [
+    ["ghl.credential.lookup", "succeeded"], ["ghl.credential.read", "legacy"],
+    ["ghl.expiry", "refresh_required"], ["ghl.refresh", "started"],
+    ["ghl.refresh", "succeeded"], ["ghl.persistence", "succeeded"],
+  ]) assert.ok(events.some((item) => item.event === event && item.outcome === outcome), event + outcome);
+  assert.ok(events.some((item) => item.event === "ghl.refresh" && item.code === "OAUTH_REFRESH_FAILED"));
+  assert.ok(events.every((item) => item.correlationId === diagnostics.correlationId));
+  assert.doesNotMatch(records.join("\n"), /private-|legacy-access-token|legacy-refresh-token|tenant-diagnostic/);
+});

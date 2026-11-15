@@ -95,12 +95,25 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
     }
     return c.json({ success: false, message: "Invalid webhook request body." }, 400);
   }
-  if (!await verifyMetaSignature(rawBody, c.req.header("X-Hub-Signature-256"), c.env.META_WHATSAPP_APP_SECRET)) return c.json({ success: false, message: "Invalid webhook signature." }, 401);
+  const diagnostics = c.get("diagnostics");
+  diagnostics?.emit("meta.webhook.signature", "started");
+  if (!await verifyMetaSignature(rawBody, c.req.header("X-Hub-Signature-256"), c.env.META_WHATSAPP_APP_SECRET)) {
+    diagnostics?.emit("meta.webhook.signature", "failed", "AUTH_FAILURE");
+    return c.json({ success: false, message: "Invalid webhook signature." }, 401);
+  }
+  diagnostics?.emit("meta.webhook.signature", "succeeded");
   let payload: unknown;
-  try { payload = JSON.parse(decodeUtf8Body(rawBody)); } catch { return c.json({ success: false, message: "Invalid webhook payload." }, 400); }
-  if (!payload || typeof payload !== "object" || (payload as MetaWebhookPayload).object !== "whatsapp_business_account") return c.json({ success: false, message: "Unsupported webhook payload." }, 400);
+  try { payload = JSON.parse(decodeUtf8Body(rawBody)); } catch {
+    diagnostics?.emit("meta.webhook.parse", "failed", "VALIDATION_FAILED");
+    return c.json({ success: false, message: "Invalid webhook payload." }, 400);
+  }
+  if (!payload || typeof payload !== "object" || (payload as MetaWebhookPayload).object !== "whatsapp_business_account") {
+    diagnostics?.emit("meta.webhook.parse", "failed", "VALIDATION_FAILED");
+    return c.json({ success: false, message: "Unsupported webhook payload." }, 400);
+  }
   const messages = parseMetaInboundText(payload as MetaWebhookPayload);
   const statuses = parseMetaStatusEvents(payload as MetaWebhookPayload);
+  diagnostics?.emit("meta.webhook.parse", "succeeded");
   const connections = new MetaWhatsAppConnectionRepository(c.env.DB);
   const eventRepository = new IntegrationEventRepository(c.env.DB);
   const events = new IntegrationEventService(eventRepository);
@@ -162,8 +175,11 @@ export async function metaWhatsAppWebhookController(c: Context<{ Bindings: AppBi
     accepted++;
   }
   } catch {
+    diagnostics?.emit("meta.webhook.dispatch", "failed", "INTERNAL_ERROR");
     return c.json({ success: false, message: "Meta webhook processing could not be persisted." }, 503);
   }
+  diagnostics?.emit("meta.webhook.dispatch", queuePublicationFailed ? "failed" : "succeeded",
+    queuePublicationFailed ? "QUEUE_OPERATION_FAILED" : undefined);
   if (queuePublicationFailed) {
     return c.json({ success: false, message: "Meta event queue publication could not be confirmed." }, 503);
   }

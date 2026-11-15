@@ -1,3 +1,5 @@
+import type { RequestDiagnostics } from "../../core/logger/diagnostics";
+import { CredentialCipherError } from "../../core/security/encrypted-credential";
 import {
   CredentialRepository,
 } from "../../persistence/repositories/credential-repository";
@@ -30,6 +32,7 @@ import {
  */
 
 export interface GHLRuntimeEnvironment extends CredentialKeyBindings {
+  diagnostics?: RequestDiagnostics;
 
   GHL_OAUTH_CLIENT_ID:
     string;
@@ -372,10 +375,20 @@ export class GHLIntegrationCredentialResolver
     ResolvedIntegrationCredential
   > {
 
+    const diagnostics = this.env.diagnostics;
+    let storage: ReturnType<typeof createCredentialStorageConfiguration>;
+    try {
+      storage = createCredentialStorageConfiguration(this.env);
+    } catch (error) {
+      diagnostics?.emit("ghl.cipher", "failed", "INTERNAL_ERROR");
+      throw error;
+    }
+    diagnostics?.emit("ghl.cipher", storage.cipher ? "available" : "absent");
     const repository =
       new CredentialRepository(
         this.db,
-        createCredentialStorageConfiguration(this.env),
+        storage,
+        diagnostics,
       );
 
 
@@ -402,12 +415,16 @@ export class GHLIntegrationCredentialResolver
      * ------------------------------------------------
      */
 
-    let credential =
-      await repository
-        .findByTenantAndProvider(
-          request.tenantId,
-          "gohighlevel",
-        );
+    diagnostics?.emit("ghl.credential.lookup", "started");
+    let credential;
+    try {
+      credential = await repository.findByTenantAndProvider(request.tenantId, "gohighlevel");
+    } catch (error) {
+      diagnostics?.emit("ghl.credential.lookup", "failed",
+        error instanceof CredentialCipherError ? error.diagnosticCode ?? "CREDENTIAL_DECRYPT_FAILED" : "INTERNAL_ERROR");
+      throw error;
+    }
+    diagnostics?.emit("ghl.credential.lookup", credential ? "succeeded" : "absent");
 
 
     if (
@@ -541,6 +558,9 @@ export class GHLIntegrationCredentialResolver
      * Location ID still exists but the token is missing.
      */
 
+ diagnostics?.emit("ghl.expiry", needsRefresh(credential) ? "refresh_required" : "usable",
+   credential.accessTokenExpiresAt != null && credential.accessTokenExpiresAt <= Date.now()
+     ? "OAUTH_ACCESS_EXPIRED" : undefined);
  const existingAccessToken =
   normalizeToken(
     credential.apiKey,
@@ -858,18 +878,21 @@ try {
   }
 
 
+  diagnostics?.emit("ghl.refresh", "started");
   refreshed =
     await refreshGHLLocationAccessToken(
       this.env,
 
       currentRefreshToken,
     );
+  diagnostics?.emit("ghl.refresh", "succeeded");
 
 } catch (
   error:
     unknown
 ) {
 
+  diagnostics?.emit("ghl.refresh", "failed", "OAUTH_REFRESH_FAILED");
   if (
     isGHLInvalidGrantError(
       error,
@@ -955,6 +978,7 @@ try {
 
         
 
+      diagnostics?.emit("ghl.persistence", "started");
       const saved =
         await repository
           .saveRefreshedOAuthCredential(
@@ -973,19 +997,24 @@ try {
             accessTokenExpiresAt,
 
             metadata,
-          );
+          ).catch((error: unknown) => {
+            diagnostics?.emit("ghl.persistence", "failed", "OAUTH_PERSIST_FAILED");
+            throw error;
+          });
 
 
       if (
         !saved
       ) {
 
+        diagnostics?.emit("ghl.persistence", "failed", "OAUTH_PERSIST_FAILED");
         throw new Error(
           `Failed to persist refreshed GHL OAuth credential for tenant=${request.tenantId}.`,
         );
       }
 
 
+      diagnostics?.emit("ghl.persistence", "succeeded");
       /*
        * ------------------------------------------------
        * 16. Return fresh access token
@@ -1047,6 +1076,7 @@ export function createGHLIntegrationRuntime(
 ): IntegrationRuntime {
 
   return {
+    diagnostics: env.diagnostics,
 
     credentials:
       new GHLIntegrationCredentialResolver(

@@ -108,11 +108,13 @@ function controllerFixture(
   newEnvelopeEnabled = true,
   send?: (value: Record<string, unknown>, queue: Array<Record<string, unknown>>) => Promise<void>,
   metaGhlInboundEnabled = false,
+  diagnostics?: import("../../../../src/core/logger/diagnostics").RequestDiagnostics,
 ) {
   const db = new SQLiteD1();
   db.sqlite.exec("INSERT INTO tenants (id, name) VALUES ('tenant-a', 'A'); INSERT INTO integrations (id, tenant_id, provider) VALUES ('integration-a', 'tenant-a', 'meta_whatsapp'); INSERT INTO meta_whatsapp_connections (id, tenant_id, integration_id, waba_id, phone_number_id, status) VALUES ('connection-a', 'tenant-a', 'integration-a', 'waba-a', 'phone-a', 'active');");
   const queue: Array<Record<string, unknown>> = [];
   const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
+  if (diagnostics) app.use("*", async (c, next) => { c.set("diagnostics", diagnostics); await next(); });
   app.all("/webhooks/meta-whatsapp", metaWhatsAppWebhookController);
   const env = {
     DB: db.binding(),
@@ -367,4 +369,23 @@ test("global Queue capability alone does not authorize Meta status dispatch", as
   assert.equal(response.status, 200);
   assert.equal(fixture.queue.length, 0);
   assert.equal(fixture.db.sqlite.prepare("SELECT COUNT(*) AS count FROM integration_events").get()?.count, 1);
+});
+
+test("Meta logs signature rejection and Queue publication failure without payload data", async (t) => {
+  const { createDiagnostics } = await import("../../../../src/core/logger/diagnostics");
+  const diagnostics = createDiagnostics("DEBUG");
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
+  const fixture = controllerFixture(true, async () => { throw new Error("private-queue-detail"); }, false, diagnostics);
+  const body = webhookBody();
+  const request = (signature: string) => fixture.app.request("/webhooks/meta-whatsapp", {
+    method: "POST", headers: { "X-Hub-Signature-256": signature }, body,
+  }, fixture.env);
+  assert.equal((await request("private-signature")).status, 401);
+  assert.equal((await request(await sign(body, "synthetic-secret"))).status, 503);
+  const records = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+  assert.ok(records.some((row) => row.event === "meta.webhook.signature" && row.code === "AUTH_FAILURE"));
+  assert.ok(records.some((row) => row.event === "meta.webhook.dispatch" && row.code === "QUEUE_OPERATION_FAILED"));
+  assert.ok(records.every((row) => row.correlationId === diagnostics.correlationId));
+  assert.doesNotMatch(JSON.stringify(records), /private-|synthetic-secret|tenant-a|phone-a/);
 });
