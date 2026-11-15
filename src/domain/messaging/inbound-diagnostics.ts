@@ -230,10 +230,11 @@ export function logInboundCheckpoint(
   };
   const message = "GHL inbound lifecycle checkpoint.";
 
-  if (phase === "failed") {
-    console.error(message, fields);
-  } else {
-    console.info(message, fields);
+  try {
+    if (phase === "failed") console.error(message, fields);
+    else console.info(message, fields);
+  } catch {
+    // Preserve processing if the log sink fails.
   }
 }
 
@@ -253,7 +254,8 @@ export function logInboundQueueReceived(
 ): void {
   const enqueuedAtMs = enqueuedAt.getTime();
   const versionIdentity = getWorkerVersionIdentity(workerVersion);
-  console.info("GHL inbound Queue message received.", {
+  try {
+    console.info("GHL inbound Queue message received.", {
     operation: "queue_received",
     correlationId,
     queueWaitMs: Number.isFinite(enqueuedAtMs)
@@ -261,7 +263,10 @@ export function logInboundQueueReceived(
       : null,
     attempts,
     ...(versionIdentity ?? {}),
-  });
+    });
+  } catch {
+    // Preserve processing if the log sink fails.
+  }
 }
 
 export async function traceInboundOperation<T>(
