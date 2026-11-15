@@ -112,19 +112,28 @@ export function createGHLProviderOutboundController(
   } catch {
     return c.json({ success: false, message: "Invalid webhook payload encoding." }, 400);
   }
+  const diagnostics = c.get("diagnostics");
+  diagnostics?.emit("ghl.webhook.signature", "started");
   const signature = c.req.header("X-GHL-Signature");
   if (!(await (dependencies.verifySignature ?? verifyGHLSignature)(rawBytes, signature))) {
+    diagnostics?.emit("ghl.webhook.signature", "failed", "AUTH_FAILURE");
     return c.json({ success: false, message: "Invalid GHL webhook signature." }, 401);
   }
 
+  diagnostics?.emit("ghl.webhook.signature", "succeeded");
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
   } catch {
+    diagnostics?.emit("ghl.webhook.parse", "failed", "VALIDATION_FAILED");
     return c.json({ success: false, message: "Invalid JSON payload." }, 400);
   }
   const payload = parseGHLProviderOutboundPayload(parsed);
-  if (!payload) return c.json({ success: false, message: "Invalid provider outbound payload.", code: "PROVIDER_PAYLOAD_REJECTED" }, 400);
+  if (!payload) {
+    diagnostics?.emit("ghl.webhook.parse", "failed", "VALIDATION_FAILED");
+    return c.json({ success: false, message: "Invalid provider outbound payload.", code: "PROVIDER_PAYLOAD_REJECTED" }, 400);
+  }
+  diagnostics?.emit("ghl.webhook.parse", "succeeded");
 
   if (!isGHLProviderPilotLocationAuthorized(c.env, payload.locationId)) {
     return c.json({ success: false, message: "Custom provider bridge is disabled for this location.", code: "PROVIDER_IDENTITY_REJECTED" }, 404);
@@ -134,8 +143,11 @@ export function createGHLProviderOutboundController(
   try {
     tenant = await (dependencies.resolveTenant ?? resolveTenantByProviderLocation)(c.env.DB, "gohighlevel", payload.locationId);
   } catch {
+    diagnostics?.emit("ghl.webhook.tenant", "failed", "TENANT_RESOLUTION_FAILED");
     return c.json({ success: false, message: "Unknown GHL location.", code: "PROVIDER_IDENTITY_REJECTED" }, 403);
   }
+
+  diagnostics?.emit("ghl.webhook.tenant", "succeeded");
 
   const eventService = new IntegrationEventService(new IntegrationEventRepository(c.env.DB));
   const event = await eventService.accept({

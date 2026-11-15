@@ -20,9 +20,14 @@ async function runContactOperation<T>(
   operation: string,
   action: () => Promise<T>,
 ): Promise<T> {
+  const diagnostics = context.integrationRuntime.diagnostics;
+  diagnostics?.emit("contact.service", "started");
   try {
-    return await action();
+    const result = await action();
+    diagnostics?.emit("contact.service", "succeeded");
+    return result;
   } catch (error) {
+    diagnostics?.emit("contact.service", "failed", error instanceof ApiError ? "PROVIDER_REQUEST_FAILED" : "INTERNAL_ERROR");
     if (error instanceof ApiError) {
       logger.error("Contact provider operation failed", {
         operation,
@@ -49,7 +54,12 @@ export async function createContactController(
     Variables: AppVariables;
   }>
 ) {
-  const body = await c.req.json();
+  const diagnostics = c.get("diagnostics");
+  const body = await c.req.json().catch((error: unknown) => {
+    diagnostics?.emit("contact.validation", "failed", "VALIDATION_FAILED");
+    throw error;
+  });
+  diagnostics?.emit("contact.validation", "succeeded");
 
   const context = c.get("context");
 
@@ -124,7 +134,12 @@ export async function updateContactController(
     Variables: AppVariables;
   }>
 ) {
-  const body = await c.req.json();
+  const diagnostics = c.get("diagnostics");
+  const body = await c.req.json().catch((error: unknown) => {
+    diagnostics?.emit("contact.validation", "failed", "VALIDATION_FAILED");
+    throw error;
+  });
+  diagnostics?.emit("contact.validation", "succeeded");
 
   if (!body.id) {
     return c.json(
@@ -161,7 +176,12 @@ export async function deleteContactController(
     Variables: AppVariables;
   }>
 ) {
-  const body = await c.req.json();
+  const diagnostics = c.get("diagnostics");
+  const body = await c.req.json().catch((error: unknown) => {
+    diagnostics?.emit("contact.validation", "failed", "VALIDATION_FAILED");
+    throw error;
+  });
+  diagnostics?.emit("contact.validation", "succeeded");
 
   if (!body.id && !body.email) {
     return c.json(

@@ -1,3 +1,4 @@
+import { createDiagnostics } from "../../core/logger/diagnostics";
 import type { AppBindings } from "../../config/app";
 import type { IntegrationContext } from "../../context/integration";
 import { createIntegrationContext } from "../../context/integration";
@@ -87,8 +88,10 @@ export async function handleGHLInboundQueueBatch(
   batch: MessageBatch<GHLInboundQueueEnvelope>,
   processor: (envelope: GHLInboundQueueEnvelope) => Promise<number | null>,
   workerVersion?: import("./inbound-diagnostics").WorkerVersionMetadataBinding | null,
+  diagnosticMode?: string,
 ): Promise<void> {
   await Promise.all(batch.messages.map(async (message) => {
+    const started = performance.now();
     const envelope = message.body;
     const isInboundMessage = isQueueEnvelope(envelope) &&
       (envelope.kind === undefined || envelope.kind === "inbound");
@@ -100,6 +103,7 @@ export async function handleGHLInboundQueueBatch(
         // Diagnostics must never prevent the normal Queue processing path.
       }
     }
+    const diagnostics = createDiagnostics(diagnosticMode, correlationId);
     const dispatchStartedAt = correlationId ? performance.now() : undefined;
     if (correlationId && dispatchStartedAt !== undefined) {
       logInboundQueueReceived(correlationId, message.timestamp, message.attempts, workerVersion);
@@ -110,8 +114,10 @@ export async function handleGHLInboundQueueBatch(
       const retryAfterSeconds = await processor(envelope);
       if (retryAfterSeconds !== null) {
         message.retry({ delaySeconds: retryAfterSeconds });
+        diagnostics.emit("queue.consume", "retry", undefined, { durationMs: Math.round(performance.now() - started) });
       } else {
         message.ack();
+        diagnostics.emit("queue.consume", "succeeded", undefined, { durationMs: Math.round(performance.now() - started) });
       }
       if (correlationId && dispatchStartedAt !== undefined) {
         logInboundCheckpoint("queue_dispatch", "complete", correlationId, dispatchStartedAt, undefined, undefined, workerVersion);
@@ -124,7 +130,8 @@ export async function handleGHLInboundQueueBatch(
         error instanceof IntegrationEventProcessingError &&
         error.code === "PROVIDER_REQUEST_REJECTED" &&
         !error.retryable;
-      console.error(
+      diagnostics.emit("queue.consume", "failed", "QUEUE_OPERATION_FAILED", { durationMs: Math.round(performance.now() - started) });
+      try { console.error(
         "GHL inbound Queue message processing failed.",
         {
           operation: "queue_consumer",
@@ -143,10 +150,12 @@ export async function handleGHLInboundQueueBatch(
             : {}),
         },
       );
+      } catch { /* Preserve the retry if the log sink fails. */ }
       // Retry the Queue delivery after a terminal provider rejection so the
       // next claim can observe the persisted dead-letter state and acknowledge.
       // If recording that state failed, this also keeps the source event recoverable.
       message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });
+      diagnostics.emit("queue.consume", "retry", "QUEUE_OPERATION_FAILED");
     }
   }));
 }
@@ -448,6 +457,7 @@ async function processEnvelope(
   const knowledgeRetriever = createTenantKnowledgeRetriever({
     ai: env.AI,
     vectorize: env.VECTORIZE_V2,
+    diagnostics: createDiagnostics(env.CORE_DIAGNOSTICS_LEVEL, correlationId),
     tenantId: tenant.id,
     db: env.DB,
     topK: 20,
@@ -495,5 +505,6 @@ export async function consumeGHLInboundQueue(
     (envelope) =>
       processEnvelope(envelope, env, scheduleBackgroundTask, reservationConsumer, providerHandlers),
     env.CF_VERSION_METADATA,
+    env.CORE_DIAGNOSTICS_LEVEL,
   );
 }

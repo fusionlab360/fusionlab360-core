@@ -1,3 +1,4 @@
+import type { RequestDiagnostics } from "../../core/logger/diagnostics";
 import {
   searchKnowledgeForTenant,
 } from "../knowledge/retrieval-service";
@@ -16,6 +17,7 @@ export interface TenantKnowledgeRetrieverOptions {
   tenantId: string;
   db?: D1Database;
   topK?: number;
+  diagnostics?: RequestDiagnostics;
 }
 
 export interface TenantKnowledgeRetriever {
@@ -94,6 +96,7 @@ export function createTenantKnowledgeRetriever(
         topK,
         options.db,
         alternateQueries,
+        options.diagnostics,
       );
 
       // Defence in depth: don't let the evaluation or messaging

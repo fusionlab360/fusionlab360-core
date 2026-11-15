@@ -1,3 +1,4 @@
+import type { RequestDiagnostics } from "../../core/logger/diagnostics";
 import type {
   IntegrationCredentialRequest,
   IntegrationCredentialResolver,
@@ -14,6 +15,7 @@ import type {
 
 
 export interface IntegrationRuntimeEnvironment extends CredentialKeyBindings {
+  diagnostics?: RequestDiagnostics;
 
   DB:
     D1Database;
@@ -70,6 +72,7 @@ export function createIntegrationRuntime(
       return createGHLIntegrationRuntime(
         env.DB,
         {
+          ...(env.diagnostics ? { diagnostics: env.diagnostics } : {}),
           GHL_OAUTH_CLIENT_ID:
             env.GHL_OAUTH_CLIENT_ID,
 

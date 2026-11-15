@@ -104,3 +104,49 @@ test("GHL provider-outbound webhook bounds streamed bodies and verifies the orig
   assert.deepEqual(verifiedBytes, rawBody);
   assert.equal(response.status, 404);
 });
+
+test("GHL webhook logs signature and parser decisions without request data", async (t) => {
+  const { createDiagnostics } = await import("../../../../src/core/logger/diagnostics");
+  const diagnostics = createDiagnostics("DEBUG");
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
+  const app: TestApp = new Hono();
+  app.use("*", async (c, next) => { c.set("diagnostics", diagnostics); await next(); });
+  app.post("/hook", createGHLProviderOutboundController({ verifySignature: async (_, signature) => signature === "fixture-accepted" }));
+  const env = { GHL_CUSTOM_PROVIDER_ENABLED: "true" } as AppBindings;
+  for (const [signature, status, body] of [["private-signature", 401, "private-payload"], ["fixture-accepted", 400, "private-payload"], ["fixture-accepted", 400, "{}"]] as const) {
+    const result = await app.request("/hook", {
+      method: "POST", headers: { "X-GHL-Signature": signature }, body,
+    }, env);
+    assert.equal(result.status, status);
+  }
+  const events = lines.map((line) => JSON.parse(line));
+  assert.ok(events.some((item) => item.event === "ghl.webhook.signature" && item.code === "AUTH_FAILURE"));
+  assert.equal(events.filter((item) => item.event === "ghl.webhook.parse" && item.code === "VALIDATION_FAILED").length, 2);
+  assert.ok(events.every((item) => item.correlationId === diagnostics.correlationId));
+  assert.doesNotMatch(lines.join("\n"), /private-signature|private-payload/);
+});
+
+test("GHL tenant resolution failure logs a fixed code and keeps the 403", async (t) => {
+  const { createDiagnostics } = await import("../../../../src/core/logger/diagnostics");
+  const diagnostics = createDiagnostics("DEBUG");
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
+  const app: TestApp = new Hono();
+  app.use("*", async (c, next) => { c.set("diagnostics", diagnostics); await next(); });
+  app.post("/hook", createGHLProviderOutboundController({
+    verifySignature: async () => true,
+    resolveTenant: async () => { throw new Error("private-database-detail"); },
+  }));
+  const response = await app.request("/hook", {
+    method: "POST",
+    body: JSON.stringify({ type: "SMS", contactId: "private-contact", locationId: "private-location",
+      messageId: "private-message", message: "private-body" }),
+  }, { GHL_CUSTOM_PROVIDER_ENABLED: "true", GHL_CUSTOM_PROVIDER_LOCATION_ALLOWLIST: "private-location" } as AppBindings);
+  assert.equal(response.status, 403);
+  assert.equal((await response.json() as { message: string }).message, "Unknown GHL location.");
+  assert.ok(lines.map((line) => JSON.parse(line)).some((row) =>
+    row.event === "ghl.webhook.tenant" && row.code === "TENANT_RESOLUTION_FAILED" &&
+    row.correlationId === diagnostics.correlationId));
+  assert.doesNotMatch(lines.join("\n"), /private-/);
+});

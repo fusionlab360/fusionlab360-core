@@ -1,3 +1,5 @@
+import { logger } from "../../core/logger";
+import type { RequestDiagnostics } from "../../core/logger/diagnostics";
 
 import type {
   AIProvider,
@@ -130,6 +132,7 @@ export async function answerKnowledgeQuestion(
   query: string,
   topK: number = 5,
   db?: D1Database,
+  diagnostics?: RequestDiagnostics,
 ): Promise<KnowledgeAnswerResult> {
   /*
    * ------------------------------------------------
@@ -144,6 +147,8 @@ export async function answerKnowledgeQuestion(
     query,
     topK,
     db,
+    [],
+    diagnostics,
   );
 
   const {
@@ -285,12 +290,9 @@ export async function answerKnowledgeQuestion(
     !evidenceResult.answer.trim() ||
     evidenceResult.evidenceIds.length === 0
   ) {
-    console.warn(
+    logger.warn(
       "KNOWLEDGE STRUCTURED EVIDENCE ANSWER NOT ACCEPTED",
       {
-        tenantId,
-        reason: evidenceResult.reason,
-        errors: evidenceResult.errors,
         answerStatus: evidenceResult.status,
       },
     );
@@ -327,12 +329,8 @@ export async function answerKnowledgeQuestion(
   );
 
   if (citedMatches.length === 0) {
-    console.warn(
+    logger.warn(
       "KNOWLEDGE VERIFIED ANSWER HAS NO MATCHING SOURCES",
-      {
-        tenantId,
-        evidenceIds: evidenceResult.evidenceIds,
-      },
     );
 
     return {

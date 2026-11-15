@@ -1,3 +1,4 @@
+import { createDiagnostics, type RequestDiagnostics } from "../core/logger/diagnostics";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 
@@ -167,6 +168,7 @@ export type AppBindings = {
 
   /** Comma-separated exact browser origins; absent configuration denies cross-origin browser access. */
   CORS_ALLOWED_ORIGINS?: string;
+  CORE_DIAGNOSTICS_LEVEL?: string;
 
   /** Explicit, single-asset guard for temporary developer test tokens. */
   META_WHATSAPP_DEVELOPER_TEST_ONBOARDING_ENABLED?: string;
@@ -178,6 +180,7 @@ export type AppBindings = {
 
 
 export type AppVariables = {
+  diagnostics?: RequestDiagnostics;
 
   context:
     RequestContext;
@@ -223,6 +226,25 @@ export function createApp() {
       AppVariables;
   }>();
 
+  app.use("*", async (c, next) => {
+    const diagnostics = createDiagnostics(c.env?.CORE_DIAGNOSTICS_LEVEL);
+    c.set("diagnostics", diagnostics);
+    const method = c.req.method;
+    const start = performance.now();
+    diagnostics.emit("http.start", "started", undefined, { method });
+    try {
+      await next();
+    } finally {
+      const status = c.res.status;
+      const template = c.req.matchedRoutes.findLast((route) => !route.path.endsWith("*"))?.path;
+      diagnostics.emit("http.complete", status >= 400 ? "failed" : "succeeded",
+        status >= 400 ? diagnostics.failureCode() ??
+          (status === 401 ? "AUTH_FAILURE" : status >= 500 ? "INTERNAL_ERROR" : undefined) : undefined,
+        { method, route: template === "*" || template === "/*" ? undefined : template,
+          status, durationMs: Math.round(performance.now() - start) });
+    }
+  });
+
 
 /**
  * Initialize security from Worker environment.
@@ -265,28 +287,6 @@ app.use(
 
 
 /**
- * Request logger
- */
-app.use(
-  "*",
-  async (
-    c,
-    next,
-  ) => {
-
-    // Paths may contain tenant, contact, conversation, or other customer IDs.
-    // Keep request logs useful without copying caller-controlled path segments.
-    console.log("HTTP request received.", {
-      method: c.req.method,
-    });
-
-    await next();
-
-  },
-);
-
-
-/**
  * CORS
  */
 const defaultCors = cors({
@@ -312,10 +312,11 @@ app.use("*", async (c, next) => {
  * Global error handler
  */
 app.onError(
-  (err) =>
-    handleError(
-      err,
-    ),
+  (err, c) => {
+    const diagnostics = c.get("diagnostics");
+    const hasStructuredErrorLog = diagnostics !== undefined && c.env?.CORE_DIAGNOSTICS_LEVEL !== "OFF";
+    return handleError(err, diagnostics?.correlationId, hasStructuredErrorLog);
+  },
 );
 
 /**

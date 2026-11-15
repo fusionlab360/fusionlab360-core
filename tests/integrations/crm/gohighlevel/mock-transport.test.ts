@@ -324,3 +324,19 @@ test("default GHL OAuth 401 refresh and one retry remain unchanged", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test("provider failure diagnostics correlate without exposing provider data", async (t) => {
+  const { createDiagnostics } = await import("../../../../src/core/logger/diagnostics");
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
+  const mock = createGHLMockEnvironment({ tenantId, locationId, reservationFieldId });
+  const diagnostics = createDiagnostics("DEBUG");
+  const context = makeContext(tenantId, locationId, { ...mock.runtime, diagnostics });
+  mock.failNext("contact_upsert", "transient");
+  await assert.rejects(goHighLevelAdapter.upsertContact(context, { firstName: "private-fixture-name", email: "failure@example.invalid" }));
+  const line = lines.find((value) => value.startsWith("{") && value.includes('"event":"ghl.provider"') && value.includes('"status":503'));
+  assert.ok(line);
+  assert.equal(JSON.parse(line).code, "PROVIDER_REQUEST_FAILED");
+  assert.equal(JSON.parse(line).correlationId, diagnostics.correlationId);
+  assert.doesNotMatch(line, /private-fixture-name|synthetic-tenant|synthetic-location|https:/);
+});

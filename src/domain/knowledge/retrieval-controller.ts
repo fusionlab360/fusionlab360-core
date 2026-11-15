@@ -104,6 +104,8 @@ export async function searchKnowledgeController(
   query,
   topK,
   c.env.DB,
+  [],
+  c.get("diagnostics"),
 );
 
 

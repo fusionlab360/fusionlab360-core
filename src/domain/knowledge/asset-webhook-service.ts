@@ -1,3 +1,4 @@
+import { logger } from "../../core/logger";
 import {
   IntegrationEventRepository,
 } from "../../persistence/repositories/integration-event-repository";
@@ -447,28 +448,7 @@ export async function processGHLKnowledgeAssetWebhook(
     !eventAccepted
   ) {
 
-    console.log(
-
-      "GHL Knowledge asset webhook ignored as duplicate",
-
-      {
-
-        webhookId,
-
-        eventType,
-
-        tenantId:
-          tenant.id,
-
-        knowledgeBaseId,
-
-        documentId,
-
-        assetType,
-
-      },
-
-    );
+    logger.info("GHL Knowledge asset webhook ignored as duplicate");
 
   }
 
@@ -620,56 +600,10 @@ export async function processGHLKnowledgeAssetWebhook(
           );
 
 
-        console.log(
-          "GHL Rich Text vector reconciliation",
-          {
-            tenantId:
-              tenant.id,
-
-            knowledgeBaseId,
-
-            documentId,
-
-            action:
-              index.action,
-
-            chunksIndexed:
-              index.chunksIndexed,
-
-            vectorsDeleted:
-              index.vectorsDeleted,
-
-            vectorizeMutations:
-              index.vectorizeMutations,
-          },
-        );
+        logger.info("GHL Rich Text vector reconciliation");
 
 
-        console.log(
-
-          "GHL Rich Text deleted",
-
-          {
-
-            tenantId:
-              tenant.id,
-
-            knowledgeBaseId,
-
-            documentId,
-
-            action,
-
-            status,
-
-            sync,
-
-            deletionMode:
-              "provider",
-
-          },
-
-        );
+        logger.info("GHL Rich Text deleted");
 
       } catch (
         error
@@ -689,16 +623,6 @@ export async function processGHLKnowledgeAssetWebhook(
          * Core still has the authoritative local source and
          * document records, so perform a local deletion.
          */
-
-        const errorMessage =
-          error instanceof Error
-
-            ? error.message
-
-            : String(
-                error,
-              );
-
 
         const sourceRepository =
           new KnowledgeSourceRepository(
@@ -780,60 +704,10 @@ export async function processGHLKnowledgeAssetWebhook(
             );
 
 
-          console.log(
-            "GHL Rich Text deletion vector reconciliation",
-            {
-              tenantId:
-                tenant.id,
-
-              knowledgeBaseId,
-
-              documentId,
-
-              action:
-                index.action,
-
-              vectorsDeleted:
-                index.vectorsDeleted,
-
-              vectorizeMutations:
-                index.vectorizeMutations,
-
-              deletionMode:
-                "local_fallback",
-            },
-          );
+          logger.info("GHL Rich Text deletion vector reconciliation");
 
 
-          console.warn(
-
-            "GHL Rich Text provider deletion fallback applied",
-
-            {
-
-              tenantId:
-                tenant.id,
-
-              knowledgeBaseId,
-
-              knowledgeSourceId:
-                localSource.id,
-
-              documentId,
-
-              action,
-
-              status,
-
-              deletionMode:
-                "local_fallback",
-
-              reason:
-                errorMessage,
-
-            },
-
-          );
+          logger.warn("GHL Rich Text provider deletion fallback applied");
 
         } else {
 
@@ -844,28 +718,7 @@ export async function processGHLKnowledgeAssetWebhook(
            * Treat this as an idempotent delete.
            */
 
-          console.log(
-
-            "GHL Rich Text deletion ignored: local Knowledge Source already absent",
-
-            {
-
-              tenantId:
-                tenant.id,
-
-              knowledgeBaseId,
-
-              documentId,
-
-              deletionMode:
-                "already_deleted",
-
-              reason:
-                errorMessage,
-
-            },
-
-          );
+          logger.info("GHL Rich Text deletion ignored: local Knowledge Source already absent");
 
         }
 
@@ -970,53 +823,10 @@ export async function processGHLKnowledgeAssetWebhook(
           );
 
 
-        console.log(
-          "GHL Rich Text vector reconciliation",
-          {
-            tenantId:
-              tenant.id,
-
-            knowledgeBaseId,
-
-            documentId,
-
-            action:
-              index.action,
-
-            chunksIndexed:
-              index.chunksIndexed,
-
-            vectorsDeleted:
-              index.vectorsDeleted,
-
-            vectorizeMutations:
-              index.vectorizeMutations,
-          },
-        );
+        logger.info("GHL Rich Text vector reconciliation");
 
 
-        console.log(
-
-          "GHL Rich Text synchronized",
-
-          {
-
-            tenantId:
-              tenant.id,
-
-            knowledgeBaseId,
-
-            documentId,
-
-            action,
-
-            status,
-
-            sync,
-
-          },
-
-        );
+        logger.info("GHL Rich Text synchronized");
 
       }
 
@@ -1029,29 +839,7 @@ export async function processGHLKnowledgeAssetWebhook(
 
       else {
 
-        console.log(
-
-          "GHL Rich Text event ignored",
-
-          {
-
-            tenantId:
-              tenant.id,
-
-            knowledgeBaseId,
-
-            documentId,
-
-            action,
-
-            status,
-
-            reason:
-              "Rich Text asset has not reached a synchronizable state.",
-
-          },
-
-        );
+        logger.info("GHL Rich Text event ignored");
 
       }
 
@@ -1369,23 +1157,7 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
     !eventAccepted
   ) {
 
-    console.log(
-
-      "GHL Knowledge Base delete webhook ignored as duplicate",
-
-      {
-
-        eventId:
-          resolvedEventId,
-
-        tenantId:
-          tenant.id,
-
-        knowledgeBaseId,
-
-      },
-
-    );
+    logger.info("GHL Knowledge Base delete webhook ignored as duplicate");
 
 
     return {
@@ -1455,23 +1227,7 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
     !knowledgeSource
   ) {
 
-    console.log(
-
-      "GHL Knowledge Base delete ignored: local source not found",
-
-      {
-
-        eventId:
-          resolvedEventId,
-
-        tenantId:
-          tenant.id,
-
-        knowledgeBaseId,
-
-      },
-
-    );
+    logger.info("GHL Knowledge Base delete ignored: local source not found");
 
 
     return {
@@ -1580,38 +1336,7 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
       reconciliation.vectorsDeleted;
 
 
-    console.log(
-
-      "GHL Knowledge Base document vector cleanup",
-
-      {
-
-        eventId:
-          resolvedEventId,
-
-        knowledgeBaseId,
-
-        knowledgeSourceId:
-          knowledgeSource.id,
-
-        documentId:
-          document.id,
-
-        sourceType:
-          document.sourceType,
-
-        action:
-          reconciliation.action,
-
-        vectorsDeleted:
-          reconciliation.vectorsDeleted,
-
-        vectorizeMutations:
-          reconciliation.vectorizeMutations,
-
-      },
-
-    );
+    logger.info("GHL Knowledge Base document vector cleanup");
 
   }
 
@@ -1681,39 +1406,7 @@ export async function processGHLKnowledgeBaseDeleteWebhook(
    * ------------------------------------------------
    */
 
-  console.log(
-
-    "GHL Knowledge Base deleted and synchronized",
-
-    {
-
-      eventId:
-        resolvedEventId,
-
-      tenantId:
-        tenant.id,
-
-      knowledgeBaseId,
-
-      knowledgeSourceId:
-        knowledgeSource.id,
-
-      knowledgeBaseName:
-        knowledgeSource.name,
-
-      documentsFound:
-        documents.length,
-
-      activeDocuments:
-        activeDocuments.length,
-
-      documentsMarkedDeleted,
-
-      vectorsDeleted,
-
-    },
-
-  );
+  logger.info("GHL Knowledge Base deleted and synchronized");
 
 
   /*

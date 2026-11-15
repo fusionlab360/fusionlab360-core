@@ -1,3 +1,4 @@
+import type { RequestDiagnostics } from "../../core/logger/diagnostics";
 import {
   BaseRepository,
 } from "./base-repository";
@@ -31,6 +32,7 @@ export class CredentialRepository
     private readonly credentialStorage: CredentialStorageConfiguration = {
       allowLegacyPlaintextReads: false,
     },
+    private readonly diagnostics?: RequestDiagnostics,
   ) {
     super(db);
   }
@@ -237,6 +239,10 @@ export class CredentialRepository
     let refreshToken = typeof result.refresh_token === "string" ? result.refresh_token : null;
 
     if (provider === "gohighlevel" && options.includeSecrets !== false) {
+      const formats = [apiKey, refreshToken].filter(Boolean);
+      if (!formats.length) this.diagnostics?.emit("ghl.credential.read", "empty");
+      if (formats.some(isEncryptedCredential)) this.diagnostics?.emit("ghl.credential.read", "encrypted");
+      if (formats.some((value) => !isEncryptedCredential(value))) this.diagnostics?.emit("ghl.credential.read", "legacy");
       apiKey = (await decryptCredentialValue(
         this.credentialStorage.cipher,
         integrationCredentialContext(tenantId, provider, locationId, "access"),
@@ -249,6 +255,7 @@ export class CredentialRepository
         refreshToken,
         this.credentialStorage.allowLegacyPlaintextReads,
       );
+      this.diagnostics?.emit("ghl.credential.read", "succeeded");
     } else if (provider === "gohighlevel") {
       apiKey = "";
       refreshToken = null;

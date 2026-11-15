@@ -213,3 +213,35 @@ test("inbound queue receipt and dispatch timings use a hashed correlation only",
   assert.match(String(received.correlationId), /^ghl-in-[a-f0-9]{24}$/);
   assert.equal(inbound.outcome, "acked");
 });
+
+test("structured queue retries omit payload details and respect OFF", async (t) => {
+  const log = t.mock.method(console, "log", () => {});
+  const message = makeMessage("private-source-event");
+  const batch = { messages: [message] } as unknown as MessageBatch<GHLInboundQueueEnvelope>;
+  await handleGHLInboundQueueBatch(batch, async () => 10, undefined, "DEBUG");
+  assert.equal(message.outcome, "retried");
+  const output = JSON.stringify(log.mock.calls.map((call) => call.arguments));
+  assert.match(output, /queue.consume/);
+  assert.match(output, /retry/);
+  assert.doesNotMatch(output, /private-source-event/);
+  const count = log.mock.callCount();
+  await handleGHLInboundQueueBatch(batch, async () => 10, undefined, "OFF");
+  assert.equal(log.mock.callCount(), count);
+});
+
+test("throwing Queue log sinks preserve ack and retry decisions", async (t) => {
+  for (const sink of ["log", "info", "error"] as const) {
+    t.mock.method(console, sink, () => { throw new Error("synthetic sink failure"); });
+  }
+  const acked = makeMessage("synthetic-ack");
+  const retried = makeMessage("synthetic-retry");
+  const batch = { messages: [acked, retried] } as unknown as MessageBatch<GHLInboundQueueEnvelope>;
+  let calls = 0;
+  await handleGHLInboundQueueBatch(batch, async () => {
+    if (++calls === 1) return null;
+    throw new Error("synthetic processor failure");
+  }, undefined, "DEBUG");
+  assert.equal(calls, 2);
+  assert.equal(acked.outcome, "acked");
+  assert.equal(retried.outcome, "retried");
+});

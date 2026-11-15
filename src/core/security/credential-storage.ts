@@ -69,7 +69,7 @@ export async function decryptCredentialValue(
   if (storedValue == null || storedValue === "") return storedValue ?? null;
   if (!isEncryptedCredential(storedValue)) {
     if (!allowLegacyPlaintextReads) {
-      throw new CredentialCipherError("Legacy plaintext credential reads are disabled.");
+      throw new CredentialCipherError("Legacy plaintext credential reads are disabled.", "CREDENTIAL_LEGACY_READ_DISABLED");
     }
     return storedValue;
   }
@@ -77,7 +77,7 @@ export async function decryptCredentialValue(
     throw new CredentialCipherError("Stored credential envelope version is unsupported.");
   }
   if (!cipher) {
-    throw new CredentialCipherError("Credential encryption keys are required to read this credential.");
+    throw new CredentialCipherError("Credential encryption keys are required to read this credential.", "CREDENTIAL_KEYRING_MISSING");
   }
   return cipher.decrypt(context, parseEnvelope(storedValue));
 }

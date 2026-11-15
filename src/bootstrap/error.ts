@@ -14,7 +14,12 @@ function safeApiErrorMessage(status: number): string {
   return "Request could not be completed.";
 }
 
-export function handleError(error: unknown): Response {
+export function handleError(
+  error: unknown,
+  requestContext?: unknown,
+  hasStructuredErrorLog = false,
+): Response {
+  const requestCorrelationId = typeof requestContext === "string" ? requestContext : undefined;
   if (error instanceof HTTPException) {
     return error.getResponse();
   }
@@ -26,11 +31,11 @@ export function handleError(error: unknown): Response {
     const code = (API_ERROR_CODES as readonly string[]).includes(error.code)
       ? error.code
       : "API_ERROR";
-    const correlationId = crypto.randomUUID();
+    const correlationId = requestCorrelationId ?? crypto.randomUUID();
 
     // ApiError.details and message may contain provider payloads, credentials,
     // or customer data. Only the fixed allowlist is logged and returned.
-    logger.error("API error", { status, code, correlationId });
+    if (!hasStructuredErrorLog) logger.error("API error", { status, code, correlationId });
 
     return Response.json(
       {
@@ -49,9 +54,7 @@ export function handleError(error: unknown): Response {
   if (error instanceof Error) {
   // Avoid returning or logging raw provider error messages.
   // They may contain sensitive request details or credentials.
-  logger.error("Unhandled application error", {
-    errorName: error.name,
-  });
+  if (!hasStructuredErrorLog) logger.error("Unhandled application error", { correlationId: requestCorrelationId });
 
   return Response.json(
     {
@@ -64,9 +67,7 @@ export function handleError(error: unknown): Response {
   );
 }
 
-  logger.error("Unknown application error", {
-  errorType: typeof error,
-});
+  if (!hasStructuredErrorLog) logger.error("Unknown application error", { correlationId: requestCorrelationId });
 
   return Response.json(
     {

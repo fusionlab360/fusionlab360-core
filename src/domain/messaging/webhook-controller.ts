@@ -1,3 +1,4 @@
+import { createDiagnostics } from "../../core/logger/diagnostics";
 import type {
   Context,
 } from "hono";
@@ -1484,6 +1485,7 @@ export async function ghlInboundMessageController(
     createTenantKnowledgeRetriever({
       ai: c.env.AI,
       vectorize: c.env.VECTORIZE_V2,
+      diagnostics: createDiagnostics(c.env.CORE_DIAGNOSTICS_LEVEL, correlationId),
       tenantId: context.tenant.id,
       db: c.env.DB,
       topK: 20,

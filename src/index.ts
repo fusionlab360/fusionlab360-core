@@ -1,3 +1,4 @@
+import { createDiagnostics } from "./core/logger/diagnostics";
 import {
   createApplication,
   shouldEnableNonProductionRoutes,
@@ -34,10 +35,18 @@ export async function scheduled(
   reservationConsumer?: ReservationIntegrationEventConsumer,
 ): Promise<void> {
   if (!reservationConsumer || !env.GHL_INBOUND_QUEUE || !areNewQueueEnvelopesEnabled(env)) return;
+  const diagnostics = createDiagnostics(env.CORE_DIAGNOSTICS_LEVEL);
   const destinationQueue = env.GHL_INBOUND_QUEUE;
   const service = new IntegrationEventService(new IntegrationEventRepository(env.DB));
   await service.dispatchPendingReservations(async ({ tenantId, eventId }) => {
-    await destinationQueue.send({ version: 1, kind: "reservation", tenantId, sourceEventId: eventId });
+    const start = performance.now();
+    try {
+      await destinationQueue.send({ version: 1, kind: "reservation", tenantId, sourceEventId: eventId });
+      diagnostics.emit("reservation.publish", "succeeded", undefined, { durationMs: Math.round(performance.now() - start) });
+    } catch (error) {
+      diagnostics.emit("reservation.publish", "failed", "QUEUE_OPERATION_FAILED", { durationMs: Math.round(performance.now() - start) });
+      throw error;
+    }
   });
 }
 
