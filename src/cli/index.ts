@@ -88,6 +88,6 @@ Future
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error("Core CLI command failed.");
   process.exit(1);
 });
