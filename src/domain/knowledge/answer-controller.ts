@@ -119,6 +119,7 @@ export async function answerKnowledgeController(
   query,
   topK,
   c.env.DB,
+  c.get("diagnostics"),
 );
 
 

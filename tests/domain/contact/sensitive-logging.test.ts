@@ -183,6 +183,7 @@ test("contact provider errors preserve status without exposing provider payloads
       import("../../../src/bootstrap/error"),
     ]);
     const previousUpsert = goHighLevelAdapter.upsertContact;
+    const { createDiagnostics } = await import("../../../src/core/logger/diagnostics");
     const providerSentinel = "PRIVATE_PROVIDER_CONTACT_ERROR";
     goHighLevelAdapter.upsertContact = async () => {
       throw new ApiError(400, providerSentinel, { body: providerSentinel });
@@ -191,10 +192,15 @@ test("contact provider errors preserve status without exposing provider payloads
     try {
       const app = new Hono<{ Bindings: AppBindings; Variables: AppVariables }>();
       app.use("*", async (c, next) => {
-        c.set("context", makeContext());
+        const diagnostics = createDiagnostics("DEBUG");
+        const context = makeContext();
+        context.requestId = diagnostics.correlationId;
+        context.integrationRuntime.diagnostics = diagnostics;
+        c.set("context", context);
+        c.set("diagnostics", diagnostics);
         await next();
       });
-      app.onError((error) => handleError(error));
+      app.onError((error, c) => handleError(error, c.get("diagnostics")?.correlationId));
       app.post("/contacts", createContactController);
       const { result: response, output } = await captureLogs(async () => await app.request(
         "/contacts",
@@ -212,6 +218,9 @@ test("contact provider errors preserve status without exposing provider payloads
       assert.equal(output.includes(providerSentinel), false);
       assert.match(output, /providerStatus/);
       assert.match(output, /Contact provider operation failed/);
+      assert.match(output, /contact.service.*failed.*PROVIDER_REQUEST_FAILED/);
+      assert.ok(output.includes(response.headers.get("X-Correlation-ID")!));
+      assert.doesNotMatch(output, /tenant-test|test-token/);
     } finally {
       goHighLevelAdapter.upsertContact = previousUpsert;
     }

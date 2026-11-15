@@ -457,6 +457,7 @@ async function processEnvelope(
   const knowledgeRetriever = createTenantKnowledgeRetriever({
     ai: env.AI,
     vectorize: env.VECTORIZE_V2,
+    diagnostics: createDiagnostics(env.CORE_DIAGNOSTICS_LEVEL, correlationId),
     tenantId: tenant.id,
     db: env.DB,
     topK: 20,

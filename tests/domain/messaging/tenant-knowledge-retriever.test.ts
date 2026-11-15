@@ -1,3 +1,4 @@
+import { createDiagnostics } from "../../../src/core/logger/diagnostics";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -87,7 +88,9 @@ test(
 
 test(
   "tenant-scoped recovery excludes matching documents owned by another tenant",
-  async () => {
+  async (t) => {
+    const log = t.mock.method(console, "log", () => {});
+    const diagnostics = createDiagnostics("DEBUG");
     const namespaces: string[] = [];
     const matches = [
       {
@@ -119,8 +122,9 @@ test(
         },
       },
     ];
-    const retriever = createTenantKnowledgeRetriever({
+    const options = {
       tenantId: "tenant-a",
+      db: { prepare() { throw new Error("PRIVATE_LEXICAL_FAILURE"); } } as unknown as D1Database,
       ai: {
         async run(model: string, input: unknown) {
           if (model.includes("reranker")) {
@@ -139,9 +143,17 @@ test(
           return { matches };
         },
       } as unknown as Vectorize,
-    });
-
-    const result = await retriever.search("Rimbayu street address");
+    };
+    const query = "Rimbayu street address";
+    const result = await createTenantKnowledgeRetriever({ ...options, diagnostics }).search(query);
+    const output = JSON.stringify(log.mock.calls.map((call) => call.arguments));
+    assert.match(output, /knowledge.lexical/);
+    assert.ok(output.includes(diagnostics.correlationId));
+    assert.doesNotMatch(output, /PRIVATE_LEXICAL_FAILURE|Rimbayu street address|Hill Street|tenant-a|tenant-b/);
+    log.mock.resetCalls();
+    const silent = await createTenantKnowledgeRetriever({ ...options, diagnostics: createDiagnostics("OFF") }).search(query);
+    assert.deepEqual(silent, result);
+    assert.equal(log.mock.callCount(), 0);
 
     assert.ok(namespaces.length > 0);
     assert.equal(namespaces.every((namespace) => namespace === "tenant-a"), true);

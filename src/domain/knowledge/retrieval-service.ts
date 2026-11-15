@@ -1,3 +1,4 @@
+import { createDiagnostics, type RequestDiagnostics } from "../../core/logger/diagnostics";
 import {
   searchKnowledgeVectors,
   type KnowledgeSearchMatch,
@@ -43,19 +44,14 @@ export async function searchKnowledgeForTenant(
   topK = 20,
   db?: D1Database,
   alternateQueries: string[] = [],
+  diagnostics: RequestDiagnostics = createDiagnostics(),
 ): Promise<KnowledgeSearchResult> {
   const safeTopK = Math.min(
     Math.max(Math.floor(topK), 1),
     20,
   );
 
-  console.log("KNOWLEDGE RETRIEVAL SERVICE INPUT", {
-    tenantId,
-    queryType: typeof query,
-    queryLength: typeof query === "string" ? query.length : -1,
-    queryEmpty: typeof query === "string" && query.length === 0,
-  });
-
+  const started = performance.now();
   const vectorMatches = (
     await searchKnowledgeVectors(
       ai,
@@ -64,10 +60,16 @@ export async function searchKnowledgeForTenant(
       query,
       safeTopK,
       alternateQueries,
-    )
+    ).catch((error: unknown) => {
+      diagnostics.emit("knowledge.vector", "failed", "PROVIDER_REQUEST_FAILED");
+      throw error;
+    })
   ).filter(
     (match) => match.tenantId === tenantId,
   );
+
+  diagnostics.emit("knowledge.vector", "succeeded", undefined,
+    { durationMs: Math.round(performance.now() - started) });
 
   let lexicalMatches: KnowledgeSearchMatch[] = [];
 
@@ -81,17 +83,8 @@ export async function searchKnowledgeForTenant(
           safeTopK,
           alternateQueries,
         );
-    } catch (error: unknown) {
-      console.warn(
-        "Tenant-scoped BM25 retrieval failed; using vector results.",
-        {
-          tenantId,
-          error:
-            error instanceof Error
-              ? error.message
-              : String(error),
-        },
-      );
+    } catch {
+      diagnostics.emit("knowledge.lexical", "failed", "DATABASE_OPERATION_FAILED");
     }
   }
 
@@ -233,18 +226,8 @@ export async function searchKnowledgeForTenant(
         rrfCandidates,
         rerankCandidateLimit,
       );
-    } catch (error: unknown) {
-      console.warn(
-        "Knowledge neural reranking failed; preserving RRF order.",
-        {
-          tenantId,
-          candidateCount: rrfCandidates.length,
-          error:
-            error instanceof Error
-              ? error.message
-              : String(error),
-        },
-      );
+    } catch {
+      diagnostics.emit("knowledge.rerank", "failed", "PROVIDER_REQUEST_FAILED");
     }
     } else {
     matches = rrfCandidates.map(
@@ -260,41 +243,7 @@ export async function searchKnowledgeForTenant(
     (match) => match.tenantId === tenantId,
   );
 
-  console.log(
-    "KNOWLEDGE HYBRID RETRIEVAL",
-    {
-      tenantId,
-      queryLength: query.length,
-      vectorCount: vectorMatches.length,
-      lexicalCount: lexicalMatches.length,
-      rrfCandidateCount: rrfCandidates.length,
-      rerankerSucceeded:
-        matches.some(
-          (match) =>
-            typeof match.rerankerScore === "number",
-        ),
-      topCandidates:
-        matches.slice(0, 10).map(
-          (match, index) => ({
-            rank: index + 1,
-            title: match.title,
-            sourceType: match.sourceType,
-            retrievalMethod:
-              match.retrievalMethod ?? "unknown",
-            vectorScore: match.score,
-            rrfScore: match.rrfScore ?? null,
-            vectorRank: match.vectorRank ?? null,
-            lexicalRank: match.lexicalRank ?? null,
-            rerankerScore:
-              match.rerankerScore ?? null,
-            rerankerRank:
-              match.rerankerRank ?? null,
-          }),
-        ),
-    },
-  );
-
-    return {
+  return {
     query,
     tenantId,
     matches: matches.slice(0, safeTopK),
